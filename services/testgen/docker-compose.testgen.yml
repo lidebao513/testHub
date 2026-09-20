@@ -1,0 +1,24 @@
+# docker-compose.testgen.yml
+# testgen sidecar 容器化部署（方案 B）。与 testhub 同内部网络，仅经 testhub Django 调用。
+#
+# 安全要点：
+#   - 用 expose（非 ports）→ 8100 仅 testhub-net 内部可达，绝不映射到宿主机/公网。
+#   - .env 经 env_file 注入（含 AUTH_TOKEN / LLM_* / EXPERT_*），不进镜像、不入库。
+#   - testhub Django 容器须在同一 testhub-net，并以 TESTGEN_BASE_URL=http://testgen:8100 调用。
+services:
+  testgen:
+    build:
+      context: ./services/testgen
+      dockerfile: Dockerfile
+    command: python -m cli.main serve --host 0.0.0.0 --port 8100
+    env_file: ./services/testgen/.env
+    expose:
+      - "8100"
+    networks:
+      - testhub-net
+    restart: on-failure
+
+networks:
+  testhub-net:
+    name: testhub-net
+    driver: bridge

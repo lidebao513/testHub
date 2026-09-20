@@ -83,6 +83,10 @@ frontend/dist/
 Dockerfile*
 docker-compose*.yml
 .dockerignore
+# testgen sidecar 部署配置（M3）需入库：放行以下例外（不影响 testhub 自身 Docker 规则）
+!services/testgen/Dockerfile
+!services/testgen/docker-compose.testgen.yml
+!services/testgen/.dockerignore
 nginx.conf
 Makefile
 build-multiplatform.sh

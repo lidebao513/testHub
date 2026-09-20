@@ -1,0 +1,21 @@
+# 构建镜像时排除（避免 .venv/.env/运行态产物进镜像）
+.venv
+venv
+.env
+.env.*
+*.env
+data
+outputs
+logs
+__pycache__
+*.pyc
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.pytest_tmp
+htmlcov
+*.db
+演示文档
+_ui_shots
+node_modules
+.git
