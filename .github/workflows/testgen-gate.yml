@@ -1,0 +1,41 @@
+# testgen 独立质量门禁（M3-3）
+# 与 testhub 现有 CI 完全分离：各自 job、各自报告，互不合并（避免规则互相拖累）。
+# 仅当 services/testgen 或本 workflow 变更时触发，避免无关提交空跑。
+name: testgen-gate
+
+on:
+  push:
+    paths:
+      - 'services/testgen/**'
+      - '.github/workflows/testgen-gate.yml'
+  pull_request:
+    paths:
+      - 'services/testgen/**'
+      - '.github/workflows/testgen-gate.yml'
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/testgen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # 八环门禁工具（ruff/mypy/bandit）与覆盖率
+          pip install ruff mypy bandit pytest pytest-cov
+
+      - name: Secrets scan (零明文入库红线)
+        run: python scripts/check_secrets.py
+
+      - name: Quality gate (8 rings + pytest cov>=60)
+        run: python scripts/gate_all.py

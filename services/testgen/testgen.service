@@ -1,0 +1,27 @@
+# /etc/systemd/system/testgen.service
+# testgen code->testcase generator sidecar（随 testhub 同机/同网启动）
+#
+# 部署步骤：
+#   1) 把本仓库落到 /opt/testhub（services/testgen 即此目录）
+#   2) 建好 services/testgen/.venv 并装依赖（见 INTEGRATION.md）
+#   3) 在 services/testgen/.env 写入 AUTH_TOKEN / LLM_* / EXPERT_*（gitignore，不入库）
+#   4) sudo cp testgen.service /etc/systemd/system/
+#      sudo systemctl daemon-reload
+#      sudo systemctl enable --now testgen
+#
+# 安全要点：监听 127.0.0.1（仅本机 Django 经 localhost 调用），绝不暴露 8100 到公网。
+# 若走容器，改用 docker-compose.testgen.yml（expose 仅内部网络）。
+[Unit]
+Description=testgen code->testcase generator sidecar
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/testhub/services/testgen
+# 真实入口：cli.main serve 内部即 uvicorn.run("service.app:app")
+ExecStart=/opt/testhub/services/testgen/.venv/bin/python -m cli.main serve --host 127.0.0.1 --port 8100
+EnvironmentFile=/opt/testhub/services/testgen/.env
+Restart=on-failure
+User=testhub
+
+[Install]
+WantedBy=multi-user.target
