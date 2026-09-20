@@ -38,6 +38,7 @@ urlpatterns = [
     path('api/monitor/', include('apps.monitor.urls')),
     # MCP 管理端 REST（日志/待确认）；协议端点 /api/mcp/ 在 ASGI 层分流
     path('api/mcp/', include('apps.mcp.urls')),
+    path('api/testgen/', include('apps.testgen_integration.urls')),  # testgen 代码生成 sidecar 集成
 ]
 
 if settings.ANALYTICS_ENABLED:
