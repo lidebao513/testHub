@@ -175,3 +175,42 @@ def get_cases(project_id: int) -> list[dict[str, Any]]:
     )
     resp.raise_for_status()
     return resp.json().get("cases", [])
+
+
+def verdict(facts: dict[str, Any]) -> dict[str, Any]:
+    """安全判定（M2）：把 security 用例执行后的「观测事实」发给 testgen /api/v1/verdict。
+
+    facts **不含凭证明文**（只传 auth_mode / observed 结果）。返回
+    ``{"verdict": safe|unsafe|inconclusive, "dimension", "reason", "evidence"}``。
+    """
+    resp = _session.post(
+        f"{base_url()}/api/v1/verdict",
+        json=facts,
+        headers=_headers(),
+        timeout=timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def create_security_defect(payload: dict[str, Any]) -> dict[str, Any]:
+    """（可选）在 testhub 自建一条 security 缺陷（M2-3：应拒却放通时自动建缺陷）。
+
+    真实环境：以 testhub 自身鉴权调用其内部 ``/api/defects/defects/``。
+    需要 ``TESTHUB_BASE_URL`` / ``TESTHUB_AUTH_TOKEN`` 配置（默认留空 → 调用方应注入
+    ``create_defect`` 回调，直接 ``Defect.objects.create(...)`` 更稳，避免自环 HTTP）。
+    """
+    hub = _settings_value("TESTHUB_BASE_URL", "").rstrip("/")
+    tok = _settings_value("TESTHUB_AUTH_TOKEN", "")
+    if not hub:
+        raise RuntimeError(
+            "未配置 TESTHUB_BASE_URL，无法自动建缺陷；请在调用方注入 create_defect 回调"
+        )
+    headers = {"Content-Type": "application/json"}
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    resp = _session.post(
+        f"{hub}/api/defects/defects/", json=payload, headers=headers, timeout=timeout()
+    )
+    resp.raise_for_status()
+    return resp.json()

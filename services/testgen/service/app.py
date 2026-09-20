@@ -40,6 +40,7 @@ from engine.comparator import (
     compare_one,
 )
 from engine.dialogue import DialogueAgent, default_dialogue_template
+from engine.verdict import run_five_dimension_verdict
 from output.report_writer import ReportExportError, export_report, render_html, render_markdown
 from output.writer import OutputWriter
 from service.tasks import BackgroundExecutor, GenerationTask, TaskState, TaskStore, stage_fraction
@@ -288,6 +289,32 @@ def _build_exec_opts_from_request(req: ExecuteRequest) -> pipeline.PipelineOptio
     if req.runtime_ui:
         t.enabled = True
     return opts
+
+
+class VerdictRequest(BaseModel):
+    """安全判定请求（M2）：testhub 执行 security 用例后回传的「观测事实」。
+
+    入参**不含任何凭证明文**——只传 auth_mode / observed 结果（脱敏责任在 testhub 侧 facts 构造）。
+    category/dimension 接受 testgen 原生中文（安全/安全-越权）或英文别名（security/priv_esc）。
+    """
+
+    target_url: str = Field("", description="被测目标地址（仅作证据记录，不参与判定）")
+    endpoint: str = Field("", description="被测接口路径（仅作证据记录）")
+    method: str = Field("GET", description="执行方法")
+    category: str = Field(
+        "", description="行为维度大类：正常/异常/安全/边界/性能（亦接受 normal/security...）"
+    )
+    dimension: str = Field("", description="子维度（如 安全-越权 / priv_esc / 安全-鉴权缺失）")
+    auth_mode: str | None = Field(None, description="期望鉴权接线（required/optional/absent）")
+    observed_status: int | None = Field(None, description="执行后实际 HTTP 状态码（无则不可判定）")
+    observed_body_has_sensitive: bool = Field(
+        False, description="响应体是否疑似泄露敏感信息"
+    )
+    expected_denied: bool = Field(
+        False, description="该用例是否期望被拒绝（无凭证/越权）"
+    )
+    tenant_identity: str = Field("", description="越权复测双身份标识（仅作证据）")
+    raw_evidence: dict[str, Any] = Field(default_factory=dict, description="调用方自由附带的额外证据")
 
 
 # ============================================================================
@@ -888,6 +915,26 @@ def get_coverage(pid: int) -> dict[str, Any]:
 @app.get("/api/v1/workspaces", dependencies=[Depends(require_auth)])
 def list_workspaces() -> dict[str, Any]:
     return {"workspaces": [w.to_dict() for w in WorkspaceManager().list_all()]}
+
+
+# ============================================================================
+# M2：安全语义裁判端点（纯计算，同步返回，无 LLM / 无浏览器）
+# ============================================================================
+@app.post("/api/v1/verdict", dependencies=[Depends(require_auth)])
+def verdict(req: VerdictRequest) -> dict[str, Any]:
+    """安全语义裁判（M2）：复用 engine 既有五维判定，对 security 用例的「观测事实」做安全判定。
+
+    - 判定逻辑**不重写**：``run_five_dimension_verdict`` 直接复用 ``engine.executor._judge``；
+    - 纯计算（无 LLM / 无浏览器），同步返回，延迟低（M2 注意点 4：不要异步任务化）；
+    - 入参不含凭证明文；响应亦不含凭证明文（facts 由 testhub 侧脱敏后构造）；
+    - 返回 ``verdict``（safe/unsafe/inconclusive）+ ``dimension``（normal/abnormal/auth/priv_esc/...）
+      + 可读 ``reason`` + ``evidence``。
+    """
+    facts = req.model_dump()
+    # auth_mode 允许 None → 归一为空串交给底层判定（F8 公开接口判定）
+    if facts.get("auth_mode") is None:
+        facts["auth_mode"] = ""
+    return run_five_dimension_verdict(facts)
 
 
 # ============================================================================

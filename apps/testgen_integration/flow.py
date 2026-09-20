@@ -64,3 +64,113 @@ def sync_cases(
         "updated": updated,
         "skipped": skipped,
     }
+
+
+# ============================================================================
+# M2：安全语义裁判编排（security 用例执行后 → 调 testgen /verdict → 应拒却放通自动建缺陷）
+# ============================================================================
+SEVERITY_FOR_UNSAFE = "critical"  # 应拒却放通 = 高危
+PRIORITY_FOR_UNSAFE = "p0"
+
+
+def is_security_case(tags: list[str] | None) -> bool:
+    """该用例是否带 security 标记（M1 回流时 `security` 维度会写入 tags）。"""
+    return "security" in (tags or [])
+
+
+def build_verdict_facts(case: dict[str, Any]) -> dict[str, Any]:
+    """从一条「已执行的 security 用例观测」构造发给 testgen /verdict 的 facts。
+
+    只搬运 category/dimension/observed 结果，**绝不**夹带账号密码等凭证明文。
+    category/dimension 优先用 testgen 原生中文（case_type/dimension 列），
+    缺失时由调用方以英文 tag 提供亦可（verdict 端点会做双语归一化）。
+    """
+    return {
+        "category": case.get("case_type") or case.get("category") or "",
+        "dimension": case.get("dimension") or "",
+        "auth_mode": case.get("auth_mode") or "",
+        "observed_status": case.get("observed_status"),
+        "observed_body_has_sensitive": bool(case.get("observed_body_has_sensitive", False)),
+        "expected_denied": case.get("expected_denied", False),
+        "tenant_identity": case.get("tenant_identity") or "",
+        "raw_evidence": case.get("raw_evidence") or {},
+    }
+
+
+def run_security_verdict(
+    observations: list[dict[str, Any]],
+    *,
+    verdict_fn: "Callable[[dict[str, Any]], dict[str, Any]] | None" = None,
+    create_defect: "Callable[[dict[str, Any]], Any] | None" = None,
+) -> dict[str, Any]:
+    """对 security 用例执行观测做安全语义裁判，应拒却放通时自动建缺陷。
+
+    参数：
+      observations   每条 = {case_id, title, tags, project_id, testcase_id?,
+                            case_type/dimension/observed_status/observed_body_has_sensitive/
+                            expected_denied/tenant_identity/raw_evidence ...}
+      verdict_fn      注入式调 testgen /verdict（默认 client.verdict）
+      create_defect   注入式建缺陷（默认 client.create_security_defect；
+                      真实环境更推荐直接 ``Defect.objects.create``，见 client.create_security_defect 说明）
+
+    返回：{total, security_cases, unsafe, defects_created, skipped, details}
+    """
+    from . import client as tg_client  # 延迟导入，避免循环 + 便于单测注入
+
+    vfn = verdict_fn or tg_client.verdict
+    cfn = create_defect or tg_client.create_security_defect
+
+    security = unsafe = defects_created = skipped = 0
+    details: list[dict[str, Any]] = []
+    for obs in observations:
+        if not is_security_case(obs.get("tags")):
+            skipped += 1  # 非 security 用例不调 /verdict（M2 验收：避免无谓开销）
+            continue
+        security += 1
+        facts = build_verdict_facts(obs)
+        try:
+            result = vfn(facts)
+        except Exception as exc:  # noqa: BLE001 - 单条裁判失败不应中断整批
+            details.append({"case_id": obs.get("case_id"), "verdict": "error", "error": str(exc)})
+            continue
+
+        if result.get("verdict") == "unsafe":
+            unsafe += 1
+            payload = {
+                "title": f"[安全] {obs.get('title', obs.get('case_id', '未知用例'))} 应拒却放通",
+                "description": (
+                    f"testgen 安全判定：{result.get('reason')}\n"
+                    f"维度：{result.get('dimension')}\n证据：{result.get('evidence')}"
+                ),
+                "severity": SEVERITY_FOR_UNSAFE,
+                "priority": PRIORITY_FOR_UNSAFE,
+                "source": "testgen_verdict",
+                "related_testcase_id": obs.get("testcase_id"),
+                "project_id": obs.get("project_id"),
+            }
+            try:
+                cfn(payload)
+                defects_created += 1
+                details.append(
+                    {"case_id": obs.get("case_id"), "verdict": "unsafe", "defect": "created"}
+                )
+            except Exception as exc:  # noqa: BLE001
+                details.append(
+                    {
+                        "case_id": obs.get("case_id"),
+                        "verdict": "unsafe",
+                        "defect": "failed",
+                        "error": str(exc),
+                    }
+                )
+        else:
+            details.append({"case_id": obs.get("case_id"), "verdict": result.get("verdict")})
+
+    return {
+        "total": len(observations),
+        "security_cases": security,
+        "unsafe": unsafe,
+        "defects_created": defects_created,
+        "skipped": skipped,
+        "details": details,
+    }
