@@ -102,16 +102,18 @@ def run_security_verdict(
     *,
     verdict_fn: "Callable[[dict[str, Any]], dict[str, Any]] | None" = None,
     create_defect: "Callable[[dict[str, Any]], Any] | None" = None,
+    reporter_id: int | None = None,
 ) -> dict[str, Any]:
     """对 security 用例执行观测做安全语义裁判，应拒却放通时自动建缺陷。
 
     参数：
       observations   每条 = {case_id, title, tags, project_id, testcase_id?,
-                            case_type/dimension/observed_status/observed_body_has_sensitive/
+                            reporter_id?, case_type/dimension/observed_status/observed_body_has_sensitive/
                             expected_denied/tenant_identity/raw_evidence ...}
       verdict_fn      注入式调 testgen /verdict（默认 client.verdict）
       create_defect   注入式建缺陷（默认 client.create_security_defect；
                       真实环境更推荐直接 ``Defect.objects.create``，见 client.create_security_defect 说明）
+      reporter_id     可选，统一注入执行触发人 id（Defect.reporter 为必填 FK；不传则取 obs.reporter_id）
 
     返回：{total, security_cases, unsafe, defects_created, skipped, details}
     """
@@ -144,9 +146,14 @@ def run_security_verdict(
                 ),
                 "severity": SEVERITY_FOR_UNSAFE,
                 "priority": PRIORITY_FOR_UNSAFE,
-                "source": "testgen_verdict",
+                "defect_type": "security",  # Defect.defect_type 有效枚举（真实模型无 source=testgen_verdict）
+                # source 须为 Defect.SOURCE_CHOICES 有效值；testgen 经 testhub 自动化触发判定，
+                # 暂映射到 api_testing。更优解：Defect 模型增加 'testgen' 来源枚举（需迁移），见文档 M2-R1。
+                "source": "api_testing",
                 "related_testcase_id": obs.get("testcase_id"),
                 "project_id": obs.get("project_id"),
+                # reporter 为 Defect 必填 FK；真实环境由执行钩子注入 reporter_id（当前观测缺省则取 obs.reporter_id）
+                "reporter_id": reporter_id if reporter_id is not None else obs.get("reporter_id"),
             }
             try:
                 cfn(payload)
