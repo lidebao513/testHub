@@ -1,0 +1,21 @@
+# ============================================================================
+# testgen-service 运行依赖
+# 说明：本文件是「代码 -> 测试点 -> 用例」主链路的最小依赖，**默认不含 playwright**
+#       （P3 运行时 UI 发现是可选能力，惰性导入；启用时再装，见下方 OPTIONAL 段）。
+#       质量工具（ruff/mypy/bandit/pytest/pytest-cov）走 QUALITY_ENV 或本机托管环境，见 scripts/gate_all.py。
+# ============================================================================
+# 钉版本：源运行环境实测 fastapi 0.141.1 / starlette 1.6.0；独立 venv 不污染 testhub 的 starlette==0.50.0
+fastapi==0.141.1
+uvicorn[standard]
+python-dotenv
+openai
+httpx
+requests
+PyYAML
+
+# ============================================================================
+# OPTIONAL（P3 运行时 UI 发现 / 用例执行，默认不装）
+#   pip install playwright && python -m playwright install chromium
+#   沙箱内无法下载 chromium 内核时，可复用系统浏览器：设 PLAYWRIGHT_CHANNEL=msedge
+# ============================================================================
+# playwright

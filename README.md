@@ -332,6 +332,7 @@ npm run build
 
 ## 📄 文档
 
+- **[代码规范 (CODE_STANDARDS)](./CODE_STANDARDS.md)**: 命名 / 目录 / 注释 / 提交 / 安全 / 迁移铁律的统一约束（二次开发必读）
 - **[更新日志 (CHANGELOG)](./docs/CHANGELOG.md)**: 查看版本更新历史和重要变更
 - **[数据工厂使用说明](./docs/数据工厂使用说明.md)**: 数据工厂功能完整介绍和使用技巧
 - **[数据工厂快速开始](./docs/数据工厂快速开始.md)**: 数据工厂快速上手指南
@@ -670,6 +671,8 @@ SIMPLE_JWT = {
 3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
 4. 推送到分支 (`git push origin feature/AmazingFeature`)
 5. 开启 Pull Request
+
+> **提交与分支规范**：提交信息格式、type 集合、分支流（feature→dev→release）与迁移铁律以 [`CODE_STANDARDS.md`](./CODE_STANDARDS.md) 为准（`<type>: <中文描述>`，如 `feat: 新增代码分析入口`）。本仓库历史提交风格不一，新提交自该文档生效日起统一采用；示例中的 `Add some AmazingFeature` 仅作 Git 流程示意，实际提交请按 CODE_STANDARDS §4 书写。
 
 ## 📝 许可证
 

@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>testgen-service 控制台</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --card:#ffffff; --ink:#1f2733; --sub:#65758a; --line:#e3e8f0;
+    --brand:#2563eb; --brand2:#1d4ed8; --ok:#16a34a; --warn:#d97706; --bad:#dc2626;
+    --chip:#eef2ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink)}
+  header{background:linear-gradient(90deg,var(--brand),var(--brand2));color:#fff;padding:14px 22px;display:flex;align-items:center;gap:12px}
+  header h1{font-size:18px;margin:0}
+  header .tag{font-size:12px;opacity:.85;border:1px solid rgba(255,255,255,.5);padding:2px 8px;border-radius:999px}
+  .wrap{display:grid;grid-template-columns:380px 1fr;gap:16px;padding:16px;align-items:start}
+  @media(max-width:900px){.wrap{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 1px 2px rgba(16,24,40,.04)}
+  .card h2{font-size:14px;margin:0 0 12px;color:var(--sub);text-transform:uppercase;letter-spacing:.04em}
+  label{display:block;font-size:13px;color:var(--sub);margin:10px 0 4px}
+  textarea,input[type=text]{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:13px;font-family:inherit;background:#fff;color:var(--ink)}
+  textarea{min-height:74px;resize:vertical}
+  .scopes{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
+  .scopes label{display:flex;align-items:center;gap:6px;margin:0;font-size:13px;color:var(--ink);background:var(--chip);padding:6px 10px;border-radius:999px;cursor:pointer}
+  .row{display:flex;gap:10px}.row>div{flex:1}
+  button{font-family:inherit;font-size:14px;border:0;border-radius:9px;padding:10px 14px;cursor:pointer;font-weight:600}
+  .btn-primary{background:var(--brand);color:#fff}
+  .btn-primary:hover{background:var(--brand2)}
+  .btn-ghost{background:#eef2ff;color:var(--brand2)}
+  .btn-ok{background:var(--ok);color:#fff}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+  .hint{font-size:12px;color:var(--sub);margin-top:6px;line-height:1.5}
+  .sec{margin-top:14px;border-top:1px dashed var(--line);padding-top:12px}
+  .log{background:#0f172a;color:#d6e2f5;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;border-radius:9px;padding:12px;height:280px;overflow:auto;white-space:pre-wrap;line-height:1.55}
+  .badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600}
+  .b-pending,.b-running{background:#fef3c7;color:#92400e}
+  .b-success{background:#dcfce7;color:#166534}
+  .b-failed,.b-cancelled{background:#fee2e2;color:#991b1b}
+  .kv{display:flex;gap:8px;font-size:13px;margin:4px 0}
+  .kv b{color:var(--sub);font-weight:600;min-width:84px}
+  a.link{color:var(--brand);text-decoration:none;font-size:13px}
+  a.link:hover{text-decoration:underline}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+  th,td{border:1px solid var(--line);padding:6px 8px;text-align:left}
+  th{background:#f1f5f9;color:var(--sub)}
+  .pills{display:flex;flex-wrap:wrap;gap:6px}
+  .pill{background:var(--chip);color:var(--brand2);font-size:12px;padding:3px 9px;border-radius:999px}
+  details summary{cursor:pointer;color:var(--brand);font-size:13px}
+  details{margin-top:12px;font-size:13px;color:var(--sub);line-height:1.6}
+</style>
+</head>
+<body>
+<header>
+  <h1>🧪 testgen-service 控制台</h1>
+  <span class="tag">代码 / URL → 测试用例 → 执行验证</span>
+</header>
+
+<div class="wrap">
+  <!-- 左：输入 -->
+  <div class="card">
+    <h2>① 填写被测对象</h2>
+
+    <label>统一智能输入框（把地址+账号+密码+动态口令+代码路径混在一起写也行）</label>
+    <textarea id="auto_input" placeholder="例：http://47.97.154.50:8090/chat 账号 test_ft001@ft.cntaiping.com 密码 Tp0909@test 动态口令 123456"></textarea>
+
+    <div class="sec">
+      <label>或分项填写（更清晰）</label>
+      <div class="row">
+        <div><label>代码目录 / 仓库地址</label><input type="text" id="repo" placeholder="D:/code/myrepo 或 git@...:x/y.git"></div>
+      </div>
+      <div class="row">
+        <div><label>被测环境地址(URL)</label><input type="text" id="test_url" placeholder="http://host:port/chat"></div>
+        <div><label>登录页(可空)</label><input type="text" id="login_url" placeholder="留空自动判定"></div>
+      </div>
+      <div class="row">
+        <div><label>登录账号</label><input type="text" id="user" placeholder="账号"></div>
+        <div><label>密码</label><input type="text" id="pwd" placeholder="密码"></div>
+      </div>
+      <div class="row">
+        <div><label>动态口令(OTP)</label><input type="text" id="otp" placeholder="6位动态码"></div>
+        <div><label>项目名(可空)</label><input type="text" id="pname" placeholder="自动命名"></div>
+      </div>
+      <label>测试范围（默认全选）</label>
+      <div class="scopes" id="scopes">
+        <label><input type="checkbox" value="正常" checked>正常</label>
+        <label><input type="checkbox" value="异常" checked>异常</label>
+        <label><input type="checkbox" value="安全" checked>安全</label>
+        <label><input type="checkbox" value="边界" checked>边界</label>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn-primary" id="btn_gen" onclick="doGenerate()">▶ 生成用例</button>
+      <button class="btn-ok" id="btn_exec" onclick="doExecute()" disabled>▶ 执行验证</button>
+    </div>
+    <div class="hint">提示：只填「代码目录」= 纯代码生成；只填「被测地址+账号」= 浏览器自动发现页面/接口生成。执行验证默认只读（不污染被测环境），勾下方可放行写/真实点击。</div>
+
+    <div class="sec">
+      <label>执行选项</label>
+      <div class="scopes">
+        <label><input type="checkbox" id="allow_write">放行写操作</label>
+        <label><input type="checkbox" id="ui_click">UI 真实点击</label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div><label>指定已有项目ID执行(可选)</label><input type="text" id="exec_pid" placeholder="如 15"></div>
+      </div>
+    </div>
+
+    <details>
+      <summary>使用说明 / 安全说明</summary>
+      <p><b>流程：</b>① 填被测对象 → ②「生成用例」(异步，右下看进度) → ③ 生成完自动拿到项目ID → ④「执行验证」(可选) → ⑤「查看报告」。</p>
+      <p><b>真实调用：</b>本控制台跑在你本机，浏览器发现与点击使用你电脑的真实网络，可真实访问内网/线上目标。</p>
+      <p><b>凭证安全：</b>账号/密码/动态口令仅随本次请求发出，服务端不回显、不落库、不写入产物（平台设计如此）。请在本机受信任环境使用。</p>
+    </details>
+  </div>
+
+  <!-- 右：进度 + 结果 -->
+  <div style="display:flex;flex-direction:column;gap:16px">
+    <div class="card">
+      <h2>② 实时进度</h2>
+      <div class="kv"><b>当前任务</b><span id="task_id">—</span><span id="task_state" class="badge b-pending">idle</span></div>
+      <div class="kv"><b>阶段</b><span id="stage">—</span><span id="frac">—</span></div>
+      <div class="kv"><b>生成项目</b><span id="pid">—</span> <a class="link" id="report_link" style="display:none" target="_blank">查看报告 ↗</a></div>
+      <div class="log" id="log">等待操作…</div>
+    </div>
+
+    <div class="card">
+      <h2>③ 项目列表</h2>
+      <div class="actions" style="margin:0 0 10px">
+        <button class="btn-ghost" onclick="loadProjects()">刷新项目</button>
+      </div>
+      <div id="projects"><span class="hint">点击「刷新项目」加载</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id)=>document.getElementById(id);
+function log(msg){
+  const el=$("log");
+  const t=new Date().toLocaleTimeString();
+  el.textContent += `[${t}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+function setBadge(id,state){
+  const el=$(id);
+  el.className = "badge " + (state?("b-"+state):"b-pending");
+  el.textContent = state || "idle";
+}
+function scopes(){
+  return [...document.querySelectorAll("#scopes input:checked")].map(c=>c.value);
+}
+let pollTimer=null, curPid=null;
+
+async function api(path, opts){
+  const r = await fetch(path, Object.assign({headers:{"Content-Type":"application/json"}}, opts));
+  if(!r.ok){
+    let detail="";
+    try{ detail = (await r.json()).detail || ""; }catch(e){}
+    throw new Error(`HTTP ${r.status} ${detail}`);
+  }
+  return r.json();
+}
+
+function buildBody(){
+  const ai = $("auto_input").value.trim();
+  const sc = scopes();
+  const b = {
+    auto_input: ai,
+    local_path: $("repo").value.trim(),
+    repo_url: "",
+    project_name: $("pname").value.trim(),
+    mode: "full",
+    scopes: sc,
+    test_url: $("test_url").value.trim(),
+    login_url: $("login_url").value.trim(),
+    login_user: $("user").value.trim(),
+    login_password: $("pwd").value.trim(),
+    login_otp: $("otp").value.trim(),
+    runtime_ui: !!($("test_url").value.trim()),
+    execute: false
+  };
+  if(b.local_path.startsWith("git@") || b.local_path.endsWith(".git")){
+    b.repo_url = b.local_path; b.local_path = "";
+  }
+  return b;
+}
+
+async function doGenerate(){
+  $("btn_gen").disabled = true;
+  try{
+    const body = buildBody();
+    if(!body.auto_input && !body.local_path && !body.repo_url && !body.test_url){
+      alert("请至少填写代码目录、仓库地址或被测环境地址"); return;
+    }
+    log("提交生成任务…");
+    const r = await api("/api/v1/generate", {method:"POST", body:JSON.stringify(body)});
+    $("task_id").textContent = r.task_id;
+    setBadge("task_state","running");
+    log("已接受，任务 "+r.task_id);
+    poll(r.task_id, (res)=>{
+      curPid = res.project_id || curPid;
+      if(curPid){ $("pid").textContent = curPid; }
+      if(curPid){
+        $("report_link").style.display="inline";
+        $("report_link").href = `/api/v1/projects/${curPid}/report?format=html`;
+        $("btn_exec").disabled = false;
+      }
+    });
+  }catch(e){
+    log("❌ "+e.message);
+    setBadge("task_state","failed");
+  }finally{
+    $("btn_gen").disabled = false;
+  }
+}
+
+async function doExecute(){
+  const pid = $("exec_pid").value.trim() || curPid;
+  if(!pid){ alert("没有可执行的project_id（先生成，或填写指定项目ID）"); return; }
+  $("btn_exec").disabled = true;
+  try{
+    const body = {
+      project_id: Number(pid),
+      test_url: $("test_url").value.trim(),
+      login_url: $("login_url").value.trim(),
+      login_user: $("user").value.trim(),
+      login_password: $("pwd").value.trim(),
+      login_otp: $("otp").value.trim(),
+      exec_url: $("test_url").value.trim(),
+      allow_write: $("allow_write").checked,
+      ui_click: $("ui_click").checked
+    };
+    log("提交执行任务（项目 "+pid+"）…");
+    const r = await api("/api/v1/execute", {method:"POST", body:JSON.stringify(body)});
+    $("task_id").textContent = r.task_id;
+    setBadge("task_state","running");
+    log("已接受，任务 "+r.task_id);
+    poll(r.task_id, ()=>{});
+  }catch(e){
+    log("❌ "+e.message);
+    setBadge("task_state","failed");
+  }finally{
+    $("btn_exec").disabled = false;
+  }
+}
+
+function poll(taskId, onUpdate){
+  if(pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async ()=>{
+    try{
+      const r = await api("/api/v1/tasks/"+taskId);
+      setBadge("task_state", r.state);
+      $("stage").textContent = r.stage || "—";
+      $("frac").textContent = r.progress!=null ? Math.round(r.progress*100)+"%" : "—";
+      if(r.project_id){ $("pid").textContent = r.project_id; curPid=r.project_id;
+        $("report_link").style.display="inline"; $("report_link").href=`/api/v1/projects/${r.project_id}/report?format=html`; $("btn_exec").disabled=false; }
+      if(r.error) log("❌ "+r.error);
+      if(r.state==="success"){
+        clearInterval(pollTimer);
+        log("✅ 完成！项目ID="+r.project_id);
+        if(r.result && r.result.summary) log("摘要: "+JSON.stringify(r.result.summary));
+        if(r.result && r.result.outputs) log("产物: "+JSON.stringify(r.result.outputs));
+        loadProjects();
+      }else if(r.state==="failed" || r.state==="cancelled"){
+        clearInterval(pollTimer);
+        if(r.error) log("终态错误: "+r.error);
+      }
+      if(onUpdate) onUpdate(r);
+    }catch(e){
+      log("轮询异常: "+e.message);
+    }
+  }, 1500);
+}
+
+async function loadProjects(){
+  try{
+    const r = await api("/api/v1/projects");
+    const ps = r.projects || [];
+    if(!ps.length){ $("projects").innerHTML='<span class="hint">暂无项目</span>'; return; }
+    let html = '<table><tr><th>ID</th><th>名称</th><th>用例数</th><th>来源</th><th>操作</th></tr>';
+    for(const p of ps.slice(0,30)){
+      html += `<tr><td>${p.id}</td><td>${p.name||""}</td><td>${p.case_count??""}</td><td>${p.source_kind||""}</td>`+
+        `<td><a class="link" href="/api/v1/projects/${p.id}/report?format=html" target="_blank">报告</a> `+
+        `<a class="link" onclick="execPid(${p.id})">执行</a></td></tr>`;
+    }
+    html += "</table>";
+    $("projects").innerHTML = html;
+  }catch(e){ $("projects").innerHTML='<span class="hint">加载失败: '+e.message+'</span>'; }
+}
+function execPid(id){ $("exec_pid").value=id; doExecute(); }
+
+loadProjects();
+log("控制台就绪。填写左侧被测对象后点「生成用例」。");
+</script>
+</body>
+</html>

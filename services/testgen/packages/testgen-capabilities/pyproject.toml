@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "testgen-capabilities"
+version = "0.1.0"
+description = "存储无关的 testgen 能力层门面包（comparator / dialogue / llm 降级链）"
+readme = "README.md"
+requires-python = ">=3.10"
+# 本包只重新导出 testgen 的「纯能力」模块，运行期依赖随 testgen-service 一同提供。
+# 这里仅声明一个最小占位依赖，确保 pip 元数据合法；真正运行需 testgen-service 在路径上
+# （见 README 的「安装」与 TESTGEN_SERVICE_ROOT 说明）。
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

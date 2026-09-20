@@ -1,0 +1,7 @@
+# 可选导出依赖（P2-9）：报告导出为 PDF / Word / Excel 时才需要。
+# 主链路（json/md/html）与质量门禁不依赖这些包，故**不放进主 requirements**，
+# 避免无谓膨胀。需要导出时：`pip install -r requirements-opt.txt`
+# 缺依赖时 export_report() 会抛 ReportExportError 并附 pip install 提示，绝不静默产出半截文件。
+reportlab>=4.0
+python-docx>=1.1
+openpyxl>=3.1

@@ -180,3 +180,4 @@ Frontend: Vue 3, Element Plus, Pinia, Vue Router, Axios, ECharts, Monaco Editor,
 - 多个相关修改应合并为一个 commit
 - commit message 格式：`<type>: <简短描述>`
 - 提交前必须运行 lint 和测试
+- **完整规范（type 集合、分支策略、命名/目录/注释、安全与迁移铁律）以 [`CODE_STANDARDS.md`](./CODE_STANDARDS.md) 为准**

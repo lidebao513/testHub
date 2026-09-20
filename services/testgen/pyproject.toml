@@ -1,0 +1,126 @@
+# ============================================================================
+# testgen-service 工程配置（单一事实来源）
+# - 与 legacy(test-accel) 同源：八环门禁的「硬性约束」由此文件定义
+# - 本文件是被 pre-commit / CI 强制读取的硬约束，不是文档
+#
+# 与 legacy 的差异（有意为之）：
+#   1) playwright 为**可选依赖**（optional-dependencies.runtime）——主链路仍只做
+#      「代码 → 测试点 → 用例」；P3 运行时 UI 发现启用时才装，代码内惰性导入
+#   2) ruff / mypy 不再有任何「上帝模块豁免」—— 新代码从第一天起全量严格
+#   3) 覆盖率覆盖五个源码层，阈值随阶段抬升
+# ============================================================================
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "testgen-service"
+version = "0.1.0"
+description = "测试用例生成服务：代码解析 → 测试点 → 用例（含全量/增量双通道）"
+readme = "ARCHITECTURE.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "python-dotenv",
+    "openai",
+    "httpx",
+    "requests",
+    "PyYAML",
+]
+
+[project.optional-dependencies]
+dev = ["ruff", "pytest", "pytest-cov", "pytest-timeout"]
+# P3 运行时 UI 发现 / 用例执行：默认不装，启用时 pip install -e ".[runtime]"
+runtime = ["playwright"]
+
+# ---------------------------------------------------------------------------
+# Ruff：统一的 lint + format 规则（pre-commit 与 CI 共用，保证不跑偏）
+# 基础:E/F/I/W；防坑:B/C4/UP；质量:SIM(简化)/RUF(ruff)/PLR(重构)/BLE(盲异常)/C90(复杂度)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["venv", ".venv", "__pycache__", "data", "outputs", ".git"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "C4", "UP", "SIM", "RUF", "PLR", "BLE", "C90"]
+ignore = ["E501", "B008", "C401", "C408", "PLR2004", "SIM105", "RUF001", "RUF002", "RUF003"]
+# 圈复杂度上限：新代码单函数不得超过 10，从源头杜绝上帝函数
+mccabe.max-complexity = 10
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "engine", "service", "cli", "workspace", "output"]
+lines-after-imports = 2
+
+[tool.ruff.lint.per-file-ignores]
+# 测试层：需在导入前自举 sys.path，故放行 E402
+"tests/*" = ["E402"]
+# 本地工具脚本：同上（在 import core/engine 前把仓库根塞进 sys.path）
+"tools/*" = ["E402"]
+# 门禁脚本：从 legacy 同源复制，保留其存量风格豁免（不阻塞，登记为债务）
+"scripts/*" = ["PLR", "BLE", "C90", "E402", "E702", "F841"]
+# P3 运行时 UI 发现：与浏览器驱动（Playwright）交互，其异常层次宽、随版本变化，
+# 本模块策略是「驱动级失败一律转 EngineError 或记入结果，绝不中断主链路」，
+# 故集中放行 BLE001；每个捕获点均已注明理由（见 engine/runtime_ui.py）。
+"engine/runtime_ui.py" = ["BLE001"]
+# 统一 LLM 降级链：需「捕获所有异常后区分额度不可用（→降级）与真实错误（→失败）」，
+# 故放行 BLE001；函数参数为语义明确的 keyword-only 入参（8 个），放行 PLR0913。
+"engine/llm_fallback.py" = ["BLE001", "PLR0913"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ---------------------------------------------------------------------------
+# Mypy：只查明显类型错误；tests/ 不纳入（以 pytest 运行为准）
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = false
+warn_redundant_casts = true
+disallow_untyped_defs = false
+exclude = ["venv", "tests"]
+
+# ---------------------------------------------------------------------------
+# Bandit：安全扫描（各源码层；跳过测试与数据）
+# skips 说明（与 legacy 同口径，均为本仓库上下文下的误报）：
+# B105 硬编码口令——口令走 .env + .gitignore，命中项为状态键/颜色值
+# B603/B607 subprocess 启动——内部受控调用（git），输入可信
+# B608 硬编码 SQL——命中处为 SQL 片段拼接；真实写入走参数化查询
+# ---------------------------------------------------------------------------
+[tool.bandit]
+exclude_dirs = ["venv", "tests", "data", "outputs", ".git"]
+skips = ["B101", "B311", "B105", "B603", "B607", "B608"]
+
+# ---------------------------------------------------------------------------
+# Coverage：覆盖率门禁（基线阈值，随阶段抬升：P2=5 → P3=30 → P4=50）
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["core", "engine", "service", "workspace", "output"]
+omit = ["*/venv/*", "*/tests/*"]
+[tool.coverage.report]
+fail_under = 60
+show_missing = true
+
+# ---------------------------------------------------------------------------
+# pytest：tests/ 为真实测试层
+# 不固定 `--basetemp`：默认落到系统 %TEMP%（如 C:\Users\<user>\AppData\Local\Temp），
+# 该目录在受限环境的「批量删除安全守卫」里属于豁免范围（_is_under_os_tmp_dir），
+# rmtree 清理不会触发 SystemExit。早期曾固定到项目内 `.pytest_tmp`，反而因不在豁免
+# 范围内、目录累积数百文件而触发守卫假失败，故回归默认 OS 临时目录。
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# 每用例 120s 超时：防止浏览器/子进程偶发挂起冻结整套门禁（见 F13/执行器已知限制）。
+# 真实 UI 执行仅在 RUNTIME_UI_ENABLED=on 或指定 channel 时启，测试环境默认跳过。
+addopts = "-q --timeout=120"
+# live_llm：依赖真实外部服务（DashScope LLM / 运行时 UI 发现）的端到端用例。
+# 沙箱/CI 网络不稳定时这些用例会触发每用例 120s 超时，故默认门禁排除，
+# 仅在可达网络环境手动 `pytest -m live_llm` 运行。
+markers = [
+    "live_llm: 依赖真实外部服务（LLM / 运行时 UI）的端到端用例，门禁默认跳过",
+]
