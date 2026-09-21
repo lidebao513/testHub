@@ -27,7 +27,7 @@ from .client import generate, get_cases
 from .mapping import TESTGEN_ID_TAG_PREFIX
 
 # 用 testhub 约定解析请求体（标题/步骤最大长度等由模型约束兜底）
-_PARSERS = [JSONParser()]
+_PARSERS = [JSONParser]
 
 
 def _ensure_tag(tags: Any, tag: str) -> list:
