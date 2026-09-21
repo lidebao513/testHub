@@ -78,6 +78,8 @@ _DIMENSION_SLOTS: dict[str, dict[str, int]] = {
         Dimension.UI_ERROR_DISPLAY.value: 6,
         Dimension.UI_EMPTY_STATE.value: 7,
         Dimension.UI_SERVER_ERROR.value: 8,
+        # scope 增强（2026-09-21）：业务函数异常路径维度（独立槽位）
+        Dimension.BIZ_ABNORMAL.value: 9,
     },
     TPType.SECURITY.value: {
         Dimension.AUTH_MISS.value: 0,
@@ -90,6 +92,8 @@ _DIMENSION_SLOTS: dict[str, dict[str, int]] = {
         # G-9：多租户数据隔离（资源级隔离，独立槽位，避免与越权撞号）
         Dimension.TENANT_READ.value: 5,
         Dimension.TENANT_WRITE.value: 6,
+        # scope 增强（2026-09-21）：业务函数输入校验维度（独立槽位，避免与越权撞号）
+        Dimension.BIZ_INPUT_VALID.value: 7,
     },
     TPType.BOUNDARY.value: {
         Dimension.PARAM_ILLEGAL.value: 0,
@@ -99,6 +103,8 @@ _DIMENSION_SLOTS: dict[str, dict[str, int]] = {
         Dimension.UI_REPEAT_CLICK.value: 3,
         Dimension.UI_DEEPLINK.value: 4,
         Dimension.UI_POOR_VIEWPORT.value: 5,
+        # scope 增强（2026-09-21）：业务函数参数边界维度（独立槽位，避免与超长输入撞号）
+        Dimension.BIZ_BOUNDARY.value: 6,
     },
     # G-8：性能/并发（独立行为维度「性能」，slot 0=基线 1=并发）
     TPType.PERFORMANCE.value: {
@@ -316,6 +322,26 @@ _UI_ABNORMAL_EXPECT: dict[str, str] = {
 }
 
 
+# 业务函数（code 通道）四档维度预期文案（scope 增强，2026-09-21）。
+# 业务函数无 HTTP 语义，不套鉴权/状态码断言，改为「代码层可判定」的命题。
+_BUSINESS_EXPECT: dict[str, str] = {
+    Dimension.BIZ_LOGIC.value: (
+        "函数被正常调用（合法入参、依赖可用）→ 返回预期结果/状态，不抛未捕获异常"
+    ),
+    Dimension.BIZ_INPUT_VALID.value: (
+        "未校验/未转义的入参（空值、超长、特殊字符、注入 payload）传入函数 → "
+        "应被校验或转义并拒绝/降级，不产生注入、越权数据写入或脏数据"
+    ),
+    Dimension.BIZ_BOUNDARY.value: (
+        "空值/None/超长/越界参数传入 → 应被参数校验捕获并返回明确错误，不崩溃、不产生静默错误结果"
+    ),
+    Dimension.BIZ_ABNORMAL.value: (
+        "依赖故障/非法状态/异常分支被触发 → 应被捕获并转换为结构化错误"
+        "（不静默吞错、不向上抛未捕获异常），调用方拿到可判定的失败信号"
+    ),
+}
+
+
 def _expect_of(
     fp: FunctionalPoint, category: str, dimension: str = "", auth_mode: str = "", resource: str = ""
 ) -> str:
@@ -325,14 +351,19 @@ def _expect_of(
     不再写死 401/403——对本来就该公开的接口写死 401/403 会产出假失败。
     `resource`（G-3）用于把越权用例变成「操作他人资源应被拒」的具体命题。
     """
+    # scope 增强（2026-09-21）：业务函数三档维度无 HTTP 语义，优先走 _BUSINESS_EXPECT
+    if dimension in _BUSINESS_EXPECT:
+        return _BUSINESS_EXPECT[dimension]
     if category == TPType.NORMAL.value:
         return expect_of(fp.ftype, fp.name, _method_of(fp))
     if category == TPType.ABNORMAL.value:
         return _abnormal_expect(dimension)
     if category == TPType.SECURITY.value:
-        if dimension in (Dimension.UI_INPUT_INJECT.value, Dimension.UI_UNAUTH_PAGE.value):
-            return _UI_EXPECT[dimension]
-        return _security_expect(dimension, auth_mode, resource)
+        return (
+            _UI_EXPECT[dimension]
+            if dimension in (Dimension.UI_INPUT_INJECT.value, Dimension.UI_UNAUTH_PAGE.value)
+            else _security_expect(dimension, auth_mode, resource)
+        )
     if category == TPType.PERFORMANCE.value:  # G-8
         return _PERF_EXPECT.get(
             dimension,
@@ -389,6 +420,10 @@ _BEST_EFFORT_DIMS: frozenset[str] = frozenset(
         Dimension.TENANT_WRITE.value,
         # G-8：并发不串数据需并行压测 harness，单请求探活无法验证 → 诚实 SKIPPED
         Dimension.PERF_CONCURRENCY.value,
+        # scope 增强（2026-09-21）：业务函数三档维度无运行时 harness 可自动验证 → 诚实 SKIPPED
+        Dimension.BIZ_ABNORMAL.value,
+        Dimension.BIZ_INPUT_VALID.value,
+        Dimension.BIZ_BOUNDARY.value,
     }
 )
 # 限流可发突发请求自动验证（置信度高于纯故障注入类）
@@ -404,7 +439,7 @@ def _confidence_of(dimension: str) -> float:
     return 1.0
 
 
-def plan_of(fp: FunctionalPoint) -> list[tuple[str, str]]:
+def plan_of(fp: FunctionalPoint) -> list[tuple[str, str]]:  # noqa: C901
     """功能点 → [(行为维度, 子维度)]，**与 legacy 展开规则逐条对齐**（P1 契约冻结）。
 
     对齐表（顺序即产出顺序，也是 tp_id 序号的规范顺序）：
@@ -470,6 +505,16 @@ def plan_of(fp: FunctionalPoint) -> list[tuple[str, str]]:
     if fp.ftype == FType.UI.value:
         # #222：元素级功能点按 kind 展开「正常 + 安全 + 边界」（解决地址通道只到正常维度）
         return _UI_PLAN_BY_KIND.get(_ui_kind_of(fp), _UI_PLAN_DEFAULT)
+    if fp.ftype == FType.BUSINESS.value:
+        # scope 增强（2026-09-21）：业务函数原本只展开「正常」一档，导致纯 Python 代码仓库
+        # （如 Django 后端 apps/）的安全/边界/异常维度永不成点。现统一派生四档，与
+        # API/PAGE/UI 通道对齐；tp_id 用规范 ordinal（base*10+slot），同一份代码编号不变。
+        return [
+            (TPType.NORMAL.value, Dimension.BIZ_LOGIC.value),
+            (TPType.SECURITY.value, Dimension.BIZ_INPUT_VALID.value),
+            (TPType.BOUNDARY.value, Dimension.BIZ_BOUNDARY.value),
+            (TPType.ABNORMAL.value, Dimension.BIZ_ABNORMAL.value),
+        ]
     if fp.ftype == FType.COMPONENT.value:
         return [(TPType.NORMAL.value, Dimension.INTERACTIVE.value)]
     return [(TPType.NORMAL.value, Dimension.BIZ_LOGIC.value)]

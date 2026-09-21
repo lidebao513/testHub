@@ -27,7 +27,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 让脚本可 `python scripts/check_enums.py` 直接运行（须在同层 `from core.enums import` 之前）
 sys.path.insert(0, ROOT)
-EXCLUDE_DIRS = {"venv", "node_modules", "__pycache__", ".git"}
+EXCLUDE_DIRS = {"venv", ".venv", "node_modules", "__pycache__", ".git"}
 SKIP_FILES = {"enums.py", "check_enums.py", "migrate_enums.py"}  # 自身/迁移脚本
 SKIP_PREFIXES = ("selftest_", "verify_", "test_")  # 历史脚手架
 

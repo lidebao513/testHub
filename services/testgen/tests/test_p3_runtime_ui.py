@@ -409,7 +409,8 @@ def test_spa_without_anchor_tags_is_still_covered() -> None:
 def testlaunch_browser_passes_channel_and_wraps_error() -> None:
     pw = _StubBrowserLauncher()
     assert runtime_ui.launch_browser(pw, _opts(channel="msedge")) == "BROWSER"
-    assert pw.kwargs == {"headless": True, "channel": "msedge"}
+    # 无显式代理时强制直连：launch_browser 会附带 --no-proxy-server 规避本机透明代理
+    assert pw.kwargs == {"headless": True, "channel": "msedge", "args": ["--no-proxy-server"]}
     with pytest.raises(EngineError, match="浏览器启动失败"):
         runtime_ui.launch_browser(
             _StubBrowserLauncher(exc=RuntimeError("no browser")), runtime_ui.RuntimeUiOptions()

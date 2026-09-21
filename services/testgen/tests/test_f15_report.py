@@ -588,28 +588,35 @@ def test_http_report_write_and_coverage(fresh_db):
 
 
 # ---------------------------------------------------------------- CLI 入口
-def test_cli_report_command(fresh_db, capsys):
+def test_cli_report_command(fresh_db):
+    import io
     import json
+    from contextlib import redirect_stderr, redirect_stdout
 
     from cli.main import main
 
     pid = _project("cli")
     _seed(pid, case_tp_ids=["TP-1"])
     _record(pid, "RUN-1", [("TP-1", "pass")], at="2026-09-11T10:00:00")
-    capsys.readouterr()
 
-    rc = main(["report", "--project", str(pid), "--batch", "RUN-1"])
+    # 重定向到活的 StringIO（而非 capsys）：规避 pytest 在用例间关闭 stderr 捕获流
+    # 导致的 "I/O operation on closed file"；每次调用独立缓冲区以分离输出。
+    out1 = io.StringIO()
+    with redirect_stdout(out1), redirect_stderr(io.StringIO()):
+        rc = main(["report", "--project", str(pid), "--batch", "RUN-1"])
     assert rc == 0
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(out1.getvalue())
     assert payload["project_id"] == pid
     assert payload["batch_id"] == "RUN-1"
     assert payload["metrics"]["pass"] == 1
     assert payload["coverage"]["tp_rate"] == 100.0
     assert payload["outputs"]["markdown"].endswith("REPORT.md")
 
-    rc2 = main(["report", "--project", str(pid), "--no-write"])
+    out2 = io.StringIO()
+    with redirect_stdout(out2), redirect_stderr(io.StringIO()):
+        rc2 = main(["report", "--project", str(pid), "--no-write"])
     assert rc2 == 0
-    assert json.loads(capsys.readouterr().out)["outputs"] == {}
+    assert json.loads(out2.getvalue())["outputs"] == {}
 
 
 # ---------------------------------------------------------------- 枚举单一真值源

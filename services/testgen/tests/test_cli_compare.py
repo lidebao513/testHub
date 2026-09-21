@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import io
 import json
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -34,8 +34,12 @@ def _verdict(verdict: str = "pass", rule: str = "pass") -> CompareVerdict:
 def _run(argv: list[str]) -> tuple[int, str]:
     from cli import main as cli_main
 
+    # 同时重定向 stdout/stderr 到活的 StringIO：避免直接写到 pytest 的捕获流
+    # （pytest 在用例间会关闭其 stderr CaptureIO，导致 main() 内 print(..., file=sys.stderr)
+    # 抛 "I/O operation on closed file"；重定向到独立缓冲区可彻底隔离）。
     buf = io.StringIO()
-    with redirect_stdout(buf):
+    err = io.StringIO()
+    with redirect_stdout(buf), redirect_stderr(err):
         rc = cli_main.main(argv)
     return rc, buf.getvalue()
 

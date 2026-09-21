@@ -307,14 +307,12 @@ class VerdictRequest(BaseModel):
     dimension: str = Field("", description="子维度（如 安全-越权 / priv_esc / 安全-鉴权缺失）")
     auth_mode: str | None = Field(None, description="期望鉴权接线（required/optional/absent）")
     observed_status: int | None = Field(None, description="执行后实际 HTTP 状态码（无则不可判定）")
-    observed_body_has_sensitive: bool = Field(
-        False, description="响应体是否疑似泄露敏感信息"
-    )
-    expected_denied: bool = Field(
-        False, description="该用例是否期望被拒绝（无凭证/越权）"
-    )
+    observed_body_has_sensitive: bool = Field(False, description="响应体是否疑似泄露敏感信息")
+    expected_denied: bool = Field(False, description="该用例是否期望被拒绝（无凭证/越权）")
     tenant_identity: str = Field("", description="越权复测双身份标识（仅作证据）")
-    raw_evidence: dict[str, Any] = Field(default_factory=dict, description="调用方自由附带的额外证据")
+    raw_evidence: dict[str, Any] = Field(
+        default_factory=dict, description="调用方自由附带的额外证据"
+    )
 
 
 # ============================================================================

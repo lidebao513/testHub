@@ -8,12 +8,14 @@ testgen 原生枚举是中文（``TPType.SECURITY.value="安全"``、``Dimension
 但调用方（testhub / curl）可能传英文别名。``_normalize_*`` 在调用 ``_judge`` 前把入参归一到
 testgen 原生中文词汇，避免「英文 category 落不到 _CATEGORY_KIND 而被误判为 normal」这类漂移。
 """
+
 from __future__ import annotations
 
 from typing import Any
 
 # 复用 executor 既有判定纯函数（不复制、不重写）
 from engine.executor import _dimension_kind, _judge
+
 
 # ---------------------------------------------------------------------------
 # 安全语义裁判取值
@@ -29,21 +31,34 @@ _DENY_KINDS = frozenset({"auth", "priv_esc"})
 # 双语归一化：调用方可能传中文（testgen 原生）或英文别名，统一回中文词汇
 # ---------------------------------------------------------------------------
 _CATEGORY_NORMALIZE: dict[str, str] = {
-    "正常": "正常", "normal": "正常",
-    "异常": "异常", "abnormal": "异常",
-    "安全": "安全", "security": "安全",
-    "边界": "边界", "boundary": "边界",
-    "性能": "性能", "performance": "性能",
+    "正常": "正常",
+    "normal": "正常",
+    "异常": "异常",
+    "abnormal": "异常",
+    "安全": "安全",
+    "security": "安全",
+    "边界": "边界",
+    "boundary": "边界",
+    "性能": "性能",
+    "performance": "性能",
 }
 
 # 子维度：英文别名 → testgen 原生中文（供 _dimension_kind 的 PRIV_ESC 子串识别）
 _DIM_NORMALIZE: dict[str, str] = {
-    "priv_esc": "安全-越权", "越权": "安全-越权", "privilege_escalation": "安全-越权",
-    "auth_miss": "安全-鉴权缺失", "鉴权缺失": "安全-鉴权缺失", "auth_missing": "安全-鉴权缺失",
-    "token_expired": "安全-令牌过期", "令牌过期": "安全-令牌过期",
-    "param_illegal": "边界-参数缺失/非法", "参数缺失/非法": "边界-参数缺失/非法",
-    "ui_unauth_page": "安全-未授权访问", "未授权访问": "安全-未授权访问",
-    "ui_input_inject": "安全-输入注入", "输入注入": "安全-输入注入",
+    "priv_esc": "安全-越权",
+    "越权": "安全-越权",
+    "privilege_escalation": "安全-越权",
+    "auth_miss": "安全-鉴权缺失",
+    "鉴权缺失": "安全-鉴权缺失",
+    "auth_missing": "安全-鉴权缺失",
+    "token_expired": "安全-令牌过期",
+    "令牌过期": "安全-令牌过期",
+    "param_illegal": "边界-参数缺失/非法",
+    "参数缺失/非法": "边界-参数缺失/非法",
+    "ui_unauth_page": "安全-未授权访问",
+    "未授权访问": "安全-未授权访问",
+    "ui_input_inject": "安全-输入注入",
+    "输入注入": "安全-输入注入",
 }
 
 
@@ -100,11 +115,8 @@ def run_five_dimension_verdict(facts: dict[str, Any]) -> dict[str, Any]:
 
     verdict = VERDICT_SAFE if passed else VERDICT_UNSAFE
     if expected_denied:
-        if not passed:
-            # 期望被拒却放通 = 安全漏洞（应拒却放通）
-            reason = f"应被拒绝却放通：{detail}"
-        else:
-            reason = f"已按预期拒绝：{detail}"
+        # 期望被拒却放通 = 安全漏洞（应拒却放通）
+        reason = f"应被拒绝却放通：{detail}" if not passed else f"已按预期拒绝：{detail}"
     else:
         reason = detail
 

@@ -270,11 +270,13 @@ def test_precondition_matches_layer(sample_repo):
 
 # ---------------------------------------------------------------- 安全维度
 def test_security_dimension_scoped_to_api_page_ui(sample_repo):
-    """安全维度在 #222 后**有意**扩展到 api + page(未授权访问) + ui(输入注入)，但绝不泄漏到 component/business。
+    """安全维度在 #222 后**有意**扩展到 api + page(未授权访问) + ui(输入注入)；
+    scope 增强（2026-09-21）进一步把「业务函数输入校验」(BIZ_INPUT_VALID) 纳入安全维度，
+    使纯 Python 代码仓库也能产出安全测试点（按代码层语义，不套 HTTP 鉴权断言）。
 
-    把关「安全测试点来自哪类功能点」：覆盖 api/page/ui 是设计内（对应接口鉴权缺失、
-    未登录直访受限页、向输入/表单注入脚本三类真实风险）；component/business 仍不产出
-    安全测试点，避免对纯展示组件/无鉴权语义的业务函数编造安全用例。
+    把关「安全测试点来自哪类功能点」：api/page/ui 覆盖接口鉴权缺失、未登录直访受限页、
+    向输入/表单注入脚本三类真实风险；business 覆盖入参校验/注入（代码层）；
+    component（纯展示组件）仍不产出安全测试点，避免对无语义组件编造安全用例。
     """
     from core.enums import FType
 
@@ -285,9 +287,13 @@ def test_security_dimension_scoped_to_api_page_ui(sample_repo):
         if tps:
             secured_ftypes.add(fp.ftype)
     assert secured_ftypes, "接口功能点应展开出安全测试点"
-    assert secured_ftypes <= {FType.API.value, FType.PAGE.value, FType.UI.value}
+    assert secured_ftypes <= {
+        FType.API.value,
+        FType.PAGE.value,
+        FType.UI.value,
+        FType.BUSINESS.value,
+    }
     assert FType.COMPONENT.value not in secured_ftypes
-    assert FType.BUSINESS.value not in secured_ftypes
 
 
 def test_privilege_escalation_dimension_matches_legacy(sample_repo):
@@ -372,7 +378,15 @@ def test_expansion_plan_matches_legacy_parity_table():
             (TPType.SECURITY.value, Dimension.UI_INPUT_INJECT.value),
             (TPType.BOUNDARY.value, Dimension.UI_LONG_INPUT.value),
         ],
-        ("business", "f"): [(TPType.NORMAL.value, Dimension.BIZ_LOGIC.value)],
+        # scope 增强（2026-09-21）：业务函数原本只展开「正常」，纯 Python 代码仓库
+        # （如 Django 后端 apps/）的安全/边界/异常维度永不成点。现派生四档，
+        # 安全维度改用代码层语义 BIZ_INPUT_VALID（入参校验/注入），不套 HTTP 鉴权断言。
+        ("business", "f"): [
+            (TPType.NORMAL.value, Dimension.BIZ_LOGIC.value),
+            (TPType.SECURITY.value, Dimension.BIZ_INPUT_VALID.value),
+            (TPType.BOUNDARY.value, Dimension.BIZ_BOUNDARY.value),
+            (TPType.ABNORMAL.value, Dimension.BIZ_ABNORMAL.value),
+        ],
     }
     for (ftype, name), expected in cases.items():
         fp = FunctionalPoint(fp_id="FP-p", ftype=ftype, file_path="a", name=name, title=name)

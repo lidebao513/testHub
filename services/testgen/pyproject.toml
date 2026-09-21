@@ -24,14 +24,19 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "python-dotenv",
-    "openai",
+    # openai 锁 <2：本机索引的 3.x 系列是残缺的命名空间包（顶层无 OpenAI 类、
+    # 另依赖 httpx2），import openai / patch("openai.OpenAI") 均失败；标准 SDK 为 1.x 线。
+    "openai>=1.99,<2",
     "httpx",
     "requests",
     "PyYAML",
 ]
 
 [project.optional-dependencies]
-dev = ["ruff", "pytest", "pytest-cov", "pytest-timeout"]
+# pytest 锁 8.x：9.0 起 capture 机制变更导致 capsys/redirect_stdout 在用例间
+# 把全局 stderr 捕获流提前关闭，触发 "I/O operation on closed file"（CLI 测试
+# 类失败）；项目测试套件按 pytest 8 编写，锁 <9 保证可复现且不被该回归击穿。
+dev = ["ruff", "pytest>=8.2,<9", "pytest-cov>=5", "pytest-timeout>=2.2,<3"]
 # P3 运行时 UI 发现 / 用例执行：默认不装，启用时 pip install -e ".[runtime]"
 runtime = ["playwright"]
 
