@@ -1203,6 +1203,19 @@ def stage_cases(
     progress: ProgressFn | None,
 ) -> None:
     tps = result.test_points
+    # 按 tp_id 去重（保留首条）：tp_id=md5(fp_id|category|area|method|dimension|ordinal)[:8]
+    # 在真实代码下存在生日碰撞，不去重会让 generate_cases 产出重复 tp_id 的用例，
+    # 触发 reconcile_cases 的 ContractViolation（设计约定「在生成侧修正编号，而非在落库去重」）。
+    # 去重放在生成用例之前，使 cases 的 tp_id 天然唯一、下游对账守卫通过。
+    _seen: set[str] = set()
+    _deduped: list[TestPoint] = []
+    for _tp in tps:
+        if _tp.tp_id in _seen:
+            continue
+        _seen.add(_tp.tp_id)
+        _deduped.append(_tp)
+    tps = _deduped
+    result.test_points = tps
     auth_profile = result.auth_profile
     _emit(progress, "case_gen", tp=len(tps))
     s = get_settings()

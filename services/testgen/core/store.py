@@ -105,6 +105,16 @@ def replace_functional_points(
     own = conn is None
     conn = conn or connect()
     try:
+        # 按 fp_id 去重：相同 fp_id 即同一功能点（fp_extract 注释明确要求「落库静默合并」）。
+        # 真实代码下 fp_id=md5(ftype|file_path|name)[:8] 存在生日碰撞，不去重会触发
+        # functional_points(project_id, contract_id) 唯一约束导致整批生成失败。
+        seen: set[str] = set()
+        deduped: list[FunctionalPoint] = []
+        for fp in fps:
+            if fp.fp_id in seen:
+                continue
+            seen.add(fp.fp_id)
+            deduped.append(fp)
         with conn:
             conn.execute("DELETE FROM functional_points WHERE project_id = ?", (pid,))
             rows = [
@@ -122,7 +132,7 @@ def replace_functional_points(
                     fp.module,
                     fp.semantic,
                 )
-                for fp in fps
+                for fp in deduped
             ]
             conn.executemany(
                 "INSERT INTO functional_points(project_id, commit_ref, file_path, name,"
@@ -173,6 +183,17 @@ def replace_test_points(
     conn = conn or connect()
     try:
         created = _now()
+        # 按 tp_id 去重：相同 tp_id 即同一测试点（与 functional_points 同理）。
+        # tp_id=md5(fp_id|category|area|method|dimension|ordinal)[:8] 在真实代码下存在生日碰撞，
+        # 不去重会触发 test_points(project_id, tp_id) 唯一约束；1:1 用例生成（tc_no==tp_id）
+        # 也会连带撞 cases(project_id, tp_id)，故在此一次性去重最稳妥。
+        seen: set[str] = set()
+        deduped: list[TestPoint] = []
+        for tp in tps:
+            if tp.tp_id in seen:
+                continue
+            seen.add(tp.tp_id)
+            deduped.append(tp)
         rows = [
             (
                 pid,
@@ -195,7 +216,7 @@ def replace_test_points(
                 tp.origin,
                 1 if tp.unverified else 0,
             )
-            for tp in tps
+            for tp in deduped
         ]
         with conn:
             conn.execute("DELETE FROM test_points WHERE project_id = ?", (pid,))
