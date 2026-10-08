@@ -91,8 +91,14 @@ def git_toplevel(repo: str | Path) -> str | None:
 def repo_escape_blocked(repo: str | Path) -> bool:
     """判断目标目录的 git 顶层是否**越过了**目标目录本身（逃逸）。
 
-    典型场景：目标目录里只有一个孤儿 `.git`，git 会向上找到父仓库，
-    导致 diff 拿到的是父仓库的变更——必须阻断。
+    典型场景（两种都算逃逸，必须阻断）：
+    - 目标目录里只有一个孤儿 `.git`，git 会向上找到父仓库；
+    - 目标目录的 `.git` **残缺**（如只剩 hooks/objects/refs、缺 HEAD/config），
+      git 判定它无效后同样向上找到父仓库——实测会把 fetch/checkout 打到父项目上。
+
+    逃逸的充要特征：解析出的顶层不是目标目录本身（含「顶层是目标的祖先」——
+    历史实现用 `top_path not in target.parents` 做白名单，恰好把祖先逃逸放行了，
+    已修正：只要顶层 ≠ 目标即阻断）。
     """
     top = git_toplevel(repo)
     if not top:
@@ -102,7 +108,7 @@ def repo_escape_blocked(repo: str | Path) -> bool:
         top_path = Path(top).resolve()
     except OSError:
         return True
-    return top_path != target and top_path not in target.parents
+    return top_path != target
 
 
 # G1-2 修复：缩写 SHA（不完整 40 位 hex）会被 `git rev-parse` 做前缀模糊匹配，

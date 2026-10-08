@@ -86,10 +86,85 @@ def test_classify_target_states(tmp_path):
     assert pull.classify_target(occupied) == pull.STATE_NOT_REPO
 
 
+def test_broken_git_dir_is_escape_blocked(tmp_path):
+    """残缺 .git（缺 HEAD/config）必须判逃逸，绝不能把 fetch/checkout 打到父仓库。
+
+    背景：workspaces/research-agent 的 .git 被删得只剩 hooks/objects/refs（无 HEAD），
+    git 判其无效后向上逃逸到 testhub_platform 父仓库；历史实现的逃逸判定把
+    「顶层是目标的祖先」白名单放行了，导致 update 模式差点改写父项目。
+    """
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    _init_repo_with_commit(parent)
+    child = parent / "ws"
+    (child / ".git" / "objects").mkdir(parents=True)
+    (child / ".git" / "refs").mkdir()
+    (child / ".git" / "hooks").mkdir()
+    # .git 缺 HEAD/config → git 判定无效 → 向上解析到 parent 仓库
+    assert diff_tag.git_toplevel(str(child))  # 能解析出顶层（=parent）
+    assert diff_tag.repo_escape_blocked(child) is True
+    assert pull.classify_target(child) == pull.STATE_ESCAPE
+
+
 def test_rev_of_head_is_resolvable():
     """真实仓库里 HEAD 必须能解析出 sha（与 legacy 同口径）。"""
     sha = pull._rev(str(REPO_ROOT), "HEAD")
     assert len(sha) >= 7
+
+
+def _init_repo_with_commit(repo: Path) -> None:
+    """tmp_path 里造一个带单次提交的真实本地仓库（不触网）。"""
+    assert pull._run(["git", "init", "-q", str(repo)]).returncode == 0
+    (repo / "hello.py").write_text("print('hi')\n", encoding="utf-8")
+    assert pull._run(["git", "-C", str(repo), "add", "."]).returncode == 0
+    assert (
+        pull._run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "init",
+            ]
+        ).returncode
+        == 0
+    )
+
+
+def test_update_restores_empty_worktree(tmp_path):
+    """工作树被清空（只剩 .git）时，update 模式必须自动恢复 HEAD 文件。
+
+    背景：fetch 只更新 .git 不补工作树；空工作树会让代码分析扫 0 个文件 →
+    生成 0 功能点 0 用例却全程报 success（静默失败）。
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo_with_commit(repo)
+    # 模拟工作树被清空：删除 .git 之外的所有文件
+    (repo / "hello.py").unlink()
+    result = pull.pull("", str(repo))
+    assert (repo / "hello.py").exists(), "空工作树未被恢复"
+    assert result.success is True
+    assert any("工作树为空" in e for e in result.errors)
+
+
+def test_update_keeps_nonempty_worktree_untouched(tmp_path):
+    """工作树有文件时绝不 checkout --force（保护未提交改动）。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo_with_commit(repo)
+    local = (repo / "hello.py").read_text(encoding="utf-8")
+    (repo / "untracked.txt").write_text("user file", encoding="utf-8")
+    result = pull.pull("", str(repo))
+    assert (repo / "untracked.txt").exists(), "未提交文件不得被清除"
+    assert (repo / "hello.py").read_text(encoding="utf-8") == local
+    assert result.success is True
+    assert not any("工作树为空" in e for e in result.errors)
 
 
 def test_refs_available_partial_failure_is_false():

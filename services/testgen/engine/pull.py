@@ -227,6 +227,7 @@ def pull(
     # state == repo：远端更新（失败降级为离线）
     result.mode = PullMode.UPDATE.value
     _update_from_remote(result, local_path, deepen=deepen)
+    _ensure_worktree(result, local_path)
     return _finish_refs(result, local_path, base=base, target=target)
 
 
@@ -292,6 +293,36 @@ def _update_from_remote(result: PullResult, local_path: str, *, deepen: int) -> 
 
 def _is_shallow(repo: str | Path) -> bool:
     return _git(repo, ["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true"
+
+
+def _worktree_has_files(repo: str | Path) -> bool:
+    """工作树是否还有 .git 之外的文件（只剩 .git = 空工作树）。"""
+    try:
+        return any(p.name != ".git" for p in Path(repo).iterdir())
+    except OSError:
+        return False
+
+
+def _ensure_worktree(result: PullResult, local_path: str) -> None:
+    """工作树为空（只剩 .git）时恢复 HEAD，避免「取码 ok 但扫不到任何文件」。
+
+    为什么要做：fetch 只更新 `.git`，不补工作树文件。若工作树被清空（历史遗留、
+    人工清理或异常中断），后续代码分析会扫到 0 个文件——生成 0 功能点 0 用例，
+    却全程报 success，是比报错更难发现的静默失败。恢复动作只针对「空工作树」
+    这一确定状态，不碰有任何用户文件的工作树（绝不动未提交改动）。
+    """
+    if _worktree_has_files(local_path):
+        return
+    if not _rev(local_path, "HEAD"):
+        result.errors.append("工作树为空且 HEAD 不可解析，跳过恢复")
+        return
+    cp = _git(local_path, ["checkout", "--force", "HEAD"])
+    if cp.returncode == 0:
+        if not result.checked_out:
+            result.checked_out = "HEAD"
+        result.errors.append("提示：工作树为空（仅剩 .git），已自动恢复 HEAD 的文件")
+    else:
+        result.errors.append(f"工作树为空且恢复失败：{(cp.stderr or cp.stdout).strip()[:160]}")
 
 
 def _finish_refs(
