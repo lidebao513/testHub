@@ -1,0 +1,1293 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>testgen 代码生成平台</title>
+<style>
+  :root {
+    --primary: #409eff;
+    --primary-dark: #337ecc;
+    --bg: #f5f7fa;
+    --panel: #ffffff;
+    --text: #1f2933;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --ok: #67c23a;
+    --bad: #f56c6c;
+    --warn: #e6a23c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); font-size: 14px;
+  }
+  .layout { display: flex; min-height: 100vh; }
+  .sidebar {
+    width: 220px; background: #1f2933; color: #fff; padding: 20px 0; flex-shrink: 0;
+  }
+  .sidebar .brand {
+    font-size: 16px; font-weight: 700; padding: 0 20px 16px; border-bottom: 1px solid #374151;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .sidebar .brand .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--primary); }
+  .sidebar nav a {
+    display: block; padding: 12px 20px; color: #cbd5e1; text-decoration: none; font-size: 14px;
+    border-left: 3px solid transparent;
+  }
+  .sidebar nav a:hover, .sidebar nav a.active { background: #111827; color: #fff; border-left-color: var(--primary); }
+  .main { flex: 1; padding: 24px 32px; overflow: auto; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;
+  }
+  .topbar h1 { font-size: 20px; margin: 0; }
+  .badge {
+    padding: 4px 12px; border-radius: 12px; font-size: 13px; font-weight: 600;
+  }
+  .badge.ok { background: #ecf5e1; color: var(--ok); }
+  .badge.bad { background: #fde2e2; color: var(--bad); }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.04);
+  }
+  .card h2 { font-size: 16px; margin: 0 0 16px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .tag { font-size: 12px; background: #ecf5ff; color: var(--primary); padding: 2px 8px; border-radius: 6px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  input[type=text], input[type=number], textarea {
+    width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 14px; font-family: inherit; background: #fff; color: var(--text);
+  }
+  textarea { min-height: 90px; resize: vertical; font-family: "SFMono-Regular", Consolas, monospace; font-size: 13px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 200px; }
+  .scopes { display: flex; gap: 16px; margin-top: 6px; }
+  .scopes label { display: inline-flex; align-items: center; gap: 4px; margin: 0; color: var(--text); }
+  button {
+    margin-top: 14px; background: var(--primary); color: #fff; border: none; padding: 9px 20px;
+    border-radius: 6px; font-size: 14px; cursor: pointer; font-weight: 600;
+  }
+  button:hover { background: var(--primary-dark); }
+  button.ghost { background: #fff; color: var(--primary); border: 1px solid var(--primary); }
+  .result {
+    margin-top: 14px; padding: 12px; border-radius: 6px; white-space: pre-wrap; font-size: 13px;
+    font-family: "SFMono-Regular", Consolas, monospace; display: none; border: 1px solid var(--border);
+    background: #f8fafc; max-height: 320px; overflow: auto;
+  }
+  .result.ok { border-color: #c2e7b0; background: #f0f9eb; color: #529b2e; }
+  .result.error { border-color: #fab6b6; background: #fef0f0; color: #c45656; }
+  .result.warn { border-color: #f3d19e; background: #fdf6ec; color: #b88230; }
+  .result.info { border-color: #c6e2ff; background: #ecf5ff; color: #337ecc; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; }
+  th { background: #f8fafc; color: var(--muted); font-weight: 600; }
+  .poll-box { display: none; margin-top: 14px; padding: 14px; border: 1px dashed var(--primary); border-radius: 8px; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  /* headless 嵌入模式（?embed=1）：隐藏自带导航与品牌头，只渲染指定功能区 */
+  body.embed .layout { display: block; }
+  body.embed .sidebar { display: none; }
+  body.embed .main { padding: 16px 20px; }
+  body.embed .topbar h1 { display: none; }
+  /* 历史任务区 */
+  .task { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; background: var(--panel); }
+  .task-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .task-label { font-weight: 600; flex: 1; min-width: 120px; word-break: break-all; }
+  .task-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  #gen_history h3 { margin: 0 0 10px; font-size: 15px; }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand"><span class="dot"></span>testgen 代码生成</div>
+    <nav>
+      <a href="#sec-generate" class="active">代码生成</a>
+      <a href="#sec-sync">用例回流</a>
+      <a href="#sec-verdict">安全判定</a>
+      <a href="#sec-defects">安全缺陷</a>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <h1>testgen 代码生成平台</h1>
+      <span id="svc_badge" class="badge">● 检测中…</span>
+    </div>
+
+    <!-- 代码生成 -->
+    <section id="sec-generate" class="card">
+      <h2>代码生成 <span class="tag">POST /api/testgen/generate</span></h2>
+      <div class="row">
+        <div>
+          <label>所属项目 project *</label>
+          <select id="gen_project" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg,#fff);color:inherit">
+            <option value="">加载中…</option>
+          </select>
+        </div>
+      </div>
+      <label>代码来源（二选一）</label>
+      <div class="scopes">
+        <label><input type="radio" name="gen_mode" value="git" checked onchange="onGenModeChange()" /> 🌐 Git 仓库地址</label>
+        <label><input type="radio" name="gen_mode" value="local" onchange="onGenModeChange()" /> 📁 本地路径</label>
+      </div>
+      <div class="row">
+        <div id="gen_local_wrap" style="display:none">
+          <label>本地路径 local_path</label>
+          <input type="text" id="gen_local" placeholder="如 C:/repo/myproject 或 /app/code" />
+        </div>
+        <div id="gen_repo_wrap">
+          <label>仓库地址 repo_url</label>
+          <input type="text" id="gen_repo" placeholder="如 https://codeup.aliyun.com/org/repo.git" />
+        </div>
+      </div>
+      <div id="gen_range_wrap">
+        <label>分析范围（从 Git 获取时的取码方式）</label>
+        <div class="scopes">
+          <label><input type="radio" name="gen_range" value="full" checked onchange="onGenRangeChange()" /> 全部（整仓分析）</label>
+          <label><input type="radio" name="gen_range" value="incremental" onchange="onGenRangeChange()" /> 增量（仅变更文件）</label>
+        </div>
+      </div>
+      <label>生成维度 scopes</label>
+      <div class="scopes">
+        <label><input type="checkbox" name="gen_scope" value="正常" checked /> 正常</label>
+        <label><input type="checkbox" name="gen_scope" value="安全" checked /> 安全</label>
+        <label><input type="checkbox" name="gen_scope" value="边界" checked /> 边界</label>
+        <label><input type="checkbox" name="gen_scope" value="异常" checked /> 异常</label>
+      </div>
+      <div id="gen_changed_wrap" style="display:none">
+        <label>变更文件 changed_files（增量模式必填，逗号分隔）</label>
+        <input type="text" id="gen_changed" placeholder="如 a.py, b.py" />
+      </div>
+      <div id="gen_remote_block" style="margin-top:12px;border:1px dashed var(--border);border-radius:8px;padding:10px 12px">
+        <label style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="gen_remote" onchange="onRemoteChange()" /> 🔐 远程只读取码（不克隆代码，走 Codeup OpenAPI，需凭证 + 组织 ID；中心版必填）
+        </label>
+        <div id="gen_remote_fields" style="display:none;margin-top:8px">
+          <div class="row">
+            <div>
+              <label>凭证类型 credential_type *</label>
+              <select id="gen_cred_type" onchange="onCredTypeChange()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg,#fff);color:inherit">
+                <option value="pat">个人访问令牌 PAT</option>
+                <option value="ak_sk">AccessKey ID + Secret</option>
+              </select>
+            </div>
+            <div>
+              <label>组织 ID OrganizationId *</label>
+              <input type="text" id="gen_org_id" placeholder="如 69cf2ce1f167bac7fd252020（Codeup 组织 ID，从「个人设置→已加入组织」地址栏获取）" />
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label id="gen_cred_label">个人访问令牌 PAT *</label>
+              <input type="text" id="gen_access_key" placeholder="PAT 令牌或 AccessKey ID" autocomplete="off" />
+            </div>
+            <div id="gen_sk_wrap" style="display:none">
+              <label>AccessKey Secret *</label>
+              <input type="password" id="gen_secret" placeholder="仅 AK/SK 模式需要" autocomplete="new-password" />
+            </div>
+          </div>
+          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="gen_remember_cred" checked /> 记住凭据（完整凭据仅保存在本机浏览器 localStorage，不上传服务端存储）</label>
+        </div>
+      </div>
+      <div id="gen_scan_block" style="margin-top:14px;border:1px dashed var(--primary);border-radius:8px;padding:12px 14px">
+        <div class="row">
+          <div>
+            <label>目标 ref（可选）</label>
+            <select id="gen_target_ref" onchange="previewCommits('target')" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg,#fff);color:inherit">
+              <option value="">默认分支（留空）</option>
+            </select>
+          </div>
+          <div>
+            <label>基线 ref（可选，用于识别新增/修改）</label>
+            <select id="gen_base_ref" onchange="previewCommits('base')" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg,#fff);color:inherit">
+              <option value="">不识别变更状态（留空）</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <button type="button" onclick="loadBranches()" style="margin-top:0">🔄 加载分支</button>
+          <span class="muted">远程模式填仓库地址+凭据后点「加载分支」，下拉展示分支名与最近提交时间；选定分支可查看其提交内容作为对比数据。</span>
+        </div>
+        <div id="gen_commit_preview" style="margin-top:8px;display:none"></div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px">
+          <button type="button" onclick="doScan()" style="margin-top:0">🔍 快速扫描</button>
+          <span class="muted">扫描只列出「可勾选模块」（不克隆代码）。</span>
+        </div>
+        <div id="gen_scan_items" style="margin-top:10px"></div>
+      </div>
+      <div class="hint">提交后服务异步生成，页面自动按 task_id 轮询进度。所属项目为必选项，用于用例回流与任务归属。</div>
+      <button onclick="doGenerate()">生成测试用例</button>
+      <div id="gen_result" class="result"></div>
+
+      <div id="poll_box" class="poll-box">
+        <div><b>任务 task_id：</b><span id="poll_task">-</span></div>
+        <div style="margin-top:6px"><b>当前状态：</b><span id="poll_state">-</span></div>
+        <div class="hint">每 3 秒自动轮询，终态（success/failed/cancelled）后停止。</div>
+        <div id="poll_detail" style="margin-top:8px"></div>
+      </div>
+
+      <div id="gen_history" style="margin-top:24px;border-top:1px dashed var(--border);padding-top:16px">
+        <h3>历史任务 <span class="tag">localStorage 持久化</span></h3>
+        <div id="gen_history_list"></div>
+        <div id="gen_history_empty" class="hint" style="display:none">暂无历史任务。提交生成后，任务会记录在此；刷新页面重新进入仍可查看，未完成的任务将自动继续轮询。</div>
+      </div>
+    </section>
+
+    <!-- 用例回流 -->
+    <section id="sec-sync" class="card">
+      <h2>用例回流 <span class="tag">POST /api/testgen/sync</span></h2>
+      <div class="row">
+        <div>
+          <label>testhub 项目 project_id *</label>
+          <input type="number" id="sync_pid" placeholder="如 28" />
+        </div>
+        <div>
+          <label>testgen 项目 testgen_project_id *</label>
+          <input type="number" id="sync_tpid" placeholder="如 2" />
+        </div>
+        <div>
+          <label>套件 suite_id（可选）</label>
+          <input type="number" id="sync_sid" placeholder="可选" />
+        </div>
+      </div>
+      <div class="hint">把某 testgen 项目已生成用例映射并幂等回流到 testhub TestCase（tg:&lt;tc_no&gt; 幂等键）。</div>
+      <button onclick="doSync()">回流用例</button>
+      <div id="sync_result" class="result"></div>
+    </section>
+
+    <!-- 安全判定 -->
+    <section id="sec-verdict" class="card">
+      <h2>安全判定 <span class="tag">POST /api/testgen/security-verdict</span></h2>
+      <label>observations（JSON 数组）</label>
+      <textarea id="ver_json" placeholder='[{"case_id":1,"title":"越权访问","tags":["security"],"project_id":28,"observed_status":"fail","auth_mode":"token","expected_denied":true}]'></textarea>
+      <label>默认 project_id（可选，缺省回填）</label>
+      <input type="number" id="ver_pid" placeholder="如 28" />
+      <div class="hint">对 security 标记用例执行观测做安全语义裁判；应拒却放通自动建安全缺陷。</div>
+      <button onclick="doVerdict()">提交判定</button>
+      <div id="ver_result" class="result"></div>
+    </section>
+
+    <!-- 安全缺陷 -->
+    <section id="sec-defects" class="card">
+      <h2>安全缺陷 <span class="tag">GET /api/defects/defects/?defect_type=security</span></h2>
+      <button class="ghost" onclick="loadDefects()">查询安全缺陷列表</button>
+      <div id="def_result" class="result"></div>
+      <div id="def_table"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+const API = {
+  generate: '/api/testgen/generate',
+  scan: '/api/testgen/scan',
+  branches: '/api/testgen/branches',
+  commits: '/api/testgen/commits',
+  describe: '/api/testgen/describe',
+  sync: '/api/testgen/sync',
+  verdict: '/api/testgen/security-verdict',
+  health: '/api/testgen/health',
+  task: (id) => `/api/testgen/tasks/${id}`,
+  cancel: (id) => `/api/testgen/tasks/${id}/cancel`,
+  cases: (id) => `/api/testgen/tasks/${id}/cases`,
+  defects: '/api/defects/defects/?defect_type=security',
+};
+
+// 鉴权令牌：默认走同源会话（直接访问 /testgen/ 并已登录 Django 时）；
+// 若被 SPA（:3000）以 iframe 嵌入，则由父页经 postMessage 注入 JWT，改用 Bearer。
+window.__tgToken = null;
+window.addEventListener('message', function (e) {
+  const d = e.data;
+  if (d && d.type === 'TESTGEN_AUTH_TOKEN' && d.token) {
+    window.__tgToken = String(d.token);
+    // 回执，便于父页确认令牌已生效
+    try { e.source && e.source.postMessage({ type: 'TESTGEN_AUTH_ACK' }, '*'); } catch (_) {}
+    loadHealth();
+    loadProjects();
+  }
+});
+
+async function api(url, opts = {}) {
+  opts.credentials = 'same-origin';
+  const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+  if (window.__tgToken) headers['Authorization'] = 'Bearer ' + window.__tgToken;
+  opts.headers = headers;
+  const r = await fetch(url, opts);
+  let data = null;
+  try { data = await r.json(); } catch (e) { /* 非 JSON 响应 */ }
+  return { status: r.status, data };
+}
+
+function show(el, msg, kind = 'info') {
+  const e = document.getElementById(el);
+  if (!e) return;
+  e.className = 'result ' + (kind || 'info');
+  e.style.display = 'block';
+  e.textContent = (typeof msg === 'object') ? JSON.stringify(msg, null, 2) : String(msg);
+}
+
+// ---- 服务状态 ----
+async function loadHealth() {
+  const badge = document.getElementById('svc_badge');
+  const { status, data } = await api(API.health);
+  if (status === 401) {
+    badge.textContent = '● 未登录';
+    badge.className = 'badge bad';
+    badge.title = '请先在 /admin/ 登录后再使用本页面';
+    return;
+  }
+  if (data && data.available) {
+    badge.textContent = '● sidecar 可达';
+    badge.className = 'badge ok';
+    badge.title = data.base_url;
+  } else {
+    badge.textContent = '● sidecar 不可达';
+    badge.className = 'badge bad';
+    badge.title = (data && data.detail) || ('HTTP ' + status);
+  }
+}
+
+// ---- 历史任务持久化（localStorage，刷新/重进不丢失）----
+const TASKS_KEY = 'testgen_gen_tasks';
+const tgTimers = {};
+function loadTasks() { try { return JSON.parse(localStorage.getItem(TASKS_KEY)) || []; } catch (_) { return []; } }
+function saveTasks(arr) { try { localStorage.setItem(TASKS_KEY, JSON.stringify(arr.slice(0, 50))); } catch (_) {} }
+function findTask(id) { return loadTasks().find(t => t.task_id === id); }
+function upsertTask(t) { const arr = loadTasks().filter(x => x.task_id !== t.task_id); arr.unshift(t); saveTasks(arr); }
+function fmtState(s) {
+  s = (s || '').toLowerCase();
+  const map = { pending: '等待中', queued: '排队中', running: '生成中', success: '成功', failed: '失败', cancelled: '已取消' };
+  return map[s] || s || '-';
+}
+function stateBadgeClass(s) {
+  s = (s || '').toLowerCase();
+  if (s === 'success') return 'ok';
+  if (['failed', 'cancelled'].includes(s)) return 'bad';
+  return '';
+}
+function shortId(id) { return id && id.length > 14 ? id.slice(0, 8) + '…' + id.slice(-4) : (id || '-'); }
+function isTerminal(s) { return ['success', 'failed', 'cancelled'].includes((s || '').toLowerCase()); }
+
+function renderHistory() {
+  const list = document.getElementById('gen_history_list');
+  const empty = document.getElementById('gen_history_empty');
+  if (!list) return;
+  const tasks = loadTasks();
+  if (!tasks.length) { list.innerHTML = ''; if (empty) empty.style.display = 'block'; return; }
+  if (empty) empty.style.display = 'none';
+  list.innerHTML = tasks.map(t => {
+    const live = !isTerminal(t.state);
+    return `
+    <div class="task" data-task="${escapeHtml(t.task_id)}">
+      <div class="task-head">
+        <span class="task-label">${escapeHtml(t.label || '(未命名)')}</span>
+        <span class="badge ${stateBadgeClass(t.state)}" id="hstate-${escapeHtml(t.task_id)}">● ${fmtState(t.state)}</span>
+        ${live ? `<button id="hstop-${escapeHtml(t.task_id)}" onclick="tgStop('${escapeHtml(t.task_id)}')" style="border-color:#c0392b;color:#c0392b">■ 停止</button>` : ''}
+        <button onclick="tgRefresh('${escapeHtml(t.task_id)}')">刷新</button>
+        <button onclick="tgToggle('${escapeHtml(t.task_id)}')">详情</button>
+      </div>
+      <div class="task-meta">task_id: ${escapeHtml(shortId(t.task_id))} · 提交于 ${escapeHtml((t.created_at || '').replace('T', ' ').slice(0, 19))} · 维度: ${(t.scopes || []).join('/')}${t.progress != null && live ? ` · 进度 ${Math.round(t.progress * 100)}%` : ''}</div>
+      <div id="hdetail-${escapeHtml(t.task_id)}" class="result" style="display:none"></div>
+    </div>`;
+  }).join('');
+}
+
+// ---- 任务详情结构化渲染（进度 / 阶段 / 生成用例 / 错误；原始 JSON 折叠）----
+const STAGE_CN = {
+  pull: '取码', scan: '代码扫描', fp_extract: '功能点提取', diff_tag: '变更打标',
+  auth_scan: '鉴权画像', tp_expand: '测试点展开', semantic_enrich: '语义增强',
+  prd_ingest: 'PRD 解析', llm_design: 'LLM 用例设计', runtime_ui: '运行时 UI 发现',
+  case_gen: '用例生成', persist: '落库', done: '完成',
+};
+const CASE_TYPE_CN = { normal: '正常', abnormal: '异常', security: '安全', boundary: '边界' };
+function stageCn(s) { return STAGE_CN[(s || '').toLowerCase()] || (s || '-'); }
+function caseTypeCn(v) { return CASE_TYPE_CN[(v || '').toLowerCase()] || (v || '-'); }
+
+function taskDetailHtml(data) {
+  const st = (data.state || data.status || '').toLowerCase();
+  const prog = Math.round((Number(data.progress) || 0) * 100);
+  const running = !isTerminal(st);
+  const barColor = st === 'failed' ? '#c0392b' : st === 'success' ? '#27ae60' : st === 'cancelled' ? '#7f8c8d' : '#2980b9';
+  let html = `<div style="margin-bottom:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">`
+    + `<b>${fmtState(st)}</b>`
+    + (data.stage ? `<span class="muted">阶段：${escapeHtml(stageCn(data.stage))}</span>` : '')
+    + (running ? `<span class="muted">每 3 秒自动刷新</span>` : '')
+    + (running ? `<button onclick="tgStop('${escapeHtml(data.task_id)}')" style="border-color:#c0392b;color:#c0392b">■ 停止任务</button>` : '')
+    + `</div>`
+    + `<div style="height:8px;border:1px solid var(--border,#ccc);border-radius:5px;overflow:hidden;margin-bottom:8px">`
+    + `<div style="height:100%;width:${prog}%;background:${barColor};transition:width .4s"></div></div>`
+    + `<div class="muted" style="font-size:12px;margin-bottom:6px">进度 ${prog}%`
+    + (data.created_at ? ` · 提交 ${escapeHtml(String(data.created_at).replace('T', ' ').slice(0, 19))}` : '')
+    + (data.finished_at ? ` · 结束 ${escapeHtml(String(data.finished_at).replace('T', ' ').slice(0, 19))}` : '')
+    + (data.project_id ? ` · testgen 项目 #${escapeHtml(String(data.project_id))}` : '')
+    + `</div>`;
+  if (data.error) html += `<div style="color:#c0392b;margin:6px 0">错误：${escapeHtml(String(data.error))}</div>`;
+  const res = data.result;
+  if (res && typeof res === 'object') {
+    const counts = res.counts || {};
+    const stat = [];
+    if (counts.functional_points != null) stat.push(`功能点 ${counts.functional_points}`);
+    if (counts.test_points != null) stat.push(`测试点 ${counts.test_points}`);
+    if (counts.cases != null) stat.push(`用例 ${counts.cases}`);
+    if (res.mode) stat.push(`模式 ${res.mode === 'incremental' ? '增量' : '全量'}`);
+    if (stat.length) html += `<div style="margin:4px 0">${stat.map(s => `<span class="tag">${escapeHtml(s)}</span>`).join(' ')}</div>`;
+    (res.notes || []).slice(0, 5).forEach(n => { html += `<div class="muted" style="font-size:12px">· ${escapeHtml(String(n))}</div>`; });
+  }
+  if (st === 'success' && data.project_id) {
+    html += `<div id="hcases-${escapeHtml(data.task_id)}" class="muted" style="margin-top:6px">正在加载生成的测试用例…</div>`;
+  }
+  html += `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">原始数据（JSON）</summary>`
+    + `<pre class="result" style="max-height:320px;overflow:auto">${escapeHtml(JSON.stringify(data, null, 2))}</pre></details>`;
+  return html;
+}
+
+// 用例模板详情：与 TEST_CASES.md（output/writer.py）同一张模板——
+// 类型/优先级/测试类型/模块/前置条件/预期结果/步骤（seq. [类型] 描述）
+function caseTemplateHtml(c) {
+  const expect = c.expect || (Array.isArray(c.steps) && c.steps[0] && c.steps[0].expect) || '';
+  const ds = Array.isArray(c.doc_steps) ? c.doc_steps : [];
+  let html = `<div>类型：${caseTypeCn(c.case_type)}　优先级：${escapeHtml(c.priority || '-')}　测试类型：${c.test_type === '更新' ? '更新' : '全量'}　层：${c.ctype === 'e2e' ? 'UI' : '接口'}</div>`
+    + `<div>模块：${escapeHtml(c.module || '-')}</div>`
+    + `<div>前置条件：${escapeHtml(c.precondition || '无')}</div>`
+    + `<div>预期结果：${escapeHtml(expect || '-')}</div>`;
+  if (ds.length) {
+    html += `<div style="margin-top:2px">步骤：</div><ol style="margin:2px 0 0 18px;padding:0">`
+      + ds.map(s => `<li>${escapeHtml(String(s.type || ''))}：${escapeHtml(String(s.desc || ''))}</li>`).join('')
+      + `</ol>`;
+  }
+  return html;
+}
+
+async function loadTaskCases(id) {
+  const box = document.getElementById('hcases-' + id);
+  if (!box) return;
+  const { status, data } = await api(API.cases(id));
+  if (status !== 200 || !data || !data.ok) {
+    box.innerHTML = `<span class="muted">用例清单加载失败（HTTP ${status}）</span>`;
+    return;
+  }
+  const cases = Array.isArray(data.cases) ? data.cases : [];
+  if (!cases.length) { box.innerHTML = '<span class="muted">本项目当前无生效用例（本轮可能未产出新用例，或历史用例已全部置为 obsolete）。</span>'; return; }
+  const rows = cases.slice(0, 200).map((c, i) => {
+    const did = 'casedetail-' + id + '-' + i;
+    return `<tr style="cursor:pointer" title="点击展开/收起用例详情" onclick="const d=document.getElementById('${did}');d.style.display=d.style.display==='none'?'':'none'">`
+      + `<td style="white-space:nowrap">${escapeHtml(c.tc_no || '-')}</td>`
+      + `<td>${escapeHtml(c.title || '')}</td>`
+      + `<td style="white-space:nowrap">${caseTypeCn(c.case_type)}</td>`
+      + `<td style="white-space:nowrap">${escapeHtml(c.priority || '-')}</td>`
+      + `<td style="white-space:nowrap">${escapeHtml(c.module || '-')}</td>`
+      + `<td style="white-space:nowrap">${c.test_type === '更新' ? '更新' : '全量'}</td>`
+      + `<td style="white-space:nowrap">${c.ctype === 'e2e' ? 'UI' : '接口'}</td></tr>`
+      + `<tr id="${did}" style="display:none"><td colspan="7" style="background:rgba(127,127,127,.06);padding:8px 12px">${caseTemplateHtml(c)}</td></tr>`;
+  }).join('');
+  box.innerHTML = `<div style="margin-bottom:4px"><b>生成的测试用例</b>（共 ${cases.length} 条${cases.length > 200 ? '，展示前 200 条' : ''}，点击行展开用例模板详情）</div>`
+    + `<div style="max-height:320px;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">`
+    + `<thead><tr><th style="text-align:left">编号</th><th style="text-align:left">标题</th><th>维度</th><th>优先级</th><th>模块</th><th>类型</th><th>层</th></tr></thead>`
+    + `<tbody>${rows}</tbody></table></div>`;
+}
+
+async function tgPollInto(id, opts) {
+  opts = opts || {};
+  const { status, data } = await api(API.task(id));
+  const badge = document.getElementById('hstate-' + id);
+  const detail = document.getElementById('hdetail-' + id);
+  if (!data || !data.ok) {
+    if (badge) { badge.textContent = `● HTTP ${status}`; badge.className = 'badge bad'; }
+    if (detail && opts.expand) detail.innerHTML = `<pre class="result">${escapeHtml(JSON.stringify(data || {}, null, 2))}</pre>`;
+    return;
+  }
+  const st = data.state || data.status;
+  const t = findTask(id);
+  if (t) { t.state = st; t.progress = data.progress; upsertTask(t); }
+  if (badge) { badge.textContent = '● ' + fmtState(st); badge.className = 'badge ' + stateBadgeClass(st); }
+  // 终态后移除「停止」按钮
+  const stopBtn = document.getElementById('hstop-' + id);
+  if (stopBtn && isTerminal(st)) stopBtn.remove();
+  if (detail) {
+    if (opts.expand || detail.style.display !== 'none') {
+      detail.innerHTML = taskDetailHtml(data);
+      if (st === 'success' && data.project_id) loadTaskCases(id);
+    }
+  }
+  if (isTerminal(st) && tgTimers[id]) { clearInterval(tgTimers[id]); delete tgTimers[id]; }
+}
+function tgRefresh(id) { tgPollInto(id, { expand: true }); }
+async function tgStop(id) {
+  const btn = document.getElementById('hstop-' + id);
+  if (btn) { btn.disabled = true; btn.textContent = '停止中…'; }
+  await api(API.cancel(id), { method: 'POST' });
+  tgPollInto(id, {});
+}
+function tgToggle(id) {
+  const d = document.getElementById('hdetail-' + id);
+  if (!d) return;
+  const showIt = d.style.display === 'none';
+  d.style.display = showIt ? 'block' : 'none';
+  if (showIt) tgPollInto(id, { expand: true });
+}
+function restoreTasks() {
+  renderHistory();
+  loadTasks().forEach(t => {
+    if (!isTerminal(t.state)) {
+      tgPollInto(t.task_id);
+      tgTimers[t.task_id] = setInterval(() => tgPollInto(t.task_id), 3000);
+    }
+  });
+}
+
+// ---- 项目下拉（必选）----
+async function loadProjects() {
+  const sel = document.getElementById('gen_project');
+  if (!sel) return;
+  const { status, data } = await api('/api/projects/all/');
+  if (status !== 200 || !Array.isArray(data)) {
+    sel.innerHTML = '<option value="">项目列表加载失败（HTTP ' + status + '）</option>';
+    return;
+  }
+  sel.innerHTML = '<option value="">请选择项目 *</option>' +
+    data.map(p => '<option value="' + p.id + '">' + escapeHtml(p.name || ('项目 #' + p.id)) + ' (#' + p.id + ')</option>').join('');
+}
+
+function genMode() {
+  const el = document.querySelector('input[name=gen_mode]:checked');
+  return el ? el.value : 'git';
+}
+function genRange() {
+  const el = document.querySelector('input[name=gen_range]:checked');
+  return el ? el.value : 'full';
+}
+function onGenModeChange() {
+  const git = genMode() === 'git';
+  document.getElementById('gen_repo_wrap').style.display = git ? '' : 'none';
+  document.getElementById('gen_local_wrap').style.display = git ? 'none' : '';
+  document.getElementById('gen_range_wrap').style.display = git ? '' : 'none';
+  document.getElementById('gen_remote_block').style.display = git ? '' : 'none';
+  // 切换来源即清空已选扫描模块，避免跨来源误用
+  scanSelected = [];
+  const si = document.getElementById('gen_scan_items');
+  if (si) si.innerHTML = '';
+  onGenRangeChange();
+}
+function onGenRangeChange() {
+  const show = genMode() === 'git' && genRange() === 'incremental';
+  document.getElementById('gen_changed_wrap').style.display = show ? '' : 'none';
+}
+
+// ---- 远程只读取码凭据 ----
+const CRED_KEY = 'testgen_code_source_cred';
+function isMasked(s) { return /\*{4}/.test(String(s || '')); }
+function onRemoteChange() {
+  const on = document.getElementById('gen_remote').checked && genMode() === 'git';
+  document.getElementById('gen_remote_fields').style.display = on ? '' : 'none';
+  if (on) loadSavedCred();
+}
+function onCredTypeChange() {
+  const ak = document.getElementById('gen_cred_type').value === 'ak_sk';
+  document.getElementById('gen_cred_label').textContent = ak ? 'AccessKey ID *' : '个人访问令牌 PAT *';
+  document.getElementById('gen_access_key').placeholder = ak ? 'AccessKey ID' : 'PAT 令牌';
+  document.getElementById('gen_sk_wrap').style.display = ak ? '' : 'none';
+}
+function loadSavedCred() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(CRED_KEY) || 'null'); } catch (_) {}
+  if (saved) {
+    document.getElementById('gen_cred_type').value = saved.credential_type || 'pat';
+    document.getElementById('gen_org_id').value = saved.org_id || '';
+    // 回填完整凭据（仅存于本机 localStorage）；旧版本存的是脱敏掩码、无法还原，留空让用户重输一次
+    const ak = String(saved.access_key || '');
+    document.getElementById('gen_access_key').value = isMasked(ak) ? '' : ak;
+    const sk = String(saved.secret || '');
+    document.getElementById('gen_secret').value = isMasked(sk) ? '' : sk;
+    document.getElementById('gen_remember_cred').checked = true;
+    onCredTypeChange();
+  }
+}
+function collectCodeSource() {
+  const block = document.getElementById('gen_remote_block');
+  if (block.style.display === 'none') return null;
+  if (!document.getElementById('gen_remote').checked) return null;
+  const credential_type = document.getElementById('gen_cred_type').value;
+  const org_id = document.getElementById('gen_org_id').value.trim();
+  let access_key = document.getElementById('gen_access_key').value.trim();
+  const secret = document.getElementById('gen_secret').value.trim();
+  if (!org_id) { show('gen_result', '远程只读取码：组织 ID（OrganizationId）必填。', 'error'); return false; }
+  if (!access_key || isMasked(access_key)) { show('gen_result', '远程只读取码：凭证必填（回填的是脱敏掩码时请重新输入完整凭据）。', 'error'); return false; }
+  if (credential_type === 'ak_sk' && !secret) { show('gen_result', '远程只读取码：AK/SK 模式下 AccessKey Secret 必填。', 'error'); return false; }
+  const cs = { credential_type, org_id, access_key };
+  if (credential_type === 'ak_sk') cs.secret = secret;
+  if (document.getElementById('gen_remember_cred').checked) {
+    // 记住凭据：完整凭据仅保存在本机浏览器 localStorage（不上传服务端）。
+    // 不存掩码——掩码无法还原，回填后必被 isMasked 校验拦截，等于没记住。
+    try {
+      localStorage.setItem(CRED_KEY, JSON.stringify({
+        credential_type,
+        org_id,
+        access_key,
+        secret: credential_type === 'ak_sk' ? secret : '',
+      }));
+    } catch (_) {}
+  } else {
+    try { localStorage.removeItem(CRED_KEY); } catch (_) {}
+  }
+  return cs;
+}
+
+// ---- 快速扫描 + 模块勾选（C+E：先扫后选，再只对所选模块生成）----
+let scanSelected = [];  // 已勾选的文件路径集合（生成时作为 changed_files）
+let scanItems = [];          // 最近一次扫描结果（含 change_status）
+let scanStatusFilter = 'all';   // 变更状态筛选：all | added | modified
+
+// 业务模块中文名映射（目录前缀 → 中文），用于模块树展示；命中则中文优先、英文附注
+const MODULE_CN = {
+  'frontend': '前端',
+  'frontend/app': '前端-App',
+  'frontend/app/src': '前端-源码',
+  'frontend/app/src/pages': '前端-页面',
+  'frontend/app/src/pages/pc': 'PC端页面',
+  'frontend/app/src/pages/mobile': '移动端页面',
+  'frontend/app/src/components': '前端-组件',
+  'backend': '后端',
+  'backend/research-agent-source': '后端-主服务',
+  'backend/research-agent-source/auth': '统一认证/用户中心',
+  'backend/research-agent-source/chat': '智能对话',
+  'backend/research-agent-source/query': '问数',
+  'backend/research-agent-source/artifacts': '产物中心',
+  'backend/research-agent-source/audit': '审计',
+  'backend/research-agent-source/audit_ui': '审计-独立前端',
+  'backend/research-agent-source/email': '邮件',
+  'backend/research-agent-source/schedule': '日程/定时任务',
+  'backend/research-agent-source/pipeline': '研发流水线/事项督办',
+  'backend/research-agent-source/wecom': '企业微信渠道',
+  'backend/research-agent-source/tools': '中台能力/工具',
+  'backend/research-agent-source/skills': '技能',
+  'backend/research-agent-source/experts': '专家团',
+  'backend/research-agent-source/cockpit': '驾驶舱/经营分析',
+  'backend/research-agent-source/memory': '记忆管理',
+  'backend/research-agent-source/knowledge': '通用知识库',
+  'backend/research-agent-source/connectors': '连接器',
+};
+
+async function doScan() {
+  const mode = genMode();
+  const local_path = document.getElementById('gen_local').value.trim();
+  const repo_url = document.getElementById('gen_repo').value.trim();
+  const target_ref = (document.getElementById('gen_target_ref') || {}).value ? document.getElementById('gen_target_ref').value.trim() : '';
+  const base_ref = (document.getElementById('gen_base_ref') || {}).value ? document.getElementById('gen_base_ref').value.trim() : '';
+  let code_source = null;
+  if (mode === 'git') {
+    if (!repo_url) { show('gen_result', '请先填写仓库地址 repo_url 再扫描', 'error'); return; }
+    const cs = collectCodeSource();
+    if (cs === false) return;  // 凭据校验失败，已提示
+    code_source = cs;
+  } else {
+    if (!local_path) { show('gen_result', '请先填写本地路径 local_path 再扫描', 'error'); return; }
+  }
+  const body = {};
+  if (mode === 'git') {
+    body.repo_url = repo_url;
+    if (code_source) body.code_source = code_source;
+    if (target_ref) body.ref = target_ref;
+  } else {
+    body.local_path = local_path;
+  }
+  if (base_ref) body.base_ref = base_ref;
+
+  show('gen_result', '扫描中…（快速扫描只列模块，不克隆代码）', 'info');
+  const { status, data } = await api(API.scan, { method: 'POST', body: JSON.stringify(body) });
+  if (!data || !data.ok) {
+    const extra = (data && data.codeup_status) ? ` [Codeup ${data.codeup_status}]` : '';
+    show('gen_result', `HTTP ${status}：${(data && (data.error || data.message)) || '未知错误'}${extra}`, 'error');
+    const box = document.getElementById('gen_scan_items');
+    if (box) box.innerHTML = '';
+    scanSelected = [];
+    scanItems = [];
+    return;
+  }
+  scanItems = data.items || [];
+  renderScanItems(scanItems, data.source, data.summary, base_ref);
+  const s = data.summary;
+  const sumTxt = s ? `其中 新增 ${s.added}、修改 ${s.modified}、未变更 ${s.unchanged}。` : '';
+  show('gen_result',
+    `快速扫描完成：共 ${data.count} 个源模块（${data.source === 'remote' ? '远程只读' : '本地'}）。${sumTxt}`
+    + `勾选需要的模块后点「生成测试用例」（不勾=生成全部）。`,
+    data.count ? 'ok' : 'warn');
+}
+
+function scanCommonDirPrefix(paths) {
+  // 计算所有路径的最长公共目录前缀（用于剥掉共同前缀后按「第一个剩余目录段」划模块）
+  if (!paths.length) return '';
+  const dirs = paths.map(p => p.split('/').slice(0, -1));
+  let common = dirs[0].slice();
+  for (const d of dirs.slice(1)) {
+    let i = 0;
+    while (i < common.length && i < d.length && common[i] === d[i]) i++;
+    common = common.slice(0, i);
+    if (!common.length) break;
+  }
+  return common.length ? common.join('/') + '/' : '';
+}
+
+function scanModuleOf(path, prefix) {
+  const rel = prefix && path.startsWith(prefix) ? path.slice(prefix.length) : path;
+  const parts = rel.split('/');
+  return parts.length > 1 ? parts[0] : '(根目录)';
+}
+
+function scanBadge(st) {
+  if (st === 'added') return ' <span style="background:#16a34a;color:#fff;border-radius:4px;padding:0 6px;font-size:12px;font-weight:600;white-space:nowrap">新增</span>';
+  if (st === 'modified') return ' <span style="background:#d97706;color:#fff;border-radius:4px;padding:0 6px;font-size:12px;font-weight:600;white-space:nowrap">修改</span>';
+  return '';
+}
+
+// ---- 分支下拉 + 提交预览（目标/基线 ref）----
+async function loadBranches() {
+  const mode = genMode();
+  if (mode !== 'git') { show('gen_result', '加载分支仅远程模式可用（勾选「远程只读取码」并填写仓库地址 + 凭据）', 'warn'); return; }
+  const repo_url = document.getElementById('gen_repo').value.trim();
+  if (!repo_url) { show('gen_result', '请先填写仓库地址 repo_url 再加载分支', 'error'); return; }
+  const cs = collectCodeSource();
+  if (cs === false) return;  // 凭据校验失败，已提示
+  show('gen_result', '加载分支中…', 'info');
+  const { status, data } = await api(API.branches, { method: 'POST', body: JSON.stringify({ repo_url, code_source: cs }) });
+  if (!data || !data.ok) {
+    const extra = (data && data.codeup_status) ? ` [Codeup ${data.codeup_status}]` : '';
+    show('gen_result', `HTTP ${status}：${(data && (data.error || data.message)) || '未知错误'}${extra}`, 'error');
+    return;
+  }
+  const branches = (data.branches || []).slice().sort((a, b) => (b.commit.committed_date || '') < (a.commit.committed_date || '') ? -1 : 1);
+  fillBranchSelect('gen_target_ref', branches, '默认分支（留空）');
+  fillBranchSelect('gen_base_ref', branches, '不识别变更状态（留空）');
+  show('gen_result', `已加载 ${branches.length} 个分支，可在「目标 / 基线 ref」下拉选择；选定分支可查看其提交内容。`, 'ok');
+}
+
+function fillBranchSelect(selId, branches, emptyLabel) {
+  const sel = document.getElementById(selId);
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">${escapeHtml(emptyLabel)}</option>` + branches.map(b => {
+    const c = b.commit || {};
+    const when = (c.committed_date || c.authored_date || '').replace('T', ' ').replace('Z', '').slice(0, 16);
+    const title = (c.title || '').slice(0, 40);
+    const def = b.default_branch ? ' ★默认' : '';
+    const prot = b.protected ? ' 🔒' : '';
+    return `<option value="${escapeHtml(b.name)}">${escapeHtml(b.name + def + prot)} · ${escapeHtml(when)} · ${escapeHtml(title)}</option>`;
+  }).join('');
+  if (cur) sel.value = cur;
+}
+
+async function previewCommits(role) {
+  const selId = role === 'target' ? 'gen_target_ref' : 'gen_base_ref';
+  const ref = document.getElementById(selId).value;
+  const box = document.getElementById('gen_commit_preview');
+  if (!box) return;
+  if (!ref) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  const repo_url = document.getElementById('gen_repo').value.trim();
+  const cs = collectCodeSource();
+  box.style.display = 'block';
+  if (!repo_url || cs === false) {
+    box.innerHTML = `<div class="hint">需填写仓库地址且已配置凭据，才能查看分支 <b>${escapeHtml(ref)}</b> 的提交内容。</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="hint">正在加载分支 <b>${escapeHtml(ref)}</b> 的提交…</div>`;
+  const { status, data } = await api(API.commits, { method: 'POST', body: JSON.stringify({ repo_url, code_source: cs, ref }) });
+  if (!data || !data.ok) {
+    box.innerHTML = `<div class="hint" style="color:#dc2626">加载提交失败：HTTP ${status} ${(data && (data.error || data.message)) || '未知错误'}</div>`;
+    return;
+  }
+  const commits = data.commits || [];
+  const rows = commits.slice(0, 15).map(c => {
+    const when = (c.committed_date || c.authored_date || '').replace('T', ' ').replace('Z', '').slice(0, 16);
+    return `<div style="display:flex;gap:8px;align-items:center;margin:3px 0;font-size:13px">`
+      + `<code style="color:#64748b">${escapeHtml(c.short_id)}</code>`
+      + `<span>${escapeHtml((c.title || '').slice(0, 60))}</span>`
+      + `<span class="muted">${escapeHtml(when)} · ${escapeHtml(c.author_name || '')}</span></div>`;
+  }).join('');
+  box.innerHTML = `<div style="border:1px solid var(--border);border-radius:6px;padding:8px 10px;background:var(--bg,#fff)">`
+    + `<b>${escapeHtml(ref)}</b> 最近 ${commits.length} 条提交（对比数据）：`
+    + `<div style="margin-top:4px">${rows || '<span class="muted">无提交</span>'}</div></div>`;
+}
+
+// ---- 模块树：默认全展开的多级勾选（业务模块中文名 + 文件 + 具体功能项）----
+function buildScanTree(items) {
+  const root = { children: [] };
+  const dirMap = new Map();
+  function ensureDir(parts) {
+    let node = root;
+    let acc = [];
+    for (const seg of parts) {
+      acc.push(seg);
+      const key = acc.join('/');
+      if (!dirMap.has(key)) {
+        const child = { type: 'dir', name: seg, cn: MODULE_CN[key] || '', path: key, children: [] };
+        dirMap.set(key, child);
+        node.children.push(child);
+      }
+      node = dirMap.get(key);
+    }
+    return node;
+  }
+  for (const it of items) {
+    const segs = it.path.split('/');
+    const fname = segs[segs.length - 1];
+    const parent = segs.length > 1 ? ensureDir(segs.slice(0, -1)) : root;
+    const fileNode = {
+      type: 'file', name: fname, cn: '', path: it.path,
+      item: it, change_status: it.change_status || 'unchanged', children: [],
+    };
+    const syms = [
+      ...(it.functions || []).map(n => ({ kind: 'def', name: n })),
+      ...(it.classes || []).map(n => ({ kind: 'class', name: n })),
+    ];
+    for (const s of syms) {
+      fileNode.children.push({
+        type: 'func', kind: s.kind, name: s.name, path: it.path + '::' + s.name,
+        change_status: it.change_status || 'unchanged', children: [],
+      });
+    }
+    parent.children.push(fileNode);
+  }
+  return root.children;
+}
+
+function renderScanTree(nodes, parentEl, level, parentNodeEl) {
+  for (const node of nodes) {
+    const el = document.createElement('div');
+    el.className = 'scan_node';
+    el.dataset.type = node.type;
+    el.dataset.path = node.path;
+    el.dataset.status = node.change_status || '';
+    el._parentEl = parentNodeEl || null;
+    const indent = 4 + level * 16;
+    const row = document.createElement('div');
+    row.style.cssText = `display:flex;gap:6px;align-items:flex-start;margin:3px 0;padding-left:${indent}px;color:var(--text);cursor:pointer`;
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'scan_cb';
+    cb.dataset.type = node.type;
+    cb.dataset.path = node.path;
+    cb.dataset.status = node.change_status || '';
+    cb.style.marginTop = '3px';
+    cb.onchange = () => onScanCbChange(cb);
+    const label = document.createElement('span');
+    if (node.type === 'dir') {
+      const cn = node.cn ? ` <b>${escapeHtml(node.cn)}</b>` : '';
+      const caret = node.children.length ? '▾ ' : '';
+      label.innerHTML = `${caret}<span class="dir">📁 ${escapeHtml(node.name)}</span>${cn}`;
+    } else if (node.type === 'file') {
+      label.innerHTML = `<code>${escapeHtml(node.name)}</code>${scanBadge(node.change_status)} <span class="muted">${escapeHtml(node.item.ext || '')} · ${(node.item.bytes || 0).toLocaleString()}B</span>`;
+    } else {
+      const icon = node.kind === 'class' ? '📦' : '🔧';
+      // 叶子节点以「功能」视角标注：先显示原符号名，异步 LLM 翻译后替换为中文功能描述
+      label.innerHTML = `${icon} <span class="func_label" title="${escapeHtml(node.name)}">${escapeHtml(node.name)}</span> <span class="muted">(${node.kind === 'class' ? '功能(类)' : '功能'})</span>`;
+    }
+    if (node.children.length) {
+      label.onclick = (e) => {
+        if (e.target.tagName !== 'INPUT') {
+          const box = el.querySelector(':scope > .scan_children');
+          if (box) box.style.display = box.style.display === 'none' ? '' : 'none';
+        }
+      };
+    }
+    row.appendChild(cb);
+    row.appendChild(label);
+    el.appendChild(row);
+    parentEl.appendChild(el);
+    if (node.children.length) {
+      const box = document.createElement('div');
+      box.className = 'scan_children';
+      el.appendChild(box);
+      renderScanTree(node.children, box, level + 1, el);
+    }
+  }
+}
+
+function renderScanItems(items, source, summary, baseRef) {
+  scanSelected = [];
+  scanStatusFilter = 'all';
+  const box = document.getElementById('gen_scan_items');
+  if (!box) return;
+  if (!items.length) {
+    box.innerHTML = '<p class="muted">未扫描到可选项的源模块。可改用本地路径，或检查组织 ID / 凭证是否正确。</p>';
+    return;
+  }
+  const cnt = {
+    added: items.filter(it => it.change_status === 'added').length,
+    modified: items.filter(it => it.change_status === 'modified').length,
+  };
+  const hasChangeInfo = cnt.added + cnt.modified > 0;
+  const tree = buildScanTree(items);
+
+  const tabStyle = 'border:1px solid var(--border,#ccc);border-radius:6px;padding:2px 10px;cursor:pointer;font-size:13px';
+  let html = '<div class="hint">勾选要生成用例的业务模块（树形，默认全部展开，支持按层级级联勾选）：</div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0">'
+    + '<span class="muted">变更状态：</span>'
+    + `<button type="button" class="scan_tab" data-f="all" onclick="scanSetStatus('all')" style="${tabStyle}">全部 ${items.length}</button>`
+    + `<button type="button" class="scan_tab" data-f="added" onclick="scanSetStatus('added')" style="${tabStyle}">新增 ${cnt.added}</button>`
+    + `<button type="button" class="scan_tab" data-f="modified" onclick="scanSetStatus('modified')" style="${tabStyle}">修改 ${cnt.modified}</button>`
+    + '<label style="display:inline-flex;align-items:center;gap:6px;margin-left:14px;color:var(--text)">'
+    + '<input type="checkbox" id="scan_sel_all" onchange="toggleScanAll(this)" /> 全选 / 全不选<span class="muted">（仅当前可见）</span></label>'
+    + '</div>';
+  if (!hasChangeInfo) {
+    html += `<div class="hint" style="margin:0 0 6px">提示：扫描结果全部为「未变更」——在「基线 ref」加载分支并选择基线后重新扫描，即可按 新增 / 修改 筛选。</div>`;
+  }
+  html += '<div id="scan_list" style="margin-top:6px;max-height:380px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px 10px"></div>';
+  box.innerHTML = html;
+  const listEl = document.getElementById('scan_list');
+  renderScanTree(tree, listEl, 0, null);
+  scanRefreshFilter();
+  describeFuncNodes(items);
+}
+
+// ---- 叶子节点中文化：函数/类名 → 中文功能描述（LLM 批量翻译 + localStorage 缓存）----
+const FUNC_DESC_KEY = 'testgen_func_desc_v1';
+function loadFuncDescCache() { try { return JSON.parse(localStorage.getItem(FUNC_DESC_KEY)) || {}; } catch (_) { return {}; } }
+function saveFuncDescCache(map) {
+  try {
+    const all = loadFuncDescCache();
+    Object.assign(all, map);
+    const keys = Object.keys(all);
+    // 只保留最近 2000 条，防止 localStorage 膨胀
+    const trim = keys.slice(-2000);
+    const out = {};
+    trim.forEach(k => { out[k] = all[k]; });
+    localStorage.setItem(FUNC_DESC_KEY, JSON.stringify(out));
+  } catch (_) {}
+}
+
+let _describeSeq = 0;
+async function describeFuncNodes(items) {
+  // 收集本次扫描全部符号（path::name 唯一键），跳过已缓存项
+  const syms = [];
+  for (const it of items) {
+    for (const n of (it.functions || [])) syms.push({ path: it.path, name: n, kind: 'function' });
+    for (const n of (it.classes || [])) syms.push({ path: it.path, name: n, kind: 'class' });
+  }
+  if (!syms.length) return;
+  const seq = ++_describeSeq;
+  const cache = loadFuncDescCache();
+  const pending = syms.filter(s => !cache[s.path + '::' + s.name]);
+  const apply = (map) => {
+    if (seq !== _describeSeq) return; // 已有更新的扫描，丢弃过期结果
+    const merged = loadFuncDescCache();
+    Object.assign(merged, map);
+    document.querySelectorAll('#scan_list .scan_node[data-type="func"]').forEach(el => {
+      const key = el.dataset.path; // path::name
+      const desc = merged[key];
+      if (!desc) return;
+      const nameSpan = el.querySelector('.func_label');
+      if (nameSpan && nameSpan.textContent !== desc) {
+        nameSpan.textContent = desc;
+        nameSpan.title = key.split('::').pop();
+      }
+    });
+  };
+  apply({}); // 先应用缓存命中项
+  // 分批（每批 50 条）翻译未缓存符号
+  for (let i = 0; i < pending.length; i += 50) {
+    const batch = pending.slice(i, i + 50);
+    const { status, data } = await api(API.describe, { method: 'POST', body: JSON.stringify({ items: batch }) });
+    if (status === 200 && data && data.ok && data.descriptions && Object.keys(data.descriptions).length) {
+      saveFuncDescCache(data.descriptions);
+      apply(data.descriptions);
+    }
+  }
+}
+
+function scanSetStatus(f) {
+  scanStatusFilter = f;
+  scanRefreshFilter();
+}
+
+function onScanCbChange(cb) {
+  const el = cb.closest('.scan_node');
+  // 1) 级联到所有后代
+  el.querySelectorAll('input.scan_cb').forEach(d => { if (d !== cb) { d.checked = cb.checked; d.indeterminate = false; } });
+  // 2) 函数级勾选 → 同时勾选所属文件
+  if (cb.dataset.type === 'func' && cb.checked) {
+    const fileEl = el.closest('.scan_node[data-type="file"]');
+    if (fileEl) {
+      const fcb = fileEl.querySelector('input.scan_cb');
+      if (fcb) { fcb.checked = true; fcb.indeterminate = false; }
+    }
+  }
+  propagateUp(el);
+  onScanItemChange();
+}
+
+function propagateUp(el) {
+  let cur = el._parentEl;
+  while (cur) {
+    const box = cur.querySelector(':scope > .scan_children');
+    if (!box) break;
+    const childNodes = box.querySelectorAll(':scope > .scan_node');
+    const n = childNodes.length;
+    const checked = [...childNodes].filter(cn => cn.querySelector('input.scan_cb').checked).length;
+    const pcb = cur.querySelector('input.scan_cb');
+    if (pcb) {
+      pcb.indeterminate = checked > 0 && checked < n;
+      pcb.checked = checked === n;
+    }
+    cur = cur._parentEl;
+  }
+}
+
+function recomputeTree() {
+  const dirs = [...document.querySelectorAll('.scan_node[data-type="dir"]')];
+  dirs.sort((a, b) => b.dataset.path.split('/').length - a.dataset.path.split('/').length);
+  for (const cur of dirs) {
+    const box = cur.querySelector(':scope > .scan_children');
+    if (!box) continue;
+    const childNodes = box.querySelectorAll(':scope > .scan_node');
+    const n = childNodes.length;
+    const checked = [...childNodes].filter(cn => cn.querySelector('input.scan_cb').checked).length;
+    const pcb = cur.querySelector('input.scan_cb');
+    if (pcb) { pcb.indeterminate = checked > 0 && checked < n; pcb.checked = checked === n; }
+  }
+}
+
+function collectSelectedFiles() {
+  const set = new Set();
+  document.querySelectorAll('.scan_node[data-type="file"]').forEach(fel => {
+    const fcb = fel.querySelector('input.scan_cb');
+    const funcsChecked = [...fel.querySelectorAll(':scope > .scan_children input.scan_cb')].some(c => c.checked);
+    if ((fcb && fcb.checked) || funcsChecked) set.add(fcb.dataset.path);
+  });
+  return [...set];
+}
+
+function toggleScanAll(el) {
+  document.querySelectorAll('.scan_node[data-type="file"]').forEach(fel => {
+    if (fel.style.display === 'none') return;
+    const fcb = fel.querySelector('input.scan_cb');
+    if (fcb) { fcb.checked = el.checked; fcb.indeterminate = false; }
+    fel.querySelectorAll(':scope > .scan_children input.scan_cb').forEach(fc => { fc.checked = el.checked; fc.indeterminate = false; });
+  });
+  recomputeTree();
+  onScanItemChange();
+}
+
+function scanRefreshFilter() {
+  // 文件节点按变更状态显隐
+  document.querySelectorAll('.scan_node[data-type="file"]').forEach(fel => {
+    const st = fel.dataset.status || 'unchanged';
+    fel.style.display = (scanStatusFilter === 'all' || st === scanStatusFilter) ? '' : 'none';
+  });
+  // 函数节点跟随父文件
+  document.querySelectorAll('.scan_node[data-type="func"]').forEach(fel => {
+    const fEl = fel.closest('.scan_node[data-type="file"]');
+    fel.style.display = (fEl && fEl.style.display !== 'none') ? '' : 'none';
+  });
+  // 目录节点：有可见后代文件才显示（自深向浅）
+  const dirs = [...document.querySelectorAll('.scan_node[data-type="dir"]')];
+  dirs.sort((a, b) => b.dataset.path.split('/').length - a.dataset.path.split('/').length);
+  for (const cur of dirs) {
+    const hasVisible = [...cur.querySelectorAll('.scan_node[data-type="file"]')].some(f => f.style.display !== 'none');
+    cur.style.display = hasVisible ? '' : 'none';
+  }
+  // 状态 tab 高亮
+  document.querySelectorAll('.scan_tab').forEach(b => {
+    const active = b.getAttribute('data-f') === scanStatusFilter;
+    b.style.background = active ? 'var(--primary,#2563eb)' : 'transparent';
+    b.style.color = active ? '#fff' : 'inherit';
+    b.style.borderColor = active ? 'var(--primary,#2563eb)' : 'var(--border,#ccc)';
+  });
+  onScanItemChange();
+}
+
+function onScanItemChange() {
+  const all = document.getElementById('scan_sel_all');
+  scanSelected = collectSelectedFiles();
+  if (!all) return;
+  const files = [...document.querySelectorAll('.scan_node[data-type="file"]')];
+  const visible = files.filter(f => f.style.display !== 'none');
+  const visibleChecked = visible.filter(f => {
+    const cb = f.querySelector('input.scan_cb');
+    const fc = [...f.querySelectorAll(':scope > .scan_children input.scan_cb')].some(c => c.checked);
+    return (cb && cb.checked) || fc;
+  });
+  all.checked = visible.length > 0 && visibleChecked.length === visible.length;
+}
+
+// ---- 代码生成 + 轮询 ----
+async function doGenerate() {
+  const projectSel = document.getElementById('gen_project');
+  const project_id = projectSel.value;
+  if (!project_id) { show('gen_result', '请先选择所属项目（必选项）。', 'error'); projectSel.focus(); return; }
+  const project_name = projectSel.options[projectSel.selectedIndex] ? projectSel.options[projectSel.selectedIndex].textContent.replace(/\s*\(#\d+\)$/, '') : '';
+
+  const mode = genMode();
+  const range = genRange();
+  const local_path = document.getElementById('gen_local').value.trim();
+  const repo_url = document.getElementById('gen_repo').value.trim();
+  const scopes = [...document.querySelectorAll('input[name=gen_scope]:checked')].map(c => c.value);
+
+  const body = { project_id: Number(project_id), scopes, gen_range: range, mode: mode === 'git' ? 'git' : 'local' };
+  if (mode === 'git') {
+    if (!repo_url) { show('gen_result', 'Git 仓库模式下 repo_url 必填。', 'error'); return; }
+    body.repo_url = repo_url;
+    if (range === 'incremental') {
+      const changed_files = document.getElementById('gen_changed').value.split(',').map(s => s.trim()).filter(Boolean);
+      if (!changed_files.length) { show('gen_result', '增量模式下变更文件 changed_files 必填（至少 1 个文件）。', 'error'); return; }
+      body.changed_files = changed_files;
+    }
+    const cs = collectCodeSource();
+    if (cs === false) return;   // 凭据校验失败，已提示
+    if (cs) body.code_source = cs;
+  } else {
+    if (!local_path) { show('gen_result', '本地路径模式下 local_path 必填。', 'error'); return; }
+    body.local_path = local_path;
+  }
+
+  // 选中扫描模块 → 以显式变更集（incremental）限定生成范围，只对所勾选模块产出用例
+  if (scanSelected.length) {
+    body.changed_files = scanSelected;
+    body.gen_range = 'incremental';
+  }
+
+  show('gen_result', '请求中…', 'info');
+  const { status, data } = await api(API.generate, { method: 'POST', body: JSON.stringify(body) });
+  if (!data || !data.ok) {
+    show('gen_result', `HTTP ${status}：${(data && data.error) || '未知错误'}`, status === 503 ? 'warn' : 'error');
+    return;
+  }
+  const taskId = data.task_id;
+  const label = (project_name ? '[' + project_name + '] ' : '') + (mode === 'git' ? (repo_url) : (local_path)) + (mode === 'git' && range === 'incremental' ? '（增量）' : '');
+  upsertTask({ task_id: taskId, label, project_id: Number(project_id), project_name, scopes, changed_files: body.changed_files || [], range, created_at: new Date().toISOString(), state: data.state || 'pending' });
+  renderHistory();
+  if (!isTerminal(data.state)) {
+    tgPollInto(taskId);
+    tgTimers[taskId] = setInterval(() => tgPollInto(taskId), 3000);
+  }
+  show('gen_result', `已提交生成任务\ntask_id: ${taskId}\nstate: ${data.state || ''}\npoll_url: ${data.poll_url || ''}`, 'ok');
+  startPoll(taskId);
+}
+
+let pollTimer = null;
+async function startPoll(taskId) {
+  if (pollTimer) clearInterval(pollTimer);
+  const box = document.getElementById('poll_box');
+  box.style.display = 'block';
+  document.getElementById('poll_task').textContent = taskId;
+  const tick = async () => {
+    const { status, data } = await api(API.task(taskId));
+    if (!data || !data.ok) {
+      document.getElementById('poll_state').textContent = `HTTP ${status}：${(data && data.error) || ''}`;
+      return;
+    }
+    const state = (data.state || data.status || '').toLowerCase();
+    document.getElementById('poll_state').textContent = fmtState(state);
+    document.getElementById('poll_detail').innerHTML = taskDetailHtml(data);
+    if (state === 'success' && data.project_id) loadTaskCases(taskId);
+    if (['success', 'failed', 'cancelled'].includes(state)) {
+      clearInterval(pollTimer); pollTimer = null;
+    }
+  };
+  await tick();
+  pollTimer = setInterval(tick, 3000);
+}
+
+// ---- 用例回流 ----
+async function doSync() {
+  const project_id = document.getElementById('sync_pid').value.trim();
+  const testgen_project_id = document.getElementById('sync_tpid').value.trim();
+  const suite_id = document.getElementById('sync_sid').value.trim();
+  if (!project_id || !testgen_project_id) { show('sync_result', 'project_id 与 testgen_project_id 均为必填', 'error'); return; }
+  const body = { project_id, testgen_project_id };
+  if (suite_id) body.suite_id = suite_id;
+  show('sync_result', '请求中…', 'info');
+  const { status, data } = await api(API.sync, { method: 'POST', body: JSON.stringify(body) });
+  if (!data || !data.ok) {
+    show('sync_result', `HTTP ${status}：${(data && data.error) || '未知错误'}`, status === 503 ? 'warn' : 'error');
+    return;
+  }
+  show('sync_result',
+    `回流完成\n\ntotal=${data.total}\ncreated=${data.created}\nupdated=${data.updated}\nskipped=${data.skipped}`, 'ok');
+}
+
+// ---- 安全判定 ----
+async function doVerdict() {
+  let obs;
+  try { obs = JSON.parse(document.getElementById('ver_json').value); }
+  catch (e) { show('ver_result', 'observations JSON 解析失败：' + e.message, 'error'); return; }
+  const project_id = document.getElementById('ver_pid').value.trim();
+  const body = { observations: Array.isArray(obs) ? obs : [obs] };
+  if (project_id) body.project_id = Number(project_id);
+  show('ver_result', '请求中…', 'info');
+  const { status, data } = await api(API.verdict, { method: 'POST', body: JSON.stringify(body) });
+  if (!data || !data.ok) {
+    show('ver_result', `HTTP ${status}：${(data && data.error) || '未知错误'}`, status === 503 ? 'warn' : 'error');
+    return;
+  }
+  const summary = `total=${data.total}  security_cases=${data.security_cases}  ` +
+    `unsafe=${data.unsafe}  defects_created=${data.defects_created}  skipped=${data.skipped}`;
+  show('ver_result', summary + '\n\n' + JSON.stringify(data.details || [], null, 2), 'ok');
+}
+
+// ---- 安全缺陷 ----
+async function loadDefects() {
+  show('def_result', '查询中…', 'info');
+  const { status, data } = await api(API.defects);
+  if (!data) { show('def_result', `HTTP ${status}`, 'error'); return; }
+  const rows = (data.results || data || []);
+  show('def_result', `共 ${rows.length} 条`, 'ok');
+  renderDefectsTable(rows);
+}
+
+function renderDefectsTable(rows) {
+  const box = document.getElementById('def_table');
+  if (!rows.length) { box.innerHTML = '<p class="muted">暂无安全缺陷。</p>'; return; }
+  let html = '<table><thead><tr><th>ID</th><th>标题</th><th>严重度</th><th>优先级</th>' +
+    '<th>来源</th><th>项目</th><th>状态</th></tr></thead><tbody>';
+  for (const r of rows.slice(0, 100)) {
+    html += `<tr><td>${r.id ?? ''}</td><td>${escapeHtml(r.title || '')}</td>` +
+      `<td>${r.severity || ''}</td><td>${r.priority || ''}</td>` +
+      `<td>${r.source || ''}</td><td>${r.project || r.project_id || ''}</td>` +
+      `<td>${r.status || ''}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  box.innerHTML = html;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// 侧边导航高亮
+document.querySelectorAll('.sidebar nav a').forEach(a => {
+  a.addEventListener('click', () => {
+    document.querySelectorAll('.sidebar nav a').forEach(x => x.classList.remove('active'));
+    a.classList.add('active');
+  });
+});
+
+// headless 嵌入契约：SPA 以 iframe 嵌入时必须带 ?embed=1（隐藏本页导航/品牌头），
+// 可选 zone=generate|sync|verdict|defects 指定只渲染某个功能区；不带参数保持独立整页形态。
+(function () {
+  const params = new URLSearchParams(location.search);
+  if (params.get('embed') !== '1') return;
+  const ZONE_MAP = { generate: 'sec-generate', sync: 'sec-sync', verdict: 'sec-verdict', defects: 'sec-defects' };
+  const keep = ZONE_MAP[params.get('zone') || 'generate'];
+  document.addEventListener('DOMContentLoaded', function () {
+    document.body.classList.add('embed');
+    document.querySelectorAll('main.main > section.card').forEach(function (s) {
+      if (s.id !== keep) s.style.display = 'none';
+    });
+  });
+})();
+
+loadHealth();
+setInterval(loadHealth, 15000);
+loadProjects();
+restoreTasks();
+onGenModeChange();
+
+// 通知父页面（SPA 嵌入场景）本页已就绪，等待鉴权令牌
+try {
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage({ type: 'TESTGEN_CONSOLE_READY' }, '*');
+  }
+} catch (_) {}
+</script>
+</body>
+</html>

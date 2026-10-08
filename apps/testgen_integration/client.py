@@ -15,13 +15,13 @@
 代理处理：本机存在透明代理（localhost 会被劫持），故复用单个 ``trust_env=False`` 的
 Session，避免 localhost/内网直连被代理拦截；远程部署（非 127.0.0.1）直连同样适用。
 """
+
 from __future__ import annotations
 
 import os
 from typing import Any
 
 import requests
-from requests.exceptions import RequestException, Timeout
 
 # 旁路透明代理：确保 127.0.0.1/localhost 直连（与 AGENTS 环境一致）
 os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
@@ -38,7 +38,7 @@ def _settings_value(name: str, default: str) -> str:
         val = getattr(settings, name, None)
         if val not in (None, ""):
             return str(val)
-    except Exception:  # noqa: BLE001 - Django 不可用时静默回退
+    except Exception:  # noqa: BLE001, S110 - Django 不可用时静默回退
         pass
     return os.getenv(name, default)
 
@@ -175,6 +175,102 @@ def get_cases(project_id: int) -> list[dict[str, Any]]:
     )
     resp.raise_for_status()
     return resp.json().get("cases", [])
+
+
+def list_branches(
+    *, repo_url: str, code_source: dict[str, Any] | None
+) -> dict[str, Any]:
+    """列仓库分支（供前端目标/基线 ref 下拉）。"""
+    payload = {"repo_url": repo_url or "", "code_source": code_source or {}}
+    resp = _session.post(
+        f"{base_url()}/api/v1/branches",
+        json=payload,
+        headers=_headers(),
+        timeout=timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def list_commits(
+    *, repo_url: str, code_source: dict[str, Any] | None, ref: str
+) -> dict[str, Any]:
+    """查指定 ref 的最近提交（选定分支后查看对比数据）。"""
+    payload = {
+        "repo_url": repo_url or "",
+        "code_source": code_source or {},
+        "ref": ref or "",
+    }
+    resp = _session.post(
+        f"{base_url()}/api/v1/commits",
+        json=payload,
+        headers=_headers(),
+        timeout=timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def describe(*, items: list[dict[str, Any]]) -> dict[str, Any]:
+    """把扫描出的函数/类节点批量翻译成中文功能描述。"""
+    payload = {"items": items or []}
+    resp = _session.post(
+        f"{base_url()}/api/v1/describe",
+        json=payload,
+        headers=_headers(),
+        timeout=timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def cancel_task(task_id: str) -> dict[str, Any]:
+    """取消运行中/排队中的生成任务（协作式）。"""
+    resp = _session.post(
+        f"{base_url()}/api/v1/tasks/{task_id}/cancel",
+        json={},
+        headers=_headers(),
+        timeout=timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def task_cases(task_id: str) -> dict[str, Any]:
+    """取某任务对应项目已生成的用例（前端详情面板用）。"""
+    resp = _session.get(
+        f"{base_url()}/api/v1/tasks/{task_id}/cases",
+        headers=_headers(),
+        timeout=timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def scan(
+    *,
+    repo_url: str = "",
+    code_source: dict[str, Any] | None = None,
+    ref: str = "",
+    base_ref: str = "",
+    local_path: str = "",
+) -> dict[str, Any]:
+    """快速扫描（只读）：列模块树 + 标注变更状态，供前端勾选范围。"""
+    payload = {
+        "repo_url": repo_url or "",
+        "code_source": code_source or {},
+        "ref": ref or "",
+        "base_ref": base_ref or "",
+        "local_path": local_path or "",
+    }
+    resp = _session.post(
+        f"{base_url()}/api/v1/scan",
+        json=payload,
+        headers=_headers(),
+        timeout=timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 
 def verdict(facts: dict[str, Any]) -> dict[str, Any]:

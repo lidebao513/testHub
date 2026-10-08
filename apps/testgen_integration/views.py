@@ -10,9 +10,10 @@
   - 写库走注入式 upsert（见 flow.sync_cases），以 ``tg:<tc_no>`` 标签做幂等；
   - 鉴权沿用项目惯例：IsAuthenticated（与 apps/* 其余端点一致）。
 """
+
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from django.db import transaction
 from rest_framework.parsers import JSONParser
@@ -23,7 +24,16 @@ from rest_framework.views import APIView
 from apps.testcases.models import TestCase
 
 from . import flow
-from .client import generate, get_cases
+from .client import (
+    cancel_task,
+    describe,
+    generate,
+    get_cases,
+    list_branches,
+    list_commits,
+    scan,
+    task_cases,
+)
 from .mapping import TESTGEN_ID_TAG_PREFIX
 
 # 用 testhub 约定解析请求体（标题/步骤最大长度等由模型约束兜底）
@@ -40,7 +50,7 @@ def _ensure_tag(tags: Any, tag: str) -> list:
 class TestgenGenerateView(APIView):
     """触发 testgen 异步生成任务。"""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes: ClassVar[list] = [IsAuthenticated]
     parser_classes = _PARSERS
 
     def post(self, request: Any) -> Response:
@@ -58,8 +68,10 @@ class TestgenGenerateView(APIView):
             )
         except ValueError as exc:  # 红线守卫
             return Response({"ok": False, "error": str(exc)}, status=400)
-        except (Exception,) as exc:  # noqa: BLE001 - 网络/服务异常统一转 502
-            return Response({"ok": False, "error": f"调用 testgen 失败：{exc}"}, status=502)
+        except Exception as exc:  # noqa: BLE001 - 网络/服务异常统一转 502
+            return Response(
+                {"ok": False, "error": f"调用 testgen 失败：{exc}"}, status=502
+            )
         return Response(
             {
                 "ok": True,
@@ -73,7 +85,7 @@ class TestgenGenerateView(APIView):
 class TestgenSyncView(APIView):
     """拉取 testgen 项目用例 → 映射 → 幂等回流 testhub TestCase。"""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes: ClassVar[list] = [IsAuthenticated]
     parser_classes = _PARSERS
 
     def post(self, request: Any) -> Response:
@@ -89,7 +101,7 @@ class TestgenSyncView(APIView):
 
         try:
             cases = get_cases(int(testgen_project_id))
-        except (Exception,) as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             return Response(
                 {"ok": False, "error": f"获取 testgen 用例失败：{exc}"}, status=502
             )
@@ -121,3 +133,114 @@ class TestgenSyncView(APIView):
             suite_id=suite_id,
         )
         return Response({"ok": True, **result})
+
+
+def _sidecar_error_response(exc: Exception) -> Response:
+    """testgen sidecar 不可达/超时/非 2xx → 统一 502 友好提示（G2/G7）。"""
+    return Response({"ok": False, "error": f"调用 testgen 失败：{exc}"}, status=502)
+
+
+class TestgenBranchesView(APIView):
+    """列分支（前端目标/基线 ref 下拉）。"""
+
+    permission_classes: ClassVar[list] = [IsAuthenticated]
+    parser_classes = _PARSERS
+
+    def post(self, request: Any) -> Response:
+        body = request.data or {}
+        repo_url = body.get("repo_url", "") or ""
+        code_source = body.get("code_source") or {}
+        if not repo_url:
+            return Response({"ok": False, "error": "repo_url 必填"}, status=400)
+        try:
+            data = list_branches(repo_url=repo_url, code_source=code_source)
+        except Exception as exc:  # noqa: BLE001 - G2：连接/超时→502
+            return _sidecar_error_response(exc)
+        return Response({"ok": True, **data})
+
+
+class TestgenCommitsView(APIView):
+    """列指定 ref 的最近提交（选定分支后查看对比数据）。"""
+
+    permission_classes: ClassVar[list] = [IsAuthenticated]
+    parser_classes = _PARSERS
+
+    def post(self, request: Any) -> Response:
+        body = request.data or {}
+        repo_url = body.get("repo_url", "") or ""
+        code_source = body.get("code_source") or {}
+        ref = body.get("ref", "") or ""
+        if not repo_url:
+            return Response({"ok": False, "error": "repo_url 必填"}, status=400)
+        if not ref:
+            return Response({"ok": False, "error": "ref 必填"}, status=400)
+        try:
+            data = list_commits(repo_url=repo_url, code_source=code_source, ref=ref)
+        except Exception as exc:  # noqa: BLE001
+            return _sidecar_error_response(exc)
+        return Response({"ok": True, **data})
+
+
+class TestgenDescribeView(APIView):
+    """把扫描出的函数/类节点批量翻译成中文功能描述。"""
+
+    permission_classes: ClassVar[list] = [IsAuthenticated]
+    parser_classes = _PARSERS
+
+    def post(self, request: Any) -> Response:
+        body = request.data or {}
+        items = body.get("items") or []
+        try:
+            data = describe(items=items)
+        except Exception as exc:  # noqa: BLE001
+            return _sidecar_error_response(exc)
+        return Response({"ok": True, **data})
+
+
+class TestgenTaskCancelView(APIView):
+    """取消运行中/排队中的生成任务。"""
+
+    permission_classes: ClassVar[list] = [IsAuthenticated]
+    parser_classes = _PARSERS
+
+    def post(self, request: Any, task_id: str) -> Response:
+        try:
+            data = cancel_task(task_id)
+        except Exception as exc:  # noqa: BLE001
+            return _sidecar_error_response(exc)
+        return Response({"ok": True, **data})
+
+
+class TestgenTaskCasesView(APIView):
+    """取某任务对应项目已生成的用例（前端详情面板用）。"""
+
+    permission_classes: ClassVar[list] = [IsAuthenticated]
+    parser_classes = _PARSERS
+
+    def get(self, request: Any, task_id: str) -> Response:
+        try:
+            data = task_cases(task_id)
+        except Exception as exc:  # noqa: BLE001
+            return _sidecar_error_response(exc)
+        return Response({"ok": True, **data})
+
+
+class TestgenScanView(APIView):
+    """快速扫描（只读）：列模块树 + 标注变更状态，供前端勾选范围。"""
+
+    permission_classes: ClassVar[list] = [IsAuthenticated]
+    parser_classes = _PARSERS
+
+    def post(self, request: Any) -> Response:
+        body = request.data or {}
+        try:
+            data = scan(
+                repo_url=body.get("repo_url", "") or "",
+                code_source=body.get("code_source") or {},
+                ref=body.get("ref", "") or "",
+                base_ref=body.get("base_ref", "") or "",
+                local_path=body.get("local_path", "") or "",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _sidecar_error_response(exc)
+        return Response({"ok": True, **data})
