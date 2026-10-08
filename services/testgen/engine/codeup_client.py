@@ -140,7 +140,7 @@ class CodeupClient:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout, context=self._ctx) as r:
+            with urllib.request.urlopen(req, timeout=self.timeout, context=self._ctx) as r:  # nosec B310  # 仅访问受信 Codeup API，已校验证书
                 raw = r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")[:500]
