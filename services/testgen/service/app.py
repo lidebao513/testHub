@@ -33,6 +33,7 @@ from core.errors import AppError, NotFoundError, UnauthorizedError, ValidationEr
 from core.log import get_logger, log_extra, set_request_id
 from engine import pipeline
 from engine import report as report_engine
+from engine.codeup_client import CodeupError, parse_repo_to_repo_id
 from engine.comparator import (
     ComparatorOptions,
     CompareInput,
@@ -40,10 +41,26 @@ from engine.comparator import (
     compare_one,
 )
 from engine.dialogue import DialogueAgent, default_dialogue_template
+from engine.llm_fallback import chat_with_fallback
+from engine.remote_scan import (
+    CHANGE_ADDED,
+    CHANGE_MODIFIED,
+    CHANGE_UNCHANGED,
+    client_from_code_source,
+    scan_local,
+    scan_repository,
+)
 from engine.verdict import run_five_dimension_verdict
 from output.report_writer import ReportExportError, export_report, render_html, render_markdown
 from output.writer import OutputWriter
-from service.tasks import BackgroundExecutor, GenerationTask, TaskState, TaskStore, stage_fraction
+from service.tasks import (
+    BackgroundExecutor,
+    GenerationTask,
+    TaskCancelledError,
+    TaskState,
+    TaskStore,
+    stage_fraction,
+)
 from workspace.manager import WorkspaceManager
 
 
@@ -261,6 +278,8 @@ def _run_execution_job(
     best = {"frac": 0.0}
 
     def _progress(stage: str, _info: dict[str, Any]) -> None:
+        if task_store.is_cancelled(task_id):
+            raise TaskCancelledError(task_id)
         frac = stage_fraction(stage, best["frac"])
         best["frac"] = frac
         task_store.update(task_id, progress=round(frac, 3), stage=stage)
@@ -476,6 +495,8 @@ def _run_generation_job(
     best = {"frac": 0.0}
 
     def _progress(stage: str, _info: dict[str, Any]) -> None:
+        if task_store.is_cancelled(task_id):
+            raise TaskCancelledError(task_id)
         frac = stage_fraction(stage, best["frac"])
         best["frac"] = frac
         task_store.update(task_id, progress=round(frac, 3), stage=stage)
@@ -913,6 +934,244 @@ def get_coverage(pid: int) -> dict[str, Any]:
 @app.get("/api/v1/workspaces", dependencies=[Depends(require_auth)])
 def list_workspaces() -> dict[str, Any]:
     return {"workspaces": [w.to_dict() for w in WorkspaceManager().list_all()]}
+
+
+# ============================================================================
+# 扫描块联动：分支 / 提交 / 中文功能描述 / 任务取消（前端 console.html）
+# ============================================================================
+
+
+class RefsRequest(BaseModel):
+    """分支/提交下拉所用：仓库 + 只读凭证 + （commits 用）ref。"""
+
+    repo_url: str = Field("", description="仓库地址")
+    code_source: dict[str, Any] = Field(
+        default_factory=dict, description="只读凭证 {credential_type, org_id, access_key}"
+    )
+    ref: str = Field("", description="分支/标签/commit（commits 端点必填）")
+
+
+class DescribeRequest(BaseModel):
+    """把扫描出的函数/类节点批量翻译成中文功能描述。"""
+
+    items: list[dict[str, Any]] = Field(default_factory=list, description="[{path, name, kind}]")
+
+
+def _build_codeup_client(req: RefsRequest) -> tuple[Any, str]:
+    """从 RefsRequest 构造只读 Codeup 客户端（统一校验口径）。"""
+    code_source = req.code_source or {}
+    if not req.repo_url:
+        raise ValidationError("repo_url 必填")
+    access_key = (code_source.get("access_key") or "").strip()
+    if not access_key:
+        raise ValidationError("远程只读取码：凭证（access_key）为空")
+    client = client_from_code_source(code_source, verify_ssl=False)
+    repo_id = parse_repo_to_repo_id(req.repo_url)
+    return client, repo_id
+
+
+@app.post("/api/v1/branches", dependencies=[Depends(require_auth)])
+def list_repo_branches(req: RefsRequest) -> dict[str, Any]:
+    """列分支（供前端目标/基线 ref 下拉：分支名 + 最近提交时间 + 标题）。
+
+    远端不可达等业务失败以 ``ok=False`` 返回（不动 5xx），前端据 `error` 提示。
+    """
+    try:
+        client, repo_id = _build_codeup_client(req)
+        branches = client.list_branches(repo_id)
+    except CodeupError:
+        raise  # AppError → 由统一异常处理器映射（远端鉴权/不可达）
+    except ValidationError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 远端不可达等通用异常
+        log.warning("列分支失败", extra=log_extra(err=type(exc).__name__))
+        return {"ok": False, "branches": [], "error": str(exc)[:200]}
+    return {"ok": True, "branches": branches}
+
+
+@app.post("/api/v1/commits", dependencies=[Depends(require_auth)])
+def list_repo_commits(req: RefsRequest) -> dict[str, Any]:
+    """列指定 ref 的最近提交（选定分支后查看对比数据）。"""
+    if not req.ref:
+        raise ValidationError("ref 必填（分支/标签/commit）")
+    try:
+        client, repo_id = _build_codeup_client(req)
+        commits = client.list_commits(repo_id, ref_name=req.ref)
+    except CodeupError:
+        raise
+    except ValidationError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.warning("列提交失败", extra=log_extra(err=type(exc).__name__))
+        return {"ok": False, "ref": req.ref, "commits": [], "error": str(exc)[:200]}
+    return {"ok": True, "ref": req.ref, "commits": commits}
+
+
+def _extract_json_block(content: str) -> Any:
+    """从 LLM 输出中稳健抽取 JSON（容忍 ```json 围栏与前后闲文）。"""
+    import json as _json
+    import re as _re
+
+    text = (content or "").strip()
+    fenced = _re.search(r"```(?:json)?\s*(.*?)\s*```", text, _re.S)
+    candidate = fenced.group(1) if fenced else text
+    try:
+        return _json.loads(candidate)
+    except _json.JSONDecodeError:
+        pass
+    # 退一步：抓第一个 { 到最后一个 } 之间的内容
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return _json.loads(candidate[start : end + 1])
+        except _json.JSONDecodeError:
+            return None
+    return None
+
+
+@app.post("/api/v1/describe", dependencies=[Depends(require_auth)])
+def describe_features(req: DescribeRequest) -> dict[str, Any]:
+    """把扫描出的函数/类节点批量翻译成中文功能描述。
+
+    诚实降级：未配置 LLM / LLM 失败 → ``llm`` 标记 + 空 ``descriptions``，前端回退原名。
+    """
+    items = req.items or []
+    if not items:
+        return {"ok": True, "llm": False, "descriptions": {}, "error": "empty"}
+    if not (settings.llm_api_key and settings.llm_base_url and settings.llm_model):
+        return {
+            "ok": True,
+            "llm": False,
+            "descriptions": {},
+            "error": "未配置 LLM（llm_api_key / llm_base_url / llm_model 不全）",
+        }
+    lines = [
+        f"- 路径: {it.get('path', '')} | 名称: {it.get('name', '')} | 类型: {it.get('kind', 'function')}"
+        for it in items
+    ]
+    prompt = (
+        "你是测试用例系统的代码分析助手。下面列出若干代码中的函数/类，"
+        "请为每一项用一句简洁的中文描述它承担的「业务功能」（不是翻译函数名，而是说明它做什么业务动作）。\n"
+        '只输出 JSON，格式：{"结果": [{"名称": <原名称>, "功能": <中文功能描述>}, ...]}\n'
+        + "\n".join(lines)
+    )
+    try:
+        resp = chat_with_fallback(
+            channel="describe",
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+            model=settings.llm_model,
+            timeout=float(settings.llm_timeout or 60),
+            model_chain=settings.llm_model_chain or None,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        content = resp.choices[0].message.content or ""
+        parsed = _extract_json_block(content)
+    except Exception as exc:  # noqa: BLE001 - 诚实降级：LLM 失败不阻塞前端
+        log.warning("describe LLM 失败，回退原名", extra=log_extra(err=type(exc).__name__))
+        return {
+            "ok": True,
+            "llm": True,
+            "descriptions": {},
+            "error": f"LLM 调用失败：{type(exc).__name__}",
+        }
+    descriptions: dict[str, str] = {}
+    if isinstance(parsed, dict):
+        rows = parsed.get("结果") or parsed.get("result") or parsed.get("items") or []
+    else:
+        rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        nm = row.get("名称") or row.get("name") or ""
+        fn = row.get("功能") or row.get("desc") or ""
+        if nm:
+            descriptions[str(nm)] = str(fn)
+    return {"ok": True, "llm": True, "descriptions": descriptions}
+
+
+@app.post("/api/v1/tasks/{task_id}/cancel", dependencies=[Depends(require_auth)])
+def cancel_task(task_id: str) -> dict[str, Any]:
+    """取消运行中/排队中的任务（协作式：作业在阶段边界检出后中断）。"""
+    cancelled = task_store.cancel(task_id)
+    return {"ok": True, "cancelled": cancelled, "task_id": task_id}
+
+
+@app.get("/api/v1/tasks/{task_id}/cases", dependencies=[Depends(require_auth)])
+def task_cases(task_id: str) -> dict[str, Any]:
+    """取某任务对应项目已生成的用例（前端详情面板用）。"""
+    task = task_store.get(task_id)
+    if task is None:
+        raise NotFoundError(f"任务不存在: {task_id}")
+    pid = task.project_id
+    if not pid:
+        return {"ok": True, "task_id": task_id, "project_id": None, "cases": []}
+    cases = store.list_cases(pid, include_obsolete=True)
+    return {"ok": True, "task_id": task_id, "project_id": pid, "cases": cases}
+
+
+class ScanRequest(BaseModel):
+    """快速扫描（只读）：列模块树 + 标注变更状态，供前端勾选范围。"""
+
+    repo_url: str = Field("", description="仓库地址（git 模式）")
+    code_source: dict[str, Any] = Field(default_factory=dict, description="只读凭证")
+    ref: str = Field("", description="目标 ref（分支/标签/commit）")
+    base_ref: str = Field("", description="基线 ref（对比出 新增/修改）")
+    local_path: str = Field("", description="本地目录（local 模式）")
+
+
+def _dispatch_scan(req: ScanRequest) -> tuple[list[dict[str, Any]], str]:
+    """执行扫描并返回 (items, source)；远端/本地异常由调用方统一处理。"""
+    if req.local_path:
+        return scan_local(req.local_path, base_ref=req.base_ref), "local"
+    if req.repo_url:
+        cs = req.code_source or {}
+        if not (cs.get("access_key") or "").strip():
+            raise ValidationError("远程扫描：凭证（access_key）为空")
+        return (
+            scan_repository(cs, req.repo_url, ref=req.ref, base_ref=req.base_ref, verify_ssl=False),
+            "remote",
+        )
+    raise ValidationError("repo_url 或 local_path 至少给一个")
+
+
+@app.post("/api/v1/scan", dependencies=[Depends(require_auth)])
+def scan_code(req: ScanRequest) -> dict[str, Any]:
+    """快速扫描（只读）：列模块树 + 标注变更状态，供前端勾选范围。不克隆/不生成。
+
+    - git 模式：远程只读列树 + 取符号（前若干文件）；
+    - local 模式：复用本地 Scanner；
+    - 提供 ``base_ref`` 时经 compare 标注 ``change_status``（新增/修改/未变更）。
+    """
+    try:
+        items, source = _dispatch_scan(req)
+    except (CodeupError, ValidationError):
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.warning("扫描失败", extra=log_extra(err=type(exc).__name__))
+        return {
+            "ok": False,
+            "source": "remote" if req.repo_url else "local",
+            "items": [],
+            "error": str(exc)[:200],
+        }
+    summary = {"added": 0, "modified": 0, "unchanged": 0}
+    for it in items:
+        st = it.get("change_status") or CHANGE_UNCHANGED
+        if st == CHANGE_ADDED:
+            summary["added"] += 1
+        elif st == CHANGE_MODIFIED:
+            summary["modified"] += 1
+        else:
+            summary["unchanged"] += 1
+    return {
+        "ok": True,
+        "source": source,
+        "items": items,
+        "summary": summary,
+        "count": len(items),
+    }
 
 
 # ============================================================================

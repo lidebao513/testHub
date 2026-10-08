@@ -56,6 +56,14 @@ class TaskState(Enum):
     CANCELLED = "cancelled"
 
 
+class TaskCancelledError(Exception):
+    """运行中的作业在进度回调里检出取消标志后抛出，由 submit 捕获并置为 cancelled。"""
+
+    def __init__(self, task_id: str = "") -> None:
+        super().__init__(f"任务已取消: {task_id}" if task_id else "任务已取消")
+        self.task_id = task_id
+
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -229,6 +237,11 @@ class TaskStore:
         self.update(task_id, state=TaskState.CANCELLED.value, finished_at=_now())
         return True
 
+    def is_cancelled(self, task_id: str) -> bool:
+        """运行中作业通过此标志做协作式取消检查（cancel 已置 cancelled 即返回 True）。"""
+        task = self.get(task_id)
+        return task is not None and task.state == TaskState.CANCELLED.value
+
     def list_recent(self, limit: int = 10) -> list[GenerationTask]:
         conn = connect()
         try:
@@ -299,12 +312,28 @@ class BackgroundExecutor:
             self._store.update(task_id, state=TaskState.RUNNING.value, started_at=_now())
             try:
                 result = job()
+                # 运行期间被取消：以 cancelled 终态覆盖 success（取消优先于完成）
+                if self._store.is_cancelled(task_id):
+                    self._store.update(
+                        task_id,
+                        state=TaskState.CANCELLED.value,
+                        finished_at=_now(),
+                    )
+                    return
                 self._store.update(
                     task_id,
                     state=TaskState.SUCCESS.value,
                     result=json.dumps(result, ensure_ascii=False),
                     progress=1.0,
                     stage="done",
+                    finished_at=_now(),
+                )
+            except TaskCancelledError:
+                # 进度回调检出取消标志主动中断：置 cancelled，error 记为用户取消
+                self._store.update(
+                    task_id,
+                    state=TaskState.CANCELLED.value,
+                    error="任务已被用户取消",
                     finished_at=_now(),
                 )
             except Exception as exc:  # 任务失败须兜住并如实落库，绝不冒泡到 worker
