@@ -4,9 +4,11 @@
 避免测试污染真实 `data/` 与 `outputs/`。因此这一段必须在模块顶层执行。
 """
 
+import importlib
 import os
 import sys
 import tempfile
+from typing import Any
 
 
 _SERVICE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +34,79 @@ import pytest
 
 from core.config import get_settings, reset_settings
 from core.db import connect, init_db
+
+
+# ---------------------------------------------------------------------------
+# 测试桩：隔离真实 LLM 调用（门禁 / 全量 pytest 均不触网，确定性通过）。
+# 仅桩「调用方命名空间」，绝不桩 engine.llm_fallback 本体——
+# test_llm_fallback.py 直接测真函数（用 patch("openai.OpenAI") 隔离 SDK），
+# 桩本体将破坏它的降级链断言。
+# 注意：调用方须以「模块级」from engine.llm_fallback import chat_with_fallback
+# 引入（comparator/app/expert.llm/semantic_enrich/dialogue.agent 均已如此），
+# 本桩才能通过替换模块属性生效；函数内局部导入会绕过它。
+# ---------------------------------------------------------------------------
+class _StubLlmMessage:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _StubLlmChoice:
+    def __init__(self, content: str) -> None:
+        self.message = _StubLlmMessage(content)
+
+
+class _StubLlmResponse:
+    def __init__(self, content: str, model: str) -> None:
+        self.choices = [_StubLlmChoice(content)]
+        self.model = model
+
+
+def _stub_chat_with_fallback(  # noqa: PLR0913 - 镜像 chat_with_fallback 真实签名，参数多为透传
+    *,
+    channel: str,
+    api_key: str,
+    base_url: str,
+    timeout: float,
+    model: str,
+    model_chain: list[str] | None = None,
+    messages: list[dict[str, Any]] | None = None,
+    temperature: float = 0.2,
+) -> _StubLlmResponse:
+    """返回最小合法响应：describe 给占位文本；其余（complete_json/comparator）给空 JSON 数组。
+
+    空数组对 complete_json 调用方是合法的「无补充项」结果（json.loads('[]') → []），
+    不会让 pipeline 的结构化产物（静态功能点 / 规则用例）缺失，故 live_llm 用例的
+    `counts > 0` 类断言仍成立。
+    """
+    if channel == "describe":
+        return _StubLlmResponse("（测试桩：自动生成的功能描述）", model)
+    return _StubLlmResponse("[]", model)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _stub_llm_calls(request):
+    """session 级桩：把 5 个调用方命名空间的 chat_with_fallback 替换为测试桩。"""
+    patched: list[tuple[object, object]] = []
+    for modname in (
+        "engine.comparator.compare",
+        "engine.expert.llm",
+        "engine.semantic_enrich",
+        "service.app",
+        "engine.dialogue.agent",
+    ):
+        try:
+            mod = importlib.import_module(modname)
+        except Exception:  # noqa: BLE001 - 模块导入失败（缺失可选依赖等）则跳过，不影响其余桩
+            continue
+        if hasattr(mod, "chat_with_fallback"):
+            patched.append((mod, mod.chat_with_fallback))
+            mod.chat_with_fallback = _stub_chat_with_fallback
+
+    def _restore() -> None:
+        for mod, orig in patched:
+            mod.chat_with_fallback = orig
+
+    request.addfinalizer(_restore)
 
 
 @pytest.fixture()

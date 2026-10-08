@@ -24,6 +24,7 @@ from core.auto_input import parse_auto_input
 from core.config import get_settings
 from core.enums import MODE_CHOICES
 from engine.dialogue.template import DialoguePlan, DialogueTemplate, default_dialogue_template
+from engine.llm_fallback import chat_with_fallback
 
 
 # LLM 增强为「可选」扩展点：默认关闭，避免在未配置 LLM 时产生额外调用与不可复现结果。
@@ -154,8 +155,6 @@ class DialogueAgent:
         if not (settings.llm_enhance and settings.llm_api_key):
             return None
         try:
-            from engine.llm_fallback import chat_with_fallback
-
             prompt = (
                 "从用户文本中抽取测试用例生成参数，只输出 JSON："
                 '{"source_kind":"code|url|code+url","mode":"full|incremental",'

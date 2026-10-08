@@ -32,6 +32,7 @@ from core.contracts import (
 from core.enums import TPType, is_http_method
 from core.errors import LLMError
 from core.log import get_logger
+from engine.llm_fallback import chat_with_fallback
 
 
 log = get_logger(__name__)
@@ -241,8 +242,6 @@ class LLMClient:
 
     def complete_json(self, user_prompt: str) -> list[dict[str, Any]]:
         """请求模型并解析 JSON 数组；解析失败抛 LLMError（降级由统一入口处理）。"""
-        from engine.llm_fallback import chat_with_fallback
-
         resp = chat_with_fallback(
             channel="llm",
             api_key=self.options.api_key,

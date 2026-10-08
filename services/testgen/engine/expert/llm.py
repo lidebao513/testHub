@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from core.log import get_logger
+from engine.llm_fallback import chat_with_fallback
 
 
 log = get_logger(__name__)
@@ -90,8 +91,6 @@ class ExpertLLMClient:
         实际调用统一委托 `engine.llm_fallback.chat_with_fallback`（含降级链），
         本客户端不再各自实现降级逻辑。
         """
-        from engine.llm_fallback import chat_with_fallback
-
         meta: dict[str, Any] = {"used_vision": False, "vision_note": ""}
         messages = self._build_messages(user_prompt, system_prompt, images, meta)
         resp = chat_with_fallback(
