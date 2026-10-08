@@ -74,6 +74,7 @@
 <nav>
   <button id="nav-console" class="active" onclick="switchView('console')">控制台</button>
   <button id="nav-repos" onclick="switchView('repos')">代码仓库</button>
+  <button id="nav-llm" onclick="switchView('llm')">LLM 配置</button>
 </nav>
 
 <!-- ======================= 视图一：控制台 ======================= -->
@@ -202,6 +203,43 @@
 </div>
 </div>
 
+<!-- ======================= 视图三：LLM 厂商配置 ======================= -->
+<div class="view" id="view-llm">
+<div class="wrap">
+  <div class="card">
+    <h2 id="llm_form_title">➕ 新增厂商</h2>
+    <input type="hidden" id="llm_edit_id" value="">
+    <label>名称（必填，唯一）</label>
+    <input type="text" id="llm_name" placeholder="如：DeepSeek 直连">
+    <label>Base URL（OpenAI 兼容端点）</label>
+    <input type="text" id="llm_base_url" placeholder="https://api.deepseek.com/v1 或 https://dashscope.aliyuncs.com/compatible-mode/v1">
+    <label>API Key</label>
+    <input type="text" id="llm_api_key" placeholder="sk-...">
+    <label>模型列表（逗号分隔；降级按此顺序）</label>
+    <input type="text" id="llm_models" placeholder="deepseek-chat,deepseek-reasoner">
+    <div class="row">
+      <div><label>优先级（小优先）</label><input type="text" id="llm_priority" value="0"></div>
+      <div style="display:flex;align-items:flex-end"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="llm_default"> 设为默认</label></div>
+    </div>
+    <div class="actions">
+      <button class="btn-primary" id="llm_save" onclick="saveLLM()">保存</button>
+      <button class="btn-ghost" id="llm_probe" onclick="probeFormLLM()">测试连接</button>
+      <button class="btn-danger" onclick="resetLLMForm()">清空表单</button>
+    </div>
+    <div id="llm_form_result"></div>
+    <div class="hint">多厂商独立 Key：主通道仍来自 .env（单 key），此处配置的厂商会作为<strong>独立 key 的降级兜底</strong>——主 key 额度耗尽时自动切换到这里配置的厂商。连接测试仅做一次最小 chat 调用，明文 Key 不落库展示（列表只显示脱敏预览）。</div>
+  </div>
+
+  <div class="card">
+    <h2>🔑 已配置厂商</h2>
+    <div class="actions" style="margin:0 0 10px">
+      <button class="btn-ghost" onclick="loadLLMProviders()">刷新列表</button>
+    </div>
+    <div id="llm_list"><span class="hint">加载中…</span></div>
+  </div>
+</div>
+</div>
+
 <script>
 const $ = (id)=>document.getElementById(id);
 function log(msg){
@@ -232,11 +270,12 @@ async function api(path, opts){
 
 /* ============ 菜单切换 ============ */
 function switchView(name){
-  for(const v of ["console","repos"]){
+  for(const v of ["console","repos","llm"]){
     $("view-"+v).classList.toggle("active", v===name);
     $("nav-"+v).classList.toggle("active", v===name);
   }
   if(name==="repos") loadRepos();
+  if(name==="llm") loadLLMProviders();
 }
 
 /* ============ 代码仓库管理 ============ */
@@ -507,7 +546,107 @@ function execPid(id){ $("exec_pid").value=id; doExecute(); }
 
 loadProjects();
 loadRepos();
-log("控制台就绪。填写左侧被测对象后点「生成用例」；常用仓库可在「代码仓库」菜单配置。");
+
+/* ============ LLM 厂商配置 ============ */
+let llmCache = [];
+function llmTestBadge(item){
+  if(item.last_test_ok === true) return '<span class="badge b-success">可用</span>';
+  if(item.last_test_ok === false) return '<span class="badge b-failed">失败</span>';
+  return '<span class="badge t-unknown">未测试</span>';
+}
+async function loadLLMProviders(){
+  try{
+    const r = await api("/api/v1/llm/providers");
+    llmCache = r.providers || [];
+    renderLLMList();
+  }catch(e){
+    $("llm_list").innerHTML = '<span class="hint">加载失败: '+e.message+'</span>';
+  }
+}
+function renderLLMList(){
+  const el = $("llm_list");
+  if(!llmCache.length){ el.innerHTML='<span class="hint">暂无厂商，左侧新增一个吧</span>'; return; }
+  let html = '<table><tr><th>ID</th><th>名称</th><th>默认</th><th>Base URL</th><th>Key</th><th>模型</th><th>最近测试</th><th>操作</th></tr>';
+  for(const p of llmCache){
+    const tested = p.last_test_at ? `${llmTestBadge(p)}<br><span class="hint">${p.last_test_at}<br>${escapeHtml(p.last_test_msg)}</span>` : llmTestBadge(p);
+    const models = (p.models||"").split(",").filter(Boolean).map(m=>'<span class="pill">'+escapeHtml(m)+'</span>').join(" ") || '<span class="hint">—</span>';
+    html += `<tr><td>${p.id}</td><td>${escapeHtml(p.name)}${p.is_default?' <span class="pill">默认</span>':''}</td>`+
+      `<td>${p.is_default?'是':'否'}</td><td class="wrap-cell">${escapeHtml(p.base_url)}</td>`+
+      `<td>${p.api_key_set?escapeHtml(p.api_key_masked):'<span class="hint">未填</span>'}</td>`+
+      `<td>${models}</td><td>${tested}</td>`+
+      `<td><a class="link" onclick="probeLLM(${p.id})">测试</a> `+
+      `<a class="link" onclick="editLLM(${p.id})">编辑</a> `+
+      `<a class="link" style="color:var(--bad)" onclick="delLLM(${p.id})">删除</a></td></tr>`;
+  }
+  html += "</table>";
+  el.innerHTML = html;
+}
+function resetLLMForm(){
+  $("llm_edit_id").value=""; $("llm_name").value=""; $("llm_base_url").value="";
+  $("llm_api_key").value=""; $("llm_models").value=""; $("llm_priority").value="0"; $("llm_default").checked=false;
+  $("llm_form_result").innerHTML="";
+  $("llm_form_title").textContent="➕ 新增厂商";
+}
+async function saveLLM(){
+  const body = {
+    name: $("llm_name").value.trim(),
+    base_url: $("llm_base_url").value.trim(),
+    api_key: $("llm_api_key").value,
+    models: $("llm_models").value.trim(),
+    is_default: $("llm_default").checked,
+    priority: parseInt($("llm_priority").value||"0",10)||0
+  };
+  if(!body.name || !body.base_url){ alert("名称与 Base URL 必填"); return; }
+  const editId = $("llm_edit_id").value;
+  try{
+    if(editId){
+      await api("/api/v1/llm/providers/"+editId, {method:"PUT", body:JSON.stringify(body)});
+    }else{
+      await api("/api/v1/llm/providers", {method:"POST", body:JSON.stringify(body)});
+    }
+    resetLLMForm();
+    await loadLLMProviders();
+  }catch(e){ alert("保存失败: "+e.message); }
+}
+async function probeFormLLM(){
+  const base_url = $("llm_base_url").value.trim();
+  const api_key = $("llm_api_key").value;
+  const model = ($("llm_models").value.split(",")[0]||"").trim();
+  if(!base_url){ alert("请先填 Base URL"); return; }
+  const el = $("llm_form_result");
+  el.innerHTML = '<div class="test-result ok" style="background:#f1f5f9;color:#65758a">测试中…</div>';
+  try{
+    const r = await api("/api/v1/llm/providers/test", {method:"POST", body:JSON.stringify({base_url, api_key, model})});
+    el.innerHTML = `<div class="test-result ${r.ok?"ok":"bad"}">${r.ok?"✅":"❌"} ${escapeHtml(r.message)}（${r.duration_ms}ms${r.model_tested?('，模型 '+escapeHtml(r.model_tested)):''}）</div>`;
+  }catch(e){
+    el.innerHTML = `<div class="test-result bad">❌ 测试失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+async function probeLLM(id){
+  try{
+    const r = await api(`/api/v1/llm/providers/${id}/test`, {method:"POST"});
+    await loadLLMProviders();
+    if(!r.ok) log(`厂商 ${id} 连接失败: ${r.message}`);
+  }catch(e){ alert("测试失败: "+e.message); }
+}
+function editLLM(id){
+  const p = llmCache.find(x=>String(x.id)===String(id));
+  if(!p) return;
+  $("llm_edit_id").value=p.id; $("llm_name").value=p.name; $("llm_base_url").value=p.base_url;
+  $("llm_api_key").value=""; $("llm_models").value=p.models||""; $("llm_priority").value=p.priority||0; $("llm_default").checked=!!p.is_default;
+  $("llm_form_title").textContent=`✏️ 编辑厂商 #${p.id}`;
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+async function delLLM(id){
+  const p = llmCache.find(x=>String(x.id)===String(id));
+  if(!confirm(`确定删除厂商「${p?p.name:id}」？（不影响已生成的项目）`)) return;
+  try{
+    await api("/api/v1/llm/providers/"+id, {method:"DELETE"});
+    await loadLLMProviders();
+  }catch(e){ alert("删除失败: "+e.message); }
+}
+
+log("控制台就绪。填写左侧被测对象后点「生成用例」；常用仓库/厂商可在「代码仓库」「LLM 配置」菜单管理。");
 </script>
 </body>
 </html>

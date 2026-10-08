@@ -979,3 +979,220 @@ def record_repo_test(
     finally:
         if own:
             conn.close()
+
+
+# ============================================================================
+# LLM 厂商配置（多 provider 独立 key）：CRUD + 连接测试留痕 + 引擎取用
+# ============================================================================
+def _llm_provider_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "name": row["name"],
+        "base_url": row["base_url"],
+        # 安全：api_key 只在写入/连接测试时使用，**列表/详情接口返回脱敏预览**，绝不回显明文
+        "api_key_masked": ("*" * 6 + (row["api_key"][-4:] if row["api_key"] else ""))
+        if row["api_key"]
+        else "",
+        "api_key_set": bool(row["api_key"]),
+        "models": row["models"] or "",
+        "is_default": bool(row["is_default"]),
+        "priority": int(row["priority"] or 0),
+        "last_test_ok": None if row["last_test_ok"] is None else bool(row["last_test_ok"]),
+        "last_test_msg": row["last_test_msg"] or "",
+        "last_test_at": row["last_test_at"] or "",
+        "created_at": row["created_at"] or "",
+        "updated_at": row["updated_at"] or "",
+    }
+
+
+def list_llm_providers(conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
+    own = conn is None
+    conn = conn or connect()
+    init_db(conn)
+    try:
+        rows_ = conn.execute(
+            "SELECT * FROM llm_providers ORDER BY is_default DESC, priority ASC, id DESC"
+        ).fetchall()
+        return [_llm_provider_row(r) for r in rows_]
+    finally:
+        if own:
+            conn.close()
+
+
+def get_llm_provider(pid: int, conn: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        row = conn.execute("SELECT * FROM llm_providers WHERE id = ?", (pid,)).fetchone()
+        return _llm_provider_row(row) if row else None
+    finally:
+        if own:
+            conn.close()
+
+
+def get_llm_provider_secret(pid: int, conn: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+    """取明文凭证（仅连接测试/引擎调用内部使用，**绝不**经 API 返回给前端）。"""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        row = conn.execute(
+            "SELECT base_url, api_key, models FROM llm_providers WHERE id = ?", (pid,)
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "base_url": row["base_url"],
+            "api_key": row["api_key"] or "",
+            "models": row["models"] or "",
+        }
+    finally:
+        if own:
+            conn.close()
+
+
+def create_llm_provider(
+    name: str,
+    base_url: str,
+    *,
+    api_key: str = "",
+    models: str = "",
+    is_default: bool = False,
+    priority: int = 0,
+    conn: sqlite3.Connection | None = None,
+) -> int:
+    """新增厂商配置；name 重复抛 ContractViolation。"""
+    own = conn is None
+    conn = conn or connect()
+    init_db(conn)
+    try:
+        with conn:
+            if is_default:
+                conn.execute("UPDATE llm_providers SET is_default=0 WHERE is_default=1")
+            cur = conn.execute(
+                "INSERT INTO llm_providers(name, base_url, api_key, models, is_default,"
+                " priority, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    name,
+                    base_url,
+                    api_key,
+                    models,
+                    1 if is_default else 0,
+                    int(priority),
+                    _now(),
+                    _now(),
+                ),
+            )
+            return int(cur.lastrowid or 0)
+    except sqlite3.IntegrityError as exc:
+        raise ContractViolation(f"厂商名称已存在: {name}") from exc
+    finally:
+        if own:
+            conn.close()
+
+
+def update_llm_provider(  # noqa: PLR0913 - 部分更新语义天然多参：None=不改
+    pid: int,
+    *,
+    name: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    models: str | None = None,
+    is_default: bool | None = None,
+    priority: int | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """按需更新（None=不改）；改名重名抛 ContractViolation。返回是否命中行。"""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        with conn:
+            row = conn.execute("SELECT id FROM llm_providers WHERE id = ?", (pid,)).fetchone()
+            if not row:
+                return False
+            if name is not None:
+                conn.execute("UPDATE llm_providers SET name=? WHERE id=?", (name, pid))
+            if base_url is not None:
+                conn.execute("UPDATE llm_providers SET base_url=? WHERE id=?", (base_url, pid))
+            if api_key is not None:
+                conn.execute("UPDATE llm_providers SET api_key=? WHERE id=?", (api_key, pid))
+            if models is not None:
+                conn.execute("UPDATE llm_providers SET models=? WHERE id=?", (models, pid))
+            if is_default is not None and is_default:
+                conn.execute("UPDATE llm_providers SET is_default=0 WHERE is_default=1")
+            if is_default is not None:
+                conn.execute(
+                    "UPDATE llm_providers SET is_default=? WHERE id=?",
+                    (1 if is_default else 0, pid),
+                )
+            if priority is not None:
+                conn.execute(
+                    "UPDATE llm_providers SET priority=? WHERE id=?", (int(priority), pid)
+                )
+            conn.execute("UPDATE llm_providers SET updated_at=? WHERE id=?", (_now(), pid))
+            return True
+    except sqlite3.IntegrityError as exc:
+        raise ContractViolation(f"厂商名称已存在: {name}") from exc
+    finally:
+        if own:
+            conn.close()
+
+
+def delete_llm_provider(pid: int, conn: sqlite3.Connection | None = None) -> bool:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        with conn:
+            cur = conn.execute("DELETE FROM llm_providers WHERE id = ?", (pid,))
+            return bool(cur.rowcount)
+    finally:
+        if own:
+            conn.close()
+
+
+def record_llm_provider_test(
+    pid: int, ok: bool, msg: str, conn: sqlite3.Connection | None = None
+) -> None:
+    """回写连接测试结果。"""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE llm_providers SET last_test_ok=?, last_test_msg=?, last_test_at=?,"
+                " updated_at=? WHERE id=?",
+                (1 if ok else 0, msg[:400], _now(), _now(), pid),
+            )
+    finally:
+        if own:
+            conn.close()
+
+
+def load_llm_provider_specs(conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
+    """供引擎 `chat_with_fallback` 取用的厂商规格列表（按默认/优先级排序）。
+
+    返回每项：{label, api_key, base_url, models:list[str]}。仅含 base_url 非空者；
+    引擎会把它们追加在「主通道（.env 单 key）」之后作为**独立 key 的降级兜底**。
+    """
+    specs: list[dict[str, Any]] = []
+    own = conn is None
+    conn = conn or connect()
+    init_db(conn)
+    try:
+        rows_ = conn.execute(
+            "SELECT id, name, base_url, api_key, models FROM llm_providers"
+            " WHERE base_url <> '' ORDER BY is_default DESC, priority ASC, id DESC"
+        ).fetchall()
+        for r in rows_:
+            models = [m.strip() for m in (r["models"] or "").split(",") if m.strip()]
+            specs.append(
+                {
+                    "label": f"db:{r['name']}",
+                    "api_key": r["api_key"] or "",
+                    "base_url": r["base_url"],
+                    "models": models,
+                }
+            )
+    finally:
+        if own:
+            conn.close()
+    return specs

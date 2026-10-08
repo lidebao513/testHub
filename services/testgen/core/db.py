@@ -178,6 +178,22 @@ SCHEMA: tuple[str, ...] = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS llm_providers (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        name          TEXT NOT NULL UNIQUE,
+        base_url      TEXT NOT NULL,
+        api_key       TEXT DEFAULT '',
+        models        TEXT DEFAULT '',
+        is_default    INTEGER DEFAULT 0,
+        priority      INTEGER DEFAULT 0,
+        last_test_ok  INTEGER,
+        last_test_msg TEXT DEFAULT '',
+        last_test_at  TEXT,
+        created_at    TEXT,
+        updated_at    TEXT
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS schema_meta (
         key   TEXT PRIMARY KEY,
         value TEXT
@@ -185,8 +201,8 @@ SCHEMA: tuple[str, ...] = (
     """,
 )
 
-# schema 版本：新增 runs / run_batches（F12 执行留痕）→ 1 → 2；repo_configs（仓库管理）→ 3
-SCHEMA_VERSION = "3"
+# schema 版本：新增 runs / run_batches（F12 执行留痕）→ 1 → 2；repo_configs（仓库管理）→ 3；llm_providers（多厂商独立 key）→ 4
+SCHEMA_VERSION = "4"
 
 INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_fp_project ON functional_points(project_id)",

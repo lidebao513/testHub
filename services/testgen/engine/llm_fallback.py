@@ -24,6 +24,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+import httpx
+
 from core.errors import LLMError
 from core.log import get_logger
 
@@ -60,6 +62,21 @@ _TRANSIENT_HINTS = (
 # 同一模型遇瞬时错误时最多重试次数（指数退避，封顶见下方 min(2**attempt, 8) 秒）；
 # 重试耗尽仍失败则降级到下一模型。
 _MAX_TRANSIENT_RETRY = 2
+
+
+def _is_localhost_url(base_url: str) -> bool:
+    """判断端点是否为本机地址（localhost / 127.0.0.1 / ::1）。
+
+    本机环境存在透明代理（HTTP_PROXY 指向 127.0.0.1），localhost 必须绕过代理直连，
+    否则会被代理返回 502；远程端点则仍走代理以获得出网能力。
+    """
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(base_url or "").hostname or "").lower()
+    except Exception:
+        return False
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 
 
 def _is_quota_unavailable(exc: Exception) -> bool:
@@ -130,96 +147,172 @@ def _strip_images(messages: list[dict[str, Any]], model: str) -> list[dict[str, 
     return out
 
 
+# 厂商规格缓存（避免每次 LLM 调用都读 DB）：30s TTL
+_PROVIDER_CACHE: dict[str, Any] = {"ts": 0.0, "specs": []}
+_PROVIDER_TTL = 30.0
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    """401 鉴权失败：该 key 对所有模型都无效，跳到下一个 provider 才有意义。"""
+    status = getattr(exc, "status_code", None)
+    if status == 401:
+        return True
+    msg = (str(getattr(exc, "message", "")) + " " + str(exc)).lower()
+    return "invalid api key" in msg or "authentication" in msg
+
+
+def _load_db_providers() -> list[dict[str, Any]]:
+    """带缓存地从 DB 读取多厂商规格（失败则退化为空列表，仅主通道）。"""
+    now = time.monotonic()
+    if now - _PROVIDER_CACHE["ts"] < _PROVIDER_TTL:
+        return _PROVIDER_CACHE["specs"]
+    specs: list[dict[str, Any]] = []
+    try:
+        from core import store
+
+        specs = store.load_llm_provider_specs()
+    except Exception:  # noqa: BLE001 - DB 不可用时退化为仅主通道
+        specs = []
+    _PROVIDER_CACHE["ts"] = now
+    _PROVIDER_CACHE["specs"] = specs
+    return specs
+
+
 def chat_with_fallback(
     *,
     channel: str,
-    api_key: str,
-    base_url: str,
-    timeout: float,
-    model: str,
-    model_chain: list[str] | None,
+    api_key: str = "",
+    base_url: str = "",
+    timeout: float = 60,
+    model: str = "",
+    model_chain: list[str] | None = None,
     messages: list[dict[str, Any]],
     temperature: float = 0.2,
+    providers: list[dict[str, Any]] | None = None,
 ) -> Any:
-    """统一 LLM 调用入口：按降级链顺序尝试模型，返回首个成功响应的 `chat.completions` 对象。
+    """统一 LLM 调用入口：按 **provider → model** 顺序尝试，返回首个成功响应。
 
     参数：
-    - channel：通道标识（"expert" / "llm"），用于最优模型缓存隔离；
-    - api_key / base_url：OpenAI 兼容凭证（同一 key 复用，不入库/不入日志）；
-    - model：主模型（降级链为空时回退用）；
-    - model_chain：降级顺序（用户给定顺序），可为空（仅用 model）；
-    - messages：已构造好的消息体（图片是否包含由调用方决定，本函数按候选模型视觉能力兜底剥离）。
+    - channel：通道标识（"expert" / "llm"），用于最优 (provider,model) 缓存隔离；
+    - providers：显式厂商列表（每项 {api_key, base_url, models}）；为空时自动构建：
+      先放「主通道」（由 api_key/base_url/model_chain 构造，来自 .env 单 key），
+      再追加 DB 中配置的多厂商（各自独立 key）——实现**多 provider 独立 key 降级兜底**；
+    - 其余同旧签名，保持向后兼容（5 个调用方无需改动）。
 
     行为：
-    - 命中额度/限流不可用 → 切下一个模型；
-    - 其他异常（鉴权/网络/参数）→ 直接抛 LLMError，不降级；
+    - 命中额度/限流不可用（403/404/429 + 关键字）→ 切下一模型；
+    - 瞬时网络错误（超时/连接中断）→ 先退避重试，耗尽再切下一模型；
+    - 该 provider 鉴权失败（401）→ 跳过该 provider 试下一个（多 provider 才有意义）；
+      若已是最后一个 provider，则按旧行为**直接判死**（与单 provider 测试一致）；
     - 全链失败 → 抛 LLMError("all models in chain failed")。
     """
-    chain = [m for m in (model_chain or []) if m] or [model]
-    if not chain:
-        raise LLMError("未提供可用模型（model / model_chain 均为空）")
-    if not api_key or not base_url:
-        raise LLMError("专家/LLM 未配置（需 api_key + base_url）")
+    if providers:
+        plist = [p for p in providers if p.get("api_key") and p.get("base_url")]
+    else:
+        chain = [m for m in (model_chain or []) if m] or ([model] if model else [])
+        plist = []
+        if api_key and base_url:
+            plist.append(
+                {"label": "primary", "api_key": api_key, "base_url": base_url, "models": chain}
+            )
+        try:
+            plist.extend(_load_db_providers())
+        except Exception:  # noqa: BLE001
+            pass
 
-    cache_key = (base_url, channel)
-    best = _best_index.get(cache_key, 0)
-    # 从已验证下标起尝试；到尾后回绕到链头，保证覆盖全链（含 best 之前可能已恢复的模型）
-    order = list(range(best, len(chain))) + list(range(0, best))
+    if not plist:
+        raise LLMError("未提供可用模型/Provider（model / model_chain / providers 均为空）")
+
+    # 从已验证的 (provider, model) 下标起尝试，覆盖全链（含已恢复者）
+    cache_key = channel
+    best = _best_index.get(cache_key, (0, 0))
+    order_p = list(range(best[0], len(plist))) + list(range(0, best[0]))
 
     try:
         from openai import OpenAI
     except ImportError as exc:  # pragma: no cover - 依赖缺失
         raise LLMError("未安装 openai 依赖，无法调用 LLM") from exc
 
-    client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
     last_err: Exception | None = None
-    for idx in order:
-        m = chain[idx]
-        # 同一模型最多尝试 (1 + _MAX_TRANSIENT_RETRY) 次：
-        # - 额度/限流不可用（403/404/429 + 关键字）→ 直接跳下一模型（不重试，换模型才有效）；
-        # - 瞬时网络错误（超时/连接中断）→ 先退避重试，耗尽再跳下一模型；
-        # - 真实错误（鉴权失败 / 参数错误）→ 不降级，直接判死。
-        for attempt in range(1 + _MAX_TRANSIENT_RETRY):
-            try:
-                resp = client.chat.completions.create(
-                    model=m,
-                    messages=_strip_images(messages, m),
-                    temperature=temperature,
-                )
-            except Exception as exc:  # 区分「可降级/可重试」与「真实错误」
-                if _is_quota_unavailable(exc):
-                    last_err = exc
-                    log.warning(
-                        "模型 %s 额度/限流不可用，降级到下一个：%s",
-                        m,
-                        str(exc)[:160],
+    for p_idx in order_p:
+        prov = plist[p_idx]
+        # 本机端点绕过透明代理直连；远程端点走代理出网。max_retries=0：瞬时重试交由引擎自身循环处理。
+        client = OpenAI(
+            api_key=prov["api_key"],
+            base_url=prov["base_url"],
+            timeout=timeout,
+            max_retries=0,
+            http_client=httpx.Client(trust_env=not _is_localhost_url(prov["base_url"])),
+        )
+        models = prov.get("models") or []
+        if not models:
+            # 该 provider 无模型可试：还有别的 provider 就跳过，否则判死
+            if p_idx < len(plist) - 1:
+                continue
+            raise LLMError(f"厂商 {prov.get('label', '?')} 未配置可用模型")
+        start_m = best[1] if p_idx == best[0] else 0
+        order_m = list(range(start_m, len(models))) + list(range(0, start_m))
+        for m_idx in order_m:
+            m = models[m_idx]
+            # 同一模型最多尝试 (1 + _MAX_TRANSIENT_RETRY) 次：
+            # - 额度/限流不可用（403/404/429 + 关键字）→ 直接跳下一模型（不重试，换模型才有效）；
+            # - 瞬时网络错误（超时/连接中断）→ 先退避重试，耗尽再跳下一模型；
+            # - 鉴权失败（401）→ 该 key 无效，跳下一个 provider（仅当还有别的 provider）；
+            # - 真实错误（参数错误）→ 不降级，直接判死。
+            for attempt in range(1 + _MAX_TRANSIENT_RETRY):
+                try:
+                    resp = client.chat.completions.create(
+                        model=m,
+                        messages=_strip_images(messages, m),
+                        temperature=temperature,
                     )
-                    break  # 换模型才有效，不重试
-                if _is_transient_error(exc):
-                    last_err = exc
-                    if attempt < _MAX_TRANSIENT_RETRY:
-                        wait = min(2**attempt, 8)
-                        log.warning(
-                            "模型 %s 瞬时错误（超时/网络），重试 %d/%d（%.0fs）：%s",
-                            m,
-                            attempt + 1,
-                            _MAX_TRANSIENT_RETRY,
-                            wait,
-                            str(exc)[:120],
-                        )
-                        time.sleep(wait)
-                        continue
-                    log.warning("模型 %s 瞬时错误重试耗尽，降级到下一个", m)
-                    break  # 重试耗尽，跳下一模型
-                # 真实错误（鉴权失败 / 参数错误）：不降级，直接失败
-                raise LLMError(f"模型 {m} 调用失败：{type(exc).__name__}") from exc
-            # 成功：更新最优模型缓存并返回
-            _best_index[cache_key] = idx
-            log.info("模型 %s 调用成功（channel=%s）", m, channel)
-            return resp
+                except Exception as exc:  # 区分「可降级/可重试」与「真实错误」
+                    if _is_auth_error(exc):
+                        if p_idx < len(plist) - 1:
+                            last_err = exc
+                            log.warning(
+                                "厂商 %s 鉴权失败，切换下一个 provider", prov.get("label")
+                            )
+                            break  # 跳到下一个 provider
+                        # 已是最后一个 provider：按旧行为直接判死（单 provider 测试一致）
+                        raise LLMError(f"模型 {m} 调用失败：{type(exc).__name__}") from exc
+                    if _is_quota_unavailable(exc):
+                        last_err = exc
+                        log.warning("模型 %s 额度/限流不可用，降级到下一个", m)
+                        break
+                    if _is_transient_error(exc):
+                        last_err = exc
+                        if attempt < _MAX_TRANSIENT_RETRY:
+                            wait = min(2**attempt, 8)
+                            log.warning(
+                                "模型 %s 瞬时错误（超时/网络），重试 %d/%d（%.0fs）：%s",
+                                m,
+                                attempt + 1,
+                                _MAX_TRANSIENT_RETRY,
+                                wait,
+                                str(exc)[:120],
+                            )
+                            time.sleep(wait)
+                            continue
+                        log.warning("模型 %s 瞬时错误重试耗尽，降级到下一个", m)
+                        break
+                    # 真实错误（参数错误等）：不降级，直接失败
+                    raise LLMError(f"模型 {m} 调用失败：{type(exc).__name__}") from exc
+                # 成功：更新最优 (provider,model) 缓存并返回
+                _best_index[cache_key] = (p_idx, m_idx)
+                log.info(
+                    "模型 %s（provider %s）调用成功（channel=%s）",
+                    m,
+                    prov.get("label"),
+                    channel,
+                )
+                return resp
+            # 该模型失败（break）→ 下一模型
+            continue
+        # 该 provider 所有模型失败 → 下一 provider
 
     raise LLMError(
-        f"all models in chain failed（共 {len(chain)} 个）："
+        f"all models in chain failed（共 {len(plist)} 个 provider）："
         f"{type(last_err).__name__ if last_err else 'unknown'}"
     )
 
