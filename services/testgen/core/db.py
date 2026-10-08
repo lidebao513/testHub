@@ -161,6 +161,22 @@ SCHEMA: tuple[str, ...] = (
         updated_at      TEXT
     )
     """,
+    # 控制台「代码仓库管理」：可配置的仓库清单（增删改查 + 连接测试结果留痕）。
+    # 安全约定：只存地址/分支/备注，**不存访问凭据**（连接测试复用本机 git 凭据链）。
+    """
+    CREATE TABLE IF NOT EXISTS repo_configs (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        name          TEXT NOT NULL UNIQUE,
+        url           TEXT NOT NULL,
+        ref           TEXT DEFAULT '',
+        remark        TEXT DEFAULT '',
+        last_test_ok  INTEGER,
+        last_test_msg TEXT DEFAULT '',
+        last_test_at  TEXT,
+        created_at    TEXT,
+        updated_at    TEXT
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS schema_meta (
         key   TEXT PRIMARY KEY,
@@ -169,8 +185,8 @@ SCHEMA: tuple[str, ...] = (
     """,
 )
 
-# schema 版本：新增 runs / run_batches（F12 执行留痕）→ 1 → 2
-SCHEMA_VERSION = "2"
+# schema 版本：新增 runs / run_batches（F12 执行留痕）→ 1 → 2；repo_configs（仓库管理）→ 3
+SCHEMA_VERSION = "3"
 
 INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_fp_project ON functional_points(project_id)",

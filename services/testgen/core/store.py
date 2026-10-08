@@ -844,3 +844,138 @@ def report_snapshot(
     finally:
         if own:
             conn.close()
+
+
+# ============================================================================
+# 代码仓库配置（控制台「代码仓库管理」菜单）：CRUD + 连接测试结果留痕
+# ============================================================================
+def _repo_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "name": row["name"],
+        "url": row["url"],
+        "ref": row["ref"] or "",
+        "remark": row["remark"] or "",
+        "last_test_ok": None if row["last_test_ok"] is None else bool(row["last_test_ok"]),
+        "last_test_msg": row["last_test_msg"] or "",
+        "last_test_at": row["last_test_at"] or "",
+        "created_at": row["created_at"] or "",
+        "updated_at": row["updated_at"] or "",
+    }
+
+
+def list_repo_configs(conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
+    own = conn is None
+    conn = conn or connect()
+    init_db(conn)
+    try:
+        rows_ = conn.execute("SELECT * FROM repo_configs ORDER BY id DESC").fetchall()
+        return [_repo_row(r) for r in rows_]
+    finally:
+        if own:
+            conn.close()
+
+
+def get_repo_config(rid: int, conn: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        row = conn.execute("SELECT * FROM repo_configs WHERE id = ?", (rid,)).fetchone()
+        return _repo_row(row) if row else None
+    finally:
+        if own:
+            conn.close()
+
+
+def create_repo_config(
+    name: str,
+    url: str,
+    *,
+    ref: str = "",
+    remark: str = "",
+    conn: sqlite3.Connection | None = None,
+) -> int:
+    """新增仓库配置；name 重复抛 ValidationError 由调用方转换。"""
+    own = conn is None
+    conn = conn or connect()
+    init_db(conn)
+    try:
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO repo_configs(name, url, ref, remark, created_at, updated_at)"
+                " VALUES(?,?,?,?,?,?)",
+                (name, url, ref, remark, _now(), _now()),
+            )
+            return int(cur.lastrowid or 0)
+    except sqlite3.IntegrityError as exc:
+        raise ContractViolation(f"仓库名称已存在: {name}") from exc
+    finally:
+        if own:
+            conn.close()
+
+
+def update_repo_config(  # noqa: PLR0913 - 部分更新语义天然多参：None=不改
+    rid: int,
+    *,
+    name: str | None = None,
+    url: str | None = None,
+    ref: str | None = None,
+    remark: str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """按需更新（None=不改）；改名重名抛 ContractViolation。返回是否命中行。"""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        with conn:
+            row = conn.execute("SELECT id FROM repo_configs WHERE id = ?", (rid,)).fetchone()
+            if not row:
+                return False
+            if name is not None:
+                conn.execute("UPDATE repo_configs SET name=? WHERE id=?", (name, rid))
+            if url is not None:
+                conn.execute("UPDATE repo_configs SET url=? WHERE id=?", (url, rid))
+            if ref is not None:
+                conn.execute("UPDATE repo_configs SET ref=? WHERE id=?", (ref, rid))
+            if remark is not None:
+                conn.execute("UPDATE repo_configs SET remark=? WHERE id=?", (remark, rid))
+            conn.execute("UPDATE repo_configs SET updated_at=? WHERE id=?", (_now(), rid))
+            return True
+    except sqlite3.IntegrityError as exc:
+        raise ContractViolation(f"仓库名称已存在: {name}") from exc
+    finally:
+        if own:
+            conn.close()
+
+
+def delete_repo_config(rid: int, conn: sqlite3.Connection | None = None) -> bool:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        with conn:
+            cur = conn.execute("DELETE FROM repo_configs WHERE id = ?", (rid,))
+            return bool(cur.rowcount)
+    finally:
+        if own:
+            conn.close()
+
+
+def record_repo_test(
+    rid: int,
+    ok: bool,
+    msg: str,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    """回写连接测试结果（列表页展示最近一次状态）。"""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE repo_configs SET last_test_ok=?, last_test_msg=?, last_test_at=?,"
+                " updated_at=? WHERE id=?",
+                (1 if ok else 0, msg[:400], _now(), _now(), rid),
+            )
+    finally:
+        if own:
+            conn.close()

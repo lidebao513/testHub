@@ -15,12 +15,18 @@
   header{background:linear-gradient(90deg,var(--brand),var(--brand2));color:#fff;padding:14px 22px;display:flex;align-items:center;gap:12px}
   header h1{font-size:18px;margin:0}
   header .tag{font-size:12px;opacity:.85;border:1px solid rgba(255,255,255,.5);padding:2px 8px;border-radius:999px}
+  nav{background:var(--brand2);padding:0 22px;display:flex;gap:4px}
+  nav button{background:transparent;color:#dbe7ff;border:0;border-radius:0;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent}
+  nav button:hover{color:#fff}
+  nav button.active{color:#fff;border-bottom-color:#fff}
+  .view{display:none}
+  .view.active{display:block}
   .wrap{display:grid;grid-template-columns:380px 1fr;gap:16px;padding:16px;align-items:start}
   @media(max-width:900px){.wrap{grid-template-columns:1fr}}
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 1px 2px rgba(16,24,40,.04)}
   .card h2{font-size:14px;margin:0 0 12px;color:var(--sub);text-transform:uppercase;letter-spacing:.04em}
   label{display:block;font-size:13px;color:var(--sub);margin:10px 0 4px}
-  textarea,input[type=text]{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:13px;font-family:inherit;background:#fff;color:var(--ink)}
+  textarea,input[type=text],select{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:13px;font-family:inherit;background:#fff;color:var(--ink)}
   textarea{min-height:74px;resize:vertical}
   .scopes{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
   .scopes label{display:flex;align-items:center;gap:6px;margin:0;font-size:13px;color:var(--ink);background:var(--chip);padding:6px 10px;border-radius:999px;cursor:pointer}
@@ -30,6 +36,8 @@
   .btn-primary:hover{background:var(--brand2)}
   .btn-ghost{background:#eef2ff;color:var(--brand2)}
   .btn-ok{background:var(--ok);color:#fff}
+  .btn-danger{background:#fee2e2;color:#991b1b}
+  .btn-sm{font-size:12px;padding:5px 9px;border-radius:7px}
   .btn:disabled{opacity:.5;cursor:not-allowed}
   .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
   .hint{font-size:12px;color:var(--sub);margin-top:6px;line-height:1.5}
@@ -39,17 +47,22 @@
   .b-pending,.b-running{background:#fef3c7;color:#92400e}
   .b-success{background:#dcfce7;color:#166534}
   .b-failed,.b-cancelled{background:#fee2e2;color:#991b1b}
+  .t-unknown{background:#f1f5f9;color:#65758a}
   .kv{display:flex;gap:8px;font-size:13px;margin:4px 0}
   .kv b{color:var(--sub);font-weight:600;min-width:84px}
-  a.link{color:var(--brand);text-decoration:none;font-size:13px}
+  a.link{color:var(--brand);text-decoration:none;font-size:13px;cursor:pointer}
   a.link:hover{text-decoration:underline}
   table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
   th,td{border:1px solid var(--line);padding:6px 8px;text-align:left}
   th{background:#f1f5f9;color:var(--sub)}
+  td.wrap-cell{word-break:break-all;max-width:340px}
   .pills{display:flex;flex-wrap:wrap;gap:6px}
   .pill{background:var(--chip);color:var(--brand2);font-size:12px;padding:3px 9px;border-radius:999px}
   details summary{cursor:pointer;color:var(--brand);font-size:13px}
   details{margin-top:12px;font-size:13px;color:var(--sub);line-height:1.6}
+  .test-result{font-size:12px;margin-top:8px;padding:9px 11px;border-radius:8px;line-height:1.5}
+  .test-result.ok{background:#dcfce7;color:#166534}
+  .test-result.bad{background:#fee2e2;color:#991b1b}
 </style>
 </head>
 <body>
@@ -58,6 +71,13 @@
   <span class="tag">代码 / URL → 测试用例 → 执行验证</span>
 </header>
 
+<nav>
+  <button id="nav-console" class="active" onclick="switchView('console')">控制台</button>
+  <button id="nav-repos" onclick="switchView('repos')">代码仓库</button>
+</nav>
+
+<!-- ======================= 视图一：控制台 ======================= -->
+<div class="view active" id="view-console">
 <div class="wrap">
   <!-- 左：输入 -->
   <div class="card">
@@ -68,6 +88,14 @@
 
     <div class="sec">
       <label>或分项填写（更清晰）</label>
+      <div class="row">
+        <div>
+          <label>选择已配置仓库（可选） <a class="link" onclick="switchView('repos')">→ 管理仓库</a></label>
+          <select id="repo_preset" onchange="applyRepoPreset(this.value)">
+            <option value="">— 手动输入 —</option>
+          </select>
+        </div>
+      </div>
       <div class="row">
         <div><label>代码目录 / 仓库地址</label><input type="text" id="repo" placeholder="D:/code/myrepo 或 git@...:x/y.git"></div>
       </div>
@@ -114,6 +142,7 @@
       <p><b>流程：</b>① 填被测对象 → ②「生成用例」(异步，右下看进度) → ③ 生成完自动拿到项目ID → ④「执行验证」(可选) → ⑤「查看报告」。</p>
       <p><b>真实调用：</b>本控制台跑在你本机，浏览器发现与点击使用你电脑的真实网络，可真实访问内网/线上目标。</p>
       <p><b>凭证安全：</b>账号/密码/动态口令仅随本次请求发出，服务端不回显、不落库、不写入产物（平台设计如此）。请在本机受信任环境使用。</p>
+      <p><b>仓库配置：</b>「代码仓库」菜单可保存常用仓库地址并测试连通性；连接测试用本机 git 凭据（平台不存密码）。</p>
     </details>
   </div>
 
@@ -135,6 +164,42 @@
       <div id="projects"><span class="hint">点击「刷新项目」加载</span></div>
     </div>
   </div>
+</div>
+</div>
+
+<!-- ======================= 视图二：代码仓库管理 ======================= -->
+<div class="view" id="view-repos">
+<div class="wrap">
+  <!-- 左：新增/编辑表单 -->
+  <div class="card">
+    <h2 id="repo_form_title">➕ 新增仓库</h2>
+    <input type="hidden" id="repo_edit_id" value="">
+    <label>名称（必填，唯一）</label>
+    <input type="text" id="repo_name" placeholder="如：testhub 主仓库">
+    <label>仓库地址（本地目录 或 git 地址）</label>
+    <input type="text" id="repo_url" placeholder="D:/code/myrepo 或 git@github.com:x/y.git 或 https://.../y.git">
+    <label>分支 / ref（可空；git 测试时顺带校验是否存在）</label>
+    <input type="text" id="repo_ref" placeholder="如 master / main，留空不校验">
+    <label>备注</label>
+    <input type="text" id="repo_remark" placeholder="用途说明（可空）">
+    <div class="actions">
+      <button class="btn-primary" id="repo_save" onclick="saveRepo()">保存</button>
+      <button class="btn-ghost" id="repo_probe" onclick="probeFormRepo()">测试连接</button>
+      <button class="btn-danger" onclick="resetRepoForm()">清空表单</button>
+    </div>
+    <div id="repo_form_result"></div>
+    <div class="hint">连接测试：git 地址走只读 <code>git ls-remote</code>（不拉取代码，复用本机 SSH/凭据，平台不存密码）；本地目录检查存在且非空。</div>
+  </div>
+
+  <!-- 右：仓库列表 -->
+  <div class="card">
+    <h2>📦 已配置仓库</h2>
+    <div class="actions" style="margin:0 0 10px">
+      <button class="btn-ghost" onclick="loadRepos()">刷新列表</button>
+    </div>
+    <div id="repo_list"><span class="hint">加载中…</span></div>
+  </div>
+</div>
 </div>
 
 <script>
@@ -165,6 +230,153 @@ async function api(path, opts){
   return r.json();
 }
 
+/* ============ 菜单切换 ============ */
+function switchView(name){
+  for(const v of ["console","repos"]){
+    $("view-"+v).classList.toggle("active", v===name);
+    $("nav-"+v).classList.toggle("active", v===name);
+  }
+  if(name==="repos") loadRepos();
+}
+
+/* ============ 代码仓库管理 ============ */
+let repoCache = [];
+function testBadge(item){
+  if(item.last_test_ok === true) return '<span class="badge b-success">可用</span>';
+  if(item.last_test_ok === false) return '<span class="badge b-failed">失败</span>';
+  return '<span class="badge t-unknown">未测试</span>';
+}
+function kindPill(item){
+  return item.kind==="git" ? '<span class="pill">git</span>' : '<span class="pill">本地</span>';
+}
+
+async function loadRepos(){
+  try{
+    const r = await api("/api/v1/repos");
+    repoCache = r.repos || [];
+    renderRepoList();
+    renderRepoPreset();
+  }catch(e){
+    $("repo_list").innerHTML = '<span class="hint">加载失败: '+e.message+'</span>';
+  }
+}
+
+function renderRepoList(){
+  const el = $("repo_list");
+  if(!repoCache.length){ el.innerHTML='<span class="hint">暂无配置，左侧新增一个吧</span>'; return; }
+  let html = '<table><tr><th>ID</th><th>名称</th><th>类型</th><th>地址</th><th>ref</th><th>最近测试</th><th>操作</th></tr>';
+  for(const r of repoCache){
+    const tested = r.last_test_at ? `${testBadge(r)}<br><span class="hint">${r.last_test_at}<br>${escapeHtml(r.last_test_msg)}</span>` : testBadge(r);
+    html += `<tr><td>${r.id}</td><td>${escapeHtml(r.name)}${r.remark?`<br><span class="hint">${escapeHtml(r.remark)}</span>`:""}</td>`+
+      `<td>${kindPill(r)}</td><td class="wrap-cell">${escapeHtml(r.url)}</td><td>${escapeHtml(r.ref||"—")}</td>`+
+      `<td>${tested}</td>`+
+      `<td><a class="link" onclick="probeRepo(${r.id})">测试</a> `+
+      `<a class="link" onclick="fillRepo(${r.id})">填到控制台</a> `+
+      `<a class="link" onclick="editRepo(${r.id})">编辑</a> `+
+      `<a class="link" style="color:var(--bad)" onclick="delRepo(${r.id})">删除</a></td></tr>`;
+  }
+  html += "</table>";
+  el.innerHTML = html;
+}
+
+function renderRepoPreset(){
+  const sel = $("repo_preset");
+  const cur = sel.value;
+  let html = '<option value="">— 手动输入 —</option>';
+  for(const r of repoCache){
+    const mark = r.last_test_ok===true ? "✅" : (r.last_test_ok===false ? "❌" : "·");
+    html += `<option value="${r.id}">${mark} ${escapeHtml(r.name)}</option>`;
+  }
+  sel.innerHTML = html;
+  sel.value = cur;
+}
+
+function applyRepoPreset(id){
+  if(!id){ $("repo").value=""; return; }
+  const r = repoCache.find(x=>String(x.id)===String(id));
+  if(r){ $("repo").value = r.url; log(`已选择仓库「${r.name}」: ${r.url}`); }
+}
+
+function escapeHtml(s){
+  return String(s??"").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function resetRepoForm(){
+  $("repo_edit_id").value=""; $("repo_name").value=""; $("repo_url").value="";
+  $("repo_ref").value=""; $("repo_remark").value="";
+  $("repo_form_result").innerHTML="";
+  $("repo_form_title").textContent="➕ 新增仓库";
+}
+
+async function saveRepo(){
+  const body = {
+    name: $("repo_name").value.trim(),
+    url: $("repo_url").value.trim(),
+    ref: $("repo_ref").value.trim(),
+    remark: $("repo_remark").value.trim()
+  };
+  if(!body.name || !body.url){ alert("名称与仓库地址必填"); return; }
+  const editId = $("repo_edit_id").value;
+  try{
+    if(editId){
+      await api("/api/v1/repos/"+editId, {method:"PUT", body:JSON.stringify(body)});
+    }else{
+      await api("/api/v1/repos", {method:"POST", body:JSON.stringify(body)});
+    }
+    resetRepoForm();
+    await loadRepos();
+  }catch(e){ alert("保存失败: "+e.message); }
+}
+
+async function probeFormRepo(){
+  const url = $("repo_url").value.trim();
+  if(!url){ alert("请先填仓库地址"); return; }
+  const el = $("repo_form_result");
+  el.innerHTML = '<div class="test-result ok" style="background:#f1f5f9;color:#65758a">测试中…</div>';
+  try{
+    const r = await api("/api/v1/repos/test", {method:"POST", body:JSON.stringify({url, ref:$("repo_ref").value.trim()})});
+    el.innerHTML = `<div class="test-result ${r.ok?"ok":"bad"}">${r.ok?"✅":"❌"} [${r.kind}] ${escapeHtml(r.message)}（${r.duration_ms}ms）</div>`;
+  }catch(e){
+    el.innerHTML = `<div class="test-result bad">❌ 测试失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function probeRepo(id){
+  try{
+    const r = await api(`/api/v1/repos/${id}/test`, {method:"POST"});
+    await loadRepos();
+    if(!r.ok) log(`仓库 ${id} 连接失败: ${r.message}`);
+  }catch(e){ alert("测试失败: "+e.message); }
+}
+
+function editRepo(id){
+  const r = repoCache.find(x=>String(x.id)===String(id));
+  if(!r) return;
+  $("repo_edit_id").value=r.id; $("repo_name").value=r.name; $("repo_url").value=r.url;
+  $("repo_ref").value=r.ref||""; $("repo_remark").value=r.remark||"";
+  $("repo_form_title").textContent=`✏️ 编辑仓库 #${r.id}`;
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+async function delRepo(id){
+  const r = repoCache.find(x=>String(x.id)===String(id));
+  if(!confirm(`确定删除仓库「${r?r.name:id}」？（不影响已生成的项目）`)) return;
+  try{
+    await api("/api/v1/repos/"+id, {method:"DELETE"});
+    await loadRepos();
+  }catch(e){ alert("删除失败: "+e.message); }
+}
+
+function fillRepo(id){
+  const r = repoCache.find(x=>String(x.id)===String(id));
+  if(!r) return;
+  $("repo_preset").value = String(id);
+  $("repo").value = r.url;
+  switchView("console");
+  log(`已填入仓库「${r.name}」: ${r.url}`);
+}
+
+/* ============ 生成 / 执行（原有功能不变） ============ */
 function buildBody(){
   const ai = $("auto_input").value.trim();
   const sc = scopes();
@@ -294,7 +506,8 @@ async function loadProjects(){
 function execPid(id){ $("exec_pid").value=id; doExecute(); }
 
 loadProjects();
-log("控制台就绪。填写左侧被测对象后点「生成用例」。");
+loadRepos();
+log("控制台就绪。填写左侧被测对象后点「生成用例」；常用仓库可在「代码仓库」菜单配置。");
 </script>
 </body>
 </html>

@@ -243,7 +243,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
@@ -268,6 +268,11 @@ const formRef = ref()
 const loading = ref(false)
 const loginMode = ref('password')
 
+// 默认账号密码（按需求写死在前端：打开即预填，点击“登录”直接进，无需手动输入）
+// 如需修改默认账号，改这里两行即可；后端需存在同名账号（已由启动脚本/createsuperuser 保证）。
+const DEFAULT_USERNAME = 'admin'
+const DEFAULT_PASSWORD = 'Testhub'
+
 // 图形验证码相关
 const captchaImage = ref('')
 const captchaToken = ref('')
@@ -284,6 +289,12 @@ const form = reactive({
   captcha_code: '',
   verify_code: '',
   verify_code_token: ''
+})
+
+// 打开登录页即预填默认账号密码，用户点击"登录"直接进，无需手动输入
+onMounted(() => {
+  form.username = DEFAULT_USERNAME
+  form.password = DEFAULT_PASSWORD
 })
 
 const validatePhone = (rule, value, callback) => {

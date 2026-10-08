@@ -29,7 +29,13 @@ from core.config import get_settings
 from core.contracts import CONTRACT_VERSION
 from core.db import connect, init_db
 from core.enums import ALL_TP_TYPES, MODE_FULL, REPORT_FORMATS, PullStatus, ReportFormat
-from core.errors import AppError, NotFoundError, UnauthorizedError, ValidationError
+from core.errors import (
+    AppError,
+    ContractViolation,
+    NotFoundError,
+    UnauthorizedError,
+    ValidationError,
+)
 from core.log import get_logger, log_extra, set_request_id
 from engine import pipeline
 from engine import report as report_engine
@@ -53,6 +59,7 @@ from engine.remote_scan import (
 from engine.verdict import run_five_dimension_verdict
 from output.report_writer import ReportExportError, export_report, render_html, render_markdown
 from output.writer import OutputWriter
+from service import repos as service_repos
 from service.tasks import (
     BackgroundExecutor,
     GenerationTask,
@@ -1192,6 +1199,90 @@ def verdict(req: VerdictRequest) -> dict[str, Any]:
     if facts.get("auth_mode") is None:
         facts["auth_mode"] = ""
     return run_five_dimension_verdict(facts)
+
+
+# ============================================================================
+# 代码仓库管理（控制台「代码仓库」菜单）：可配置仓库清单 + 连接测试
+# ============================================================================
+class RepoConfigRequest(BaseModel):
+    """仓库配置入参（**不含凭据**：连接测试复用本机 git 凭据链）。"""
+
+    name: str = Field(..., min_length=1, max_length=100, description="显示名称（唯一）")
+    url: str = Field(..., min_length=1, max_length=500, description="本地目录或 git 仓库地址")
+    ref: str = Field("", max_length=200, description="分支/标签（可空，测试时顺带校验）")
+    remark: str = Field("", max_length=300, description="备注")
+
+
+class RepoProbeRequest(BaseModel):
+    """未保存地址的即时连接测试入参。"""
+
+    url: str = Field(..., min_length=1, max_length=500)
+    ref: str = Field("", max_length=200)
+
+
+@app.get("/api/v1/repos", dependencies=[Depends(require_auth)])
+def list_repos() -> dict[str, Any]:
+    """列出已配置的代码仓库（含最近一次连接测试结果）。"""
+    items = store.list_repo_configs()
+    for it in items:
+        it["kind"] = "git" if service_repos.is_git_url(it["url"]) else "local"
+    return {"ok": True, "repos": items}
+
+
+@app.post("/api/v1/repos", dependencies=[Depends(require_auth)])
+def create_repo(req: RepoConfigRequest) -> dict[str, Any]:
+    """新增仓库配置（name 唯一）。"""
+    try:
+        rid = store.create_repo_config(
+            req.name.strip(), req.url.strip(), ref=req.ref.strip(), remark=req.remark.strip()
+        )
+    except ContractViolation as exc:
+        raise ValidationError(str(exc)) from exc
+    return {"ok": True, "id": rid}
+
+
+@app.put("/api/v1/repos/{rid}", dependencies=[Depends(require_auth)])
+def update_repo(rid: int, req: RepoConfigRequest) -> dict[str, Any]:
+    """更新仓库配置。"""
+    try:
+        changed = store.update_repo_config(
+            rid,
+            name=req.name.strip(),
+            url=req.url.strip(),
+            ref=req.ref.strip(),
+            remark=req.remark.strip(),
+        )
+    except ContractViolation as exc:
+        raise ValidationError(str(exc)) from exc
+    if not changed:
+        raise NotFoundError(f"仓库配置不存在: {rid}")
+    return {"ok": True}
+
+
+@app.delete("/api/v1/repos/{rid}", dependencies=[Depends(require_auth)])
+def delete_repo(rid: int) -> dict[str, Any]:
+    """删除仓库配置。"""
+    removed = store.delete_repo_config(rid)
+    if not removed:
+        raise NotFoundError(f"仓库配置不存在: {rid}")
+    return {"ok": True}
+
+
+@app.post("/api/v1/repos/test", dependencies=[Depends(require_auth)])
+def test_repo_address(req: RepoProbeRequest) -> dict[str, Any]:
+    """即时连接测试（地址可未保存）：git 走只读 ls-remote，本地查目录。"""
+    return service_repos.probe_repo(req.url, req.ref)
+
+
+@app.post("/api/v1/repos/{rid}/test", dependencies=[Depends(require_auth)])
+def test_repo_config(rid: int) -> dict[str, Any]:
+    """测试已保存仓库的连通性，并回写最近一次结果。"""
+    cfg = store.get_repo_config(rid)
+    if cfg is None:
+        raise NotFoundError(f"仓库配置不存在: {rid}")
+    result = service_repos.probe_repo(cfg["url"], cfg["ref"])
+    store.record_repo_test(rid, result["ok"], result["message"])
+    return {"ok": True, "id": rid, **result}
 
 
 # ============================================================================
