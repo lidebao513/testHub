@@ -83,6 +83,17 @@ frontend/dist/
 Dockerfile*
 docker-compose*.yml
 .dockerignore
+
+# 工作区克隆的第三方被测目标（含他人代码/凭据），整目录排除，不混入自有仓库
+work/
+
+# 本机会话产生的临时日志/产物（非项目源码，勿入库）
+%LOG%
+_kill.txt
+backend_run.log
+scan_processes.csv
+scan_processes_cleanup.txt
+scan_processes_summary.txt
 # testgen sidecar 部署配置（M3）需入库：放行以下例外（不影响 testhub 自身 Docker 规则）
 !services/testgen/Dockerfile
 !services/testgen/docker-compose.testgen.yml
