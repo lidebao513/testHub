@@ -13,7 +13,12 @@ _SERVICE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _SERVICE_ROOT not in sys.path:
     sys.path.insert(0, _SERVICE_ROOT)
 
-_TMP = tempfile.mkdtemp(prefix="testgen-test-")
+# 测试临时目录放在项目内，避开系统 Temp 下本机 safe-delete 对 WAL 辅助文件（-wal/-shm）的拦截：
+# WAL 模式下这些文件在事务提交时会被 SQLite 删除/截断，触发 safe-delete 误置只读，
+# 导致「attempt to write a readonly database」的跨用例颤动。项目内目录不在其监控范围。
+_PYTEST_TMP_ROOT = os.path.join(_SERVICE_ROOT, ".pytest-tmp")
+os.makedirs(_PYTEST_TMP_ROOT, exist_ok=True)
+_TMP = tempfile.mkdtemp(prefix="testgen-test-", dir=_PYTEST_TMP_ROOT)
 os.environ.setdefault("APP_ENV", "test")
 os.environ["DATA_DIR"] = os.path.join(_TMP, "data")
 os.environ["OUTPUT_DIR"] = os.path.join(_TMP, "outputs")

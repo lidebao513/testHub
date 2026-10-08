@@ -245,7 +245,6 @@ class TaskStore:
     def list_recent(self, limit: int = 10) -> list[GenerationTask]:
         conn = connect()
         try:
-            init_db(conn)
             rows = conn.execute(
                 "SELECT * FROM gen_tasks ORDER BY created_at DESC LIMIT ?", (limit,)
             ).fetchall()
@@ -256,7 +255,6 @@ class TaskStore:
     def counts_by_state(self) -> dict[str, int]:
         conn = connect()
         try:
-            init_db(conn)
             rows = conn.execute(
                 "SELECT state, COUNT(*) AS n FROM gen_tasks GROUP BY state"
             ).fetchall()
@@ -266,9 +264,10 @@ class TaskStore:
 
     # ---- 内部 ----
     def _fetch_one(self, where: str, params: tuple) -> GenerationTask | None:
+        # 读路径不写库：表结构由写路径（create/init_db）保证存在，避免读操作触发写
+        # （在只读库场景下会抛 readonly，且读本就无需建表）。
         conn = connect()
         try:
-            init_db(conn)
             row = conn.execute(f"SELECT * FROM gen_tasks WHERE {where}", params).fetchone()
         finally:
             conn.close()
@@ -309,8 +308,9 @@ class BackgroundExecutor:
         """提交作业到线程池（非阻塞）。"""
 
         def _run() -> None:
-            self._store.update(task_id, state=TaskState.RUNNING.value, started_at=_now())
             try:
+                # 首个写操作也纳入兜底：写库失败时（如库只读）以 FAILED 终态落库而非线程崩溃
+                self._store.update(task_id, state=TaskState.RUNNING.value, started_at=_now())
                 result = job()
                 # 运行期间被取消：以 cancelled 终态覆盖 success（取消优先于完成）
                 if self._store.is_cancelled(task_id):
