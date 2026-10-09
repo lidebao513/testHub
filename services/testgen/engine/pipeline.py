@@ -1160,6 +1160,7 @@ def run_execution(
     opts: PipelineOptions | None = None,
     *,
     progress: ProgressFn | None = None,
+    tp_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """对**已有项目**的用例执行验证（不重新生成）。
 
@@ -1167,12 +1168,19 @@ def run_execution(
     pass / fail / error / skipped 结论并落库（F12），无需重新生成用例。
     等价于 CLI `testgen execute --project <id>` 与服务端 `POST /api/v1/execute`
     （带 `project_id` 的调用）。执行策略与 `stage_execute` 完全一致（同一套 `_build_exec_options`）。
+
+    `tp_ids` 非空时只重跑这些测试点对应的用例（用于 flaky 重跑治理）。
     """
     opts = opts or default_options()
     rows = store.list_cases(project_id, include_obsolete=False)
     if not rows:
         raise EngineError(f"项目 {project_id} 没有可执行的用例；请先生成用例")
     cases = [_case_spec_from_row(r) for r in rows]
+    if tp_ids:
+        wanted = set(tp_ids)
+        cases = [c for c in cases if c.tp_id in wanted]
+        if not cases:
+            raise EngineError(f"项目 {project_id} 在给定 tp_ids 范围内没有可执行的用例")
     ro = _runtime_options_for_execute(opts)
     exec_options = _build_exec_options(opts, ro, project_id)
     batch_id = _new_batch_id()

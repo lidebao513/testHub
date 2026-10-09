@@ -914,6 +914,102 @@ def create_repo_config(
             conn.close()
 
 
+def export_repo_configs(conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
+    """导出全部仓库配置（共享/备份）：只含地址/分支/备注，不含连接测试留痕。"""
+    rows_ = list_repo_configs(conn)
+    out = []
+    for r in rows_:
+        out.append(
+            {
+                "name": r["name"],
+                "url": r["url"],
+                "ref": r["ref"],
+                "remark": r["remark"],
+            }
+        )
+    return out
+
+
+def import_repo_configs(
+    items: list[dict[str, Any]], conn: sqlite3.Connection | None = None
+) -> dict[str, int]:
+    """从共享 JSON 批量导入仓库配置（按 name 幂等 upsert）。
+
+    返回 {imported, updated}。连接测试留痕不覆盖（保留本机真实状态）。
+    """
+    own = conn is None
+    conn = conn or connect()
+    init_db(conn)
+    imported = updated = 0
+    try:
+        for it in items:
+            name = (it.get("name") or "").strip()
+            url = (it.get("url") or "").strip()
+            if not name or not url:
+                continue
+            existing = conn.execute(
+                "SELECT id FROM repo_configs WHERE name = ?", (name,)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE repo_configs SET url=?, ref=?, remark=?, updated_at=? WHERE id=?",
+                    (url, it.get("ref") or "", it.get("remark") or "", _now(), int(existing["id"])),
+                )
+                updated += 1
+            else:
+                conn.execute(
+                    "INSERT INTO repo_configs(name, url, ref, remark, created_at, updated_at)"
+                    " VALUES(?,?,?,?,?,?)",
+                    (name, url, it.get("ref") or "", it.get("remark") or "", _now(), _now()),
+                )
+                imported += 1
+        conn.commit()
+    finally:
+        if own:
+            conn.close()
+    return {"imported": imported, "updated": updated}
+
+
+def seed_repo_configs(conn: sqlite3.Connection | None = None) -> int:
+    """首次启动播种样例仓库配置（仅当表为空）。
+
+    便于团队/多实例开箱即用与配置共享；已存在则幂等跳过。
+    """
+    rows_ = list_repo_configs(conn)
+    if rows_:
+        return 0
+    samples = [
+        {
+            "name": "test-accel",
+            "url": "C:/Users/EDY/WorkBuddy/testhub_platform/work/test-accel",
+            "ref": "",
+            "remark": "测试加速平台（八环门禁仓库）",
+        },
+        {
+            "name": "testhub_platform",
+            "url": "C:/Users/EDY/WorkBuddy/testhub_platform",
+            "ref": "main",
+            "remark": "testhub 主仓库（testCodeFast 并入目标）",
+        },
+    ]
+    n = 0
+    own = conn is None
+    c = conn or connect()
+    try:
+        for s in samples:
+            c.execute(
+                "INSERT INTO repo_configs(name, url, ref, remark, created_at, updated_at)"
+                " VALUES(?,?,?,?,?,?)",
+                (s["name"], s["url"], s["ref"], s["remark"], _now(), _now()),
+            )
+            n += 1
+        c.commit()
+    finally:
+        if own:
+            c.close()
+    return n
+
+
 def update_repo_config(  # noqa: PLR0913 - 部分更新语义天然多参：None=不改
     rid: int,
     *,

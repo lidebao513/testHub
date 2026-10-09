@@ -12,6 +12,8 @@ openai
 httpx
 requests
 PyYAML
+# 文件上传（📥 导入测试点 / 仓库配置导入）；FastAPI Form/UploadFile 必需
+python-multipart
 
 # ============================================================================
 # OPTIONAL（P3 运行时 UI 发现 / 用例执行，默认不装）

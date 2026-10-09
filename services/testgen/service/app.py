@@ -18,9 +18,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Header, Request
+from fastapi import Depends, FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from core import store
@@ -85,6 +86,7 @@ executor = BackgroundExecutor(task_store)
 async def lifespan(_: FastAPI) -> Any:
     """启动建表、关闭时优雅停机 worker 池。"""
     init_db()
+    store.seed_repo_configs()
     yield
     executor.shutdown(wait=True)
 
@@ -1021,6 +1023,45 @@ def project_import_test_points(pid: int, req: ImportTestPointsRequest) -> dict[s
     return {"ok": True, "project_id": pid, **result}
 
 
+@app.post("/api/v1/projects/{pid}/import-test-points/upload", dependencies=[Depends(require_auth)])
+async def project_import_test_points_upload(
+    pid: int,
+    file: UploadFile = File(...),
+    replace: bool = Form(True),
+) -> dict[str, Any]:
+    """导入外部测试点（文件上传版，供控制台「📥 导入测试点」按钮使用）。"""
+    try:
+        raw = await file.read()
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValidationError(f"解析上传文件失败：{exc}") from exc
+    tps = data.get("test_points") if isinstance(data, dict) else data
+    if not isinstance(tps, list):
+        raise ValidationError("JSON 结构不对：期望 {\"test_points\": [...]} 或数组")
+    if not tps:
+        raise ValidationError("文件为空或没有 test_points")
+    result = store.import_test_points(pid, tps, replace=replace)
+    return {"ok": True, "project_id": pid, **result}
+
+
+@app.post("/api/v1/projects/{pid}/rerun-flaky", dependencies=[Depends(require_auth)])
+def project_rerun_flaky(pid: int) -> dict[str, Any]:
+    """对当前项目的不稳定用例（flaky）做针对性重跑，刷新其结论留痕。"""
+    flaky = analytics.flaky(pid)
+    if not flaky.get("count"):
+        return {"ok": True, "rerun": 0, "batch_id": "", "message": "没有 flaky 用例"}
+    tp_ids = [f["tp_id"] for f in flaky["flaky"] if f.get("tp_id")]
+    if not tp_ids:
+        return {"ok": True, "rerun": 0, "batch_id": "", "message": "flaky 用例缺少 tp_id，无法重跑"}
+    summary = pipeline.run_execution(pid, pipeline.default_options(), tp_ids=tp_ids)
+    return {
+        "ok": True,
+        "rerun": len(tp_ids),
+        "batch_id": summary.get("batch_id", ""),
+        "message": f"已对 {len(tp_ids)} 个 flaky 测试点发起重跑",
+    }
+
+
 # ============================================================================
 # 扫描块联动：分支 / 提交 / 中文功能描述 / 任务取消（前端 console.html）
 # ============================================================================
@@ -1307,6 +1348,37 @@ def list_repos() -> dict[str, Any]:
     return {"ok": True, "repos": items}
 
 
+@app.get("/api/v1/repos/export", dependencies=[Depends(require_auth)])
+def export_repos() -> dict[str, Any]:
+    """导出全部仓库配置（共享/备份），仅含地址/分支/备注。"""
+    return {"ok": True, "repo_configs": store.export_repo_configs()}
+
+
+class ImportReposRequest(BaseModel):
+    """共享 JSON 批量导入仓库配置。"""
+
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    json_path: str = Field("", description="服务端 JSON 文件路径（items 为空时读取）")
+
+
+@app.post("/api/v1/repos/import", dependencies=[Depends(require_auth)])
+def import_repos(req: ImportReposRequest) -> dict[str, Any]:
+    """从共享 JSON 批量导入仓库配置（按 name 幂等 upsert）。"""
+    items = req.items
+    if not items and req.json_path:
+        try:
+            data = json.loads(Path(req.json_path).read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise ValidationError(f"读取仓库配置 JSON 失败：{exc}") from exc
+        items = data.get("repo_configs") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            raise ValidationError("JSON 结构不对：期望 {\"repo_configs\": [...]} 或数组")
+    if not items:
+        raise ValidationError("请提供 items 或有效的 json_path")
+    res = store.import_repo_configs(items)
+    return {"ok": True, **res}
+
+
 @app.post("/api/v1/repos", dependencies=[Depends(require_auth)])
 def create_repo(req: RepoConfigRequest) -> dict[str, Any]:
     """新增仓库配置（name 唯一）。"""
@@ -1465,3 +1537,7 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 def console_home() -> FileResponse:
     """平台控制台首页：返回 `service/web/index.html`（自包含 HTML/JS，调用本服务 API）。"""
     return FileResponse(WEB_DIR / "index.html")
+
+
+# 本地静态资源（Chart.js 等）：从 `service/web` 提供，免去外部 CDN 依赖。
+app.mount("/static", StaticFiles(directory=str(WEB_DIR), check_dir=True), name="web-static")
