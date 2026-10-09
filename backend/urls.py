@@ -1,9 +1,13 @@
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, include, re_path
 from django.conf import settings
 from django.conf.urls.static import static
 from django.views.decorators.csrf import csrf_exempt
 from django.views.static import serve
+from apps.testgen_integration.proxy import (
+    testgen_web_proxy,
+    testgen_api_proxy,
+)
 from drf_spectacular.views import (
     SpectacularAPIView,
     SpectacularRedocView,
@@ -39,6 +43,10 @@ urlpatterns = [
     # MCP 管理端 REST（日志/待确认）；协议端点 /api/mcp/ 在 ASGI 层分流
     path('api/mcp/', include('apps.mcp.urls')),
     path('api/testgen/', include('apps.testgen_integration.urls')),  # testgen 代码生成 sidecar 集成
+    # testgen 控制台反向代理（同源嵌入：页面走 /testgen/，API 走 /api/v1/，均转发到 sidecar :8100）
+    re_path(r'^testgen/(?P<rest>.*)$', testgen_web_proxy),
+    re_path(r'^testgen$', testgen_web_proxy),
+    re_path(r'^api/v1/(?P<rest>.*)$', testgen_api_proxy),
 ]
 
 if settings.ANALYTICS_ENABLED:

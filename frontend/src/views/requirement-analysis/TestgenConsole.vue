@@ -24,9 +24,12 @@ const iframeRef = ref(null)
 // headless 嵌入契约：必须带 ?embed=1（隐藏被嵌页面自带导航/品牌头），
 // zone 决定只渲染哪个功能区，由 SPA 二级菜单路由 query 驱动。
 const consoleSrc = computed(() => {
-  const host = window.location.hostname
+  const protocol = window.location.protocol
+  const hostname = window.location.hostname
+  // 指向后端 Django(8000) 的 /testgen/ 反向代理（页面），其 API 走 /api/v1/ 代理；
+  // 不能沿用 SPA 自身端口(3000)，否则 vite 没有该路由。
   const zone = route.query.zone || 'generate'
-  return `http://${host}:8000/testgen/?embed=1&zone=${encodeURIComponent(zone)}`
+  return `${protocol}//${hostname}:8000/testgen/?embed=1&zone=${encodeURIComponent(zone)}`
 })
 
 // 把 SPA 已登录的 JWT 注入 iframe（console.html 监听 TESTGEN_AUTH_TOKEN）

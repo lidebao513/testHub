@@ -21,6 +21,7 @@
                 <span>{{ $t('menu.intelligentCaseGeneration') }}</span>
               </template>
               <el-menu-item index="/ai-generation/requirement-analysis">{{ $t('menu.aiCaseGeneration') }}</el-menu-item>
+              <el-menu-item index="/ai-generation/testgen-console">{{ $t('menu.codeGenerationConsole') }}</el-menu-item>
               <el-menu-item index="/ai-generation/generated-testcases">{{ $t('menu.aiGeneratedTestcases') }}</el-menu-item>
             </el-sub-menu>
             <el-menu-item index="/ai-generation/projects">

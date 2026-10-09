@@ -23,6 +23,7 @@ export default {
     // AI用例生成
     intelligentCaseGeneration: '智能用例生成',
     aiCaseGeneration: 'AI用例生成',
+    codeGenerationConsole: '代码生成（testgen）',
     aiGeneratedTestcases: 'AI生成用例记录',
     promptConfig: '提示词配置',
     projectManagement: '项目管理',

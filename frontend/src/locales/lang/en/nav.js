@@ -23,6 +23,7 @@ export default {
     // AI Test Case Generation
     intelligentCaseGeneration: 'Intelligent Case Generation',
     aiCaseGeneration: 'AI Case Generation',
+    codeGenerationConsole: 'Code Generation (testgen)',
     aiGeneratedTestcases: 'AI Generated Test Cases',
     promptConfig: 'Prompt Configuration',
     projectManagement: 'Project Management',

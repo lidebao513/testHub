@@ -121,6 +121,19 @@
       </div>
     </div>
 
+    <div class="sec">
+      <label>生成模式</label>
+      <div class="scopes">
+        <label><input type="radio" name="gen_mode" value="full" checked onchange="onModeChange()">全量 (full)</label>
+        <label><input type="radio" name="gen_mode" value="incremental" onchange="onModeChange()">增量 (incremental)</label>
+      </div>
+      <div class="row" id="incremental_refs" style="display:none;margin-top:8px">
+        <div><label>基线 ref (base)</label><input type="text" id="base_ref" placeholder="如 master 或 commit"></div>
+        <div><label>目标 ref (target)</label><input type="text" id="target_ref" placeholder="如 feature/x 或 HEAD"></div>
+      </div>
+      <div class="hint">增量模式仅对 diff 范围内代码生成测试点；需提供 git 仓库地址（非本地目录）以计算变更集。</div>
+    </div>
+
     <div class="actions">
       <button class="btn-primary" id="btn_gen" onclick="doGenerate()">▶ 生成用例</button>
       <button class="btn-ok" id="btn_exec" onclick="doExecute()" disabled>▶ 执行验证</button>
@@ -163,6 +176,19 @@
         <button class="btn-ghost" onclick="loadProjects()">刷新项目</button>
       </div>
       <div id="projects"><span class="hint">点击「刷新项目」加载</span></div>
+    </div>
+
+    <div class="card">
+      <h2>④ 测试点查看器 <span id="tp_count" class="badge t-unknown">—</span></h2>
+      <div id="tp_summary" class="pills" style="margin-bottom:8px"></div>
+      <div class="actions" style="margin:0 0 10px;align-items:flex-end">
+        <select id="filter_tag" style="width:auto" onchange="renderTestPoints(currentTestPoints)"><option value="">类型: 全部</option><option value="全量">全量</option><option value="更新">更新</option></select>
+        <select id="filter_scope" style="width:auto" onchange="renderTestPoints(currentTestPoints)"><option value="">范围: 全部</option><option value="正常">正常</option><option value="异常">异常</option><option value="安全">安全</option><option value="边界">边界</option></select>
+        <input type="text" id="filter_kw" placeholder="搜索标题/模块/来源" style="flex:1" oninput="renderTestPoints(currentTestPoints)">
+        <button class="btn-ghost" onclick="loadTestPoints(curPid)">刷新</button>
+        <button class="btn-ghost" onclick="exportCases(curPid)">导出用例 CSV</button>
+      </div>
+      <div id="tp_list"><span class="hint">生成完成后这里显示测试点列表（支持按类型/范围/关键词筛选）</span></div>
     </div>
   </div>
 </div>
@@ -424,7 +450,9 @@ function buildBody(){
     local_path: $("repo").value.trim(),
     repo_url: "",
     project_name: $("pname").value.trim(),
-    mode: "full",
+    mode: document.querySelector('input[name="gen_mode"]:checked').value,
+    base: $("base_ref").value.trim(),
+    target: $("target_ref").value.trim(),
     scopes: sc,
     test_url: $("test_url").value.trim(),
     login_url: $("login_url").value.trim(),
@@ -516,6 +544,7 @@ function poll(taskId, onUpdate){
         if(r.result && r.result.summary) log("摘要: "+JSON.stringify(r.result.summary));
         if(r.result && r.result.outputs) log("产物: "+JSON.stringify(r.result.outputs));
         loadProjects();
+        loadTestPoints(r.project_id);
       }else if(r.state==="failed" || r.state==="cancelled"){
         clearInterval(pollTimer);
         if(r.error) log("终态错误: "+r.error);
@@ -536,6 +565,8 @@ async function loadProjects(){
     for(const p of ps.slice(0,30)){
       html += `<tr><td>${p.id}</td><td>${p.name||""}</td><td>${p.case_count??""}</td><td>${p.source_kind||""}</td>`+
         `<td><a class="link" href="/api/v1/projects/${p.id}/report?format=html" target="_blank">报告</a> `+
+        `<a class="link" onclick="loadTestPoints(${p.id})">测试点</a> `+
+        `<a class="link" onclick="exportCases(${p.id})">导出</a> `+
         `<a class="link" onclick="execPid(${p.id})">执行</a></td></tr>`;
     }
     html += "</table>";
@@ -644,6 +675,101 @@ async function delLLM(id){
     await api("/api/v1/llm/providers/"+id, {method:"DELETE"});
     await loadLLMProviders();
   }catch(e){ alert("删除失败: "+e.message); }
+}
+
+/* ============ 生成模式联动（P1：增量入口） ============ */
+function onModeChange(){
+  const m = document.querySelector('input[name="gen_mode"]:checked').value;
+  $("incremental_refs").style.display = (m==="incremental") ? "flex" : "none";
+}
+
+/* ============ 测试点查看器（P0：列表 + 全量/更新徽标 + 筛选；P3：导出） ============ */
+let currentTestPoints = [];
+function tagBadge(tag){
+  if(tag==="更新") return '<span class="badge b-running">更新</span>';
+  if(tag==="全量") return '<span class="badge b-success">全量</span>';
+  return '<span class="badge t-unknown">'+escapeHtml(tag||"—")+'</span>';
+}
+function catBadge(cat){
+  const map = {"正常":"b-success","异常":"b-failed","安全":"b-pending","边界":"b-running"};
+  const cls = map[cat] || "t-unknown";
+  return '<span class="badge '+cls+'">'+escapeHtml(cat||"—")+'</span>';
+}
+function fmtConfidence(c){
+  if(c==null) return "—";
+  return Math.round(Number(c)*100)+"%";
+}
+async function loadTestPoints(pid){
+  if(!pid){ $("tp_list").innerHTML='<span class="hint">尚无项目ID</span>'; return; }
+  try{
+    const r = await api(`/api/v1/projects/${pid}/test-points`);
+    currentTestPoints = r.test_points || [];
+    $("tp_count").textContent = currentTestPoints.length + " 点";
+    renderSummary(currentTestPoints);
+    renderTestPoints(currentTestPoints);
+    window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"});
+  }catch(e){
+    $("tp_list").innerHTML = '<span class="hint">加载失败: '+e.message+'</span>';
+  }
+}
+function renderSummary(tps){
+  const tags = {}, cats = {};
+  for(const t of tps){
+    tags[t.tag||"—"] = (tags[t.tag||"—"]||0)+1;
+    cats[t.category||"—"] = (cats[t.category||"—"]||0)+1;
+  }
+  let html = '<span class="pill">合计 '+tps.length+'</span>';
+  for(const k of ["全量","更新"]){ if(tags[k]!=null) html += `<span class="pill">${k} ${tags[k]}</span>`; }
+  for(const k of ["正常","异常","安全","边界"]){ if(cats[k]!=null) html += `<span class="pill">${k} ${cats[k]}</span>`; }
+  $("tp_summary").innerHTML = html;
+}
+function renderTestPoints(tps){
+  const ft = $("filter_tag").value;
+  const fs = $("filter_scope").value;
+  const kw = $("filter_kw").value.trim().toLowerCase();
+  const list = (tps||[]).filter(t=>{
+    if(ft && (t.tag||"")!==ft) return false;
+    if(fs && (t.category||"")!==fs) return false;
+    if(kw){
+      const hay = ((t.title||"")+" "+(t.module||"")+" "+(t.source||"")+" "+(t.dimension||"")).toLowerCase();
+      if(!hay.includes(kw)) return false;
+    }
+    return true;
+  });
+  const el = $("tp_list");
+  if(!list.length){ el.innerHTML='<span class="hint">无匹配测试点（调整筛选条件）</span>'; return; }
+  let html = '<table><tr><th>TP ID</th><th>标题</th><th>范围</th><th>类型</th><th>子维度</th><th>置信度</th><th>模块/来源</th></tr>';
+  for(const t of list.slice(0,500)){
+    html += `<tr><td>${escapeHtml(t.tp_id||"")}</td>`+
+      `<td>${escapeHtml(t.title||"")}</td>`+
+      `<td>${catBadge(t.category)}</td>`+
+      `<td>${tagBadge(t.tag)}</td>`+
+      `<td>${escapeHtml(t.dimension||"—")}</td>`+
+      `<td>${fmtConfidence(t.confidence)}</td>`+
+      `<td class="wrap-cell">${escapeHtml(t.module||"")}<br><span class="hint">${escapeHtml(t.source||"")}</span></td></tr>`;
+  }
+  html += "</table>";
+  if(list.length>500) html += `<div class="hint">仅显示前 500 条（共 ${list.length} 条）</div>`;
+  el.innerHTML = html;
+}
+async function exportCases(pid){
+  if(!pid){ alert("没有可导出项目（先生成或选择项目）"); return; }
+  try{
+    const r = await api(`/api/v1/projects/${pid}/cases?include_obsolete=true`);
+    const cases = r.cases || [];
+    if(!cases.length){ alert("该项目暂无用例"); return; }
+    const cols = ["tc_no","title","module","case_type","test_type","priority","status","ctype","tp_id"];
+    const esc = (v)=>'"'+String(v??"").replace(/"/g,'""')+'"';
+    const lines = cases.map(c=>cols.map(k=>esc(c[k])).join(","));
+    const csv = "﻿"+cols.join(",")+"\n"+lines.join("\n");
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `cases_${pid}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    log(`✅ 用例已导出：${cases.length} 条 → cases_${pid}.csv`);
+  }catch(e){ alert("导出失败: "+e.message); }
 }
 
 log("控制台就绪。填写左侧被测对象后点「生成用例」；常用仓库/厂商可在「代码仓库」「LLM 配置」菜单管理。");

@@ -95,6 +95,11 @@ const routes = [
                 component: () => import('@/views/requirement-analysis/RequirementAnalysisView.vue')
             },
             {
+                path: 'testgen-console',
+                name: 'TestgenConsole',
+                component: () => import('@/views/requirement-analysis/TestgenConsole.vue')
+            },
+            {
                 path: 'projects',
                 name: 'Projects',
                 component: ProjectList
