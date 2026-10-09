@@ -1196,3 +1196,175 @@ def load_llm_provider_specs(conn: sqlite3.Connection | None = None) -> list[dict
         if own:
             conn.close()
     return specs
+
+
+# ============================================================================
+# 质量分析配套查询（迁移自 test-accel analytics 配套）+ 外部测试点导入
+# ============================================================================
+def list_change_logs(
+    pid: int, *, limit: int = 100, conn: sqlite3.Connection | None = None
+) -> list[dict[str, Any]]:
+    """按项目列出历次增量对比/变更记录（change_log），最新在前。"""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        return [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM change_log WHERE project_id = ? ORDER BY id DESC LIMIT ?",
+                (pid, max(1, int(limit))),
+            )
+        ]
+    finally:
+        if own:
+            conn.close()
+
+
+def run_case_histories(
+    pid: int, *, limit: int = 5000, conn: sqlite3.Connection | None = None
+) -> list[dict[str, Any]]:
+    """取**有结论**的执行留痕（pass/fail/error），供 flaky 跨批次比对。
+
+    环境态（skipped/blocked_auth/structural_only 等）不算结论，不参与不稳定判定。
+    """
+    own = conn is None
+    conn = conn or connect()
+    try:
+        return [
+            dict(r)
+            for r in conn.execute(
+                "SELECT case_id, tp_id, batch_id, status, created_at FROM runs"
+                " WHERE project_id = ? AND status IN ('pass','fail','error')"
+                " ORDER BY id LIMIT ?",
+                (pid, max(1, int(limit))),
+            )
+        ]
+    finally:
+        if own:
+            conn.close()
+
+
+def filter_options(pid: int, *, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    """可用筛选维度与取值分布：告诉调用方能按什么筛、每档有多少条。
+
+    cases 按非归档统计；test_points 单列（查看器筛选器用）。
+    """
+    own = conn is None
+    conn = conn or connect()
+    try:
+        case_dims: dict[str, list[dict[str, Any]]] = {}
+        for col in ("priority", "module", "case_type", "test_type", "ctype", "review_status"):
+            rows = conn.execute(  # noqa: S608 - 列名来自白名单
+                "SELECT {col} AS k, COUNT(*) AS c FROM cases"
+                " WHERE project_id = ? AND status != 'obsolete' AND {col} != ''"
+                " GROUP BY {col} ORDER BY c DESC".format(col=col),
+                (pid,),
+            ).fetchall()
+            case_dims[col] = [{"value": r["k"], "count": r["c"]} for r in rows]
+        tp_dims: dict[str, list[dict[str, Any]]] = {}
+        for col in ("category", "tag", "dimension"):
+            rows = conn.execute(
+                "SELECT {col} AS k, COUNT(*) AS c FROM test_points"
+                " WHERE project_id = ? AND {col} != ''"
+                " GROUP BY {col} ORDER BY c DESC".format(col=col),
+                (pid,),
+            ).fetchall()
+            tp_dims[col] = [{"value": r["k"], "count": r["c"]} for r in rows]
+        total_cases = conn.execute(
+            "SELECT COUNT(*) AS c FROM cases WHERE project_id = ? AND status != 'obsolete'",
+            (pid,),
+        ).fetchone()["c"]
+        total_tps = conn.execute(
+            "SELECT COUNT(*) AS c FROM test_points WHERE project_id = ?", (pid,)
+        ).fetchone()["c"]
+        return {
+            "total_cases": total_cases,
+            "total_test_points": total_tps,
+            "case_dimensions": case_dims,
+            "test_point_dimensions": tp_dims,
+        }
+    finally:
+        if own:
+            conn.close()
+
+
+_TP_IMPORT_FIELDS = (
+    # (目标列, 旧格式键, 新格式键) —— 兼容 test-accel 阶段2 产物 test_points_new.json
+    ("tp_id", "id", "tp_id"),
+    ("fp_contract_id", "fp_id", "fp_contract_id"),
+    ("category", "tp_type", "category"),
+    ("title", "name", "title"),
+    ("module", "module", "module"),
+    ("semantic", "semantic", "semantic"),
+    ("source", "source", "source"),
+    ("method", "method", "method"),
+    ("area", "area", "area"),
+    ("expect", "expect", "expect"),
+    ("dimension", "dimension", "dimension"),
+    ("tag", "tag", "tag"),
+)
+
+
+def import_test_points(
+    pid: int,
+    tps: list[dict[str, Any]],
+    *,
+    replace: bool = True,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """导入外部测试点（旧格式 ``id/fp_id/tp_type/name`` 与新格式键名均兼容）。
+
+    ``replace=True`` 先清空该项目旧测试点（全量刷新幂等）；False 时按
+    ``(project_id, tp_id)`` 覆盖更新（逐条 upsert，表无唯一约束故手动判重）。
+    """
+    own = conn is None
+    conn = conn or connect()
+    init_db(conn)
+    try:
+        if replace:
+            conn.execute("DELETE FROM test_points WHERE project_id = ?", (pid,))
+        by_category: dict[str, int] = {}
+        imported = updated = 0
+        with conn:  # 事务：全部成功或全部回滚
+            for tp in tps:
+                row = {col: tp.get(old) if tp.get(old) is not None else tp.get(new) for col, old, new in _TP_IMPORT_FIELDS}
+                if not row["tp_id"]:
+                    continue
+                cat = row["category"] or "正常"
+                row["category"] = cat
+                existing = conn.execute(
+                    "SELECT id FROM test_points WHERE project_id = ? AND tp_id = ?",
+                    (pid, row["tp_id"]),
+                ).fetchone()
+                if existing and not replace:
+                    conn.execute(
+                        "UPDATE test_points SET fp_contract_id=?, category=?, module=?,"
+                        " semantic=?, title=?, source=?, method=?, area=?, expect=?,"
+                        " dimension=?, tag=? WHERE id = ?",
+                        (
+                            row["fp_contract_id"], row["category"], row["module"],
+                            row["semantic"], row["title"], row["source"], row["method"],
+                            row["area"], row["expect"], row["dimension"], row["tag"],
+                            existing["id"],
+                        ),
+                    )
+                    updated += 1
+                else:
+                    conn.execute(
+                        "INSERT INTO test_points (project_id, tp_id, fp_contract_id,"
+                        " category, module, semantic, title, source, method, area,"
+                        " expect, dimension, tag, review_status)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            pid, row["tp_id"], row["fp_contract_id"], row["category"],
+                            row["module"], row["semantic"], row["title"], row["source"],
+                            row["method"], row["area"], row["expect"], row["dimension"],
+                            row["tag"], "pending",
+                        ),
+                    )
+                    imported += 1
+                by_category[cat] = by_category.get(cat, 0) + 1
+        return {"imported": imported, "updated": updated, "by_category": by_category}
+    finally:
+        if own:
+            conn.close()

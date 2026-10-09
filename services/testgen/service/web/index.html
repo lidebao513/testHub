@@ -63,6 +63,16 @@
   .test-result{font-size:12px;margin-top:8px;padding:9px 11px;border-radius:8px;line-height:1.5}
   .test-result.ok{background:#dcfce7;color:#166534}
   .test-result.bad{background:#fee2e2;color:#991b1b}
+  .scan-box{max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:8px;background:#fbfcfe}
+  .scan-group{font-size:12px;color:var(--sub);font-weight:600;margin:8px 0 4px;padding-bottom:3px;border-bottom:1px dashed var(--line)}
+  .scan-item{display:flex;align-items:center;gap:8px;font-size:12px;padding:3px 4px;border-radius:6px}
+  .scan-item:hover{background:#eef2ff}
+  .scan-item input{margin:0}
+  .scan-item .p{color:var(--ink);flex:1;word-break:break-all}
+  .scan-item .meta{color:var(--sub);font-size:11px;white-space:nowrap}
+  .st-added{background:#dcfce7;color:#166534}
+  .st-modified{background:#fef3c7;color:#92400e}
+  .st-unchanged{background:#eef2f7;color:#475569}
 </style>
 </head>
 <body>
@@ -83,6 +93,32 @@
   <!-- 左：输入 -->
   <div class="card">
     <h2>① 填写被测对象</h2>
+
+    <div class="sec">
+      <label>扫描并勾选生成范围（可选 · 按子集生成）</label>
+      <div class="hint" style="margin-top:0">先点「扫描代码目录」列出文件，勾选要生成用例的<b>文件/目录</b>；不勾选则「生成用例」时全量生成。配合「生成模式」可进一步选择全量或增量。</div>
+      <div class="actions" style="margin-top:8px">
+        <button class="btn-ghost" id="btn_scan" onclick="scanCode()">🔍 扫描代码目录</button>
+        <button class="btn-ghost" onclick="selectAll(true)">全选</button>
+        <button class="btn-ghost" onclick="selectOnlyChanged()">仅 新增+修改</button>
+        <button class="btn-ghost" onclick="selectAll(false)">清空</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div>
+          <label>分支（远端仓库可获取；选定后同步为生成模式的「目标 ref」）</label>
+          <div style="display:flex;gap:6px">
+            <select id="scan_ref" style="flex:1" onchange="onBranchChange()"><option value="">默认分支</option></select>
+            <button class="btn-ghost" id="btn_branches" onclick="loadBranches()">🔄 获取分支</button>
+          </div>
+        </div>
+        <div>
+          <label>基线 ref（对比出 新增/修改，可空）</label>
+          <input type="text" id="scan_base_ref" placeholder="如 master；留空只列文件不标变更" onchange="syncRefs()">
+        </div>
+      </div>
+      <div id="scan_meta" class="badge t-unknown" style="display:none"></div>
+      <div id="scan_list" class="scan-box"><span class="hint">点击「扫描代码目录」加载文件清单（基于上方「代码目录」字段）</span></div>
+    </div>
 
     <label>统一智能输入框（把地址+账号+密码+动态口令+代码路径混在一起写也行）</label>
     <textarea id="auto_input" placeholder="例：http://47.97.154.50:8090/chat 账号 test_ft001@ft.cntaiping.com 密码 Tp0909@test 动态口令 123456"></textarea>
@@ -137,6 +173,7 @@
     <div class="actions">
       <button class="btn-primary" id="btn_gen" onclick="doGenerate()">▶ 生成用例</button>
       <button class="btn-ok" id="btn_exec" onclick="doExecute()" disabled>▶ 执行验证</button>
+      <button class="btn-ok" id="btn_onetwo" onclick="doScanAndTest()">⚡ 一键闭环（生成→执行→报告）</button>
     </div>
     <div class="hint">提示：只填「代码目录」= 纯代码生成；只填「被测地址+账号」= 浏览器自动发现页面/接口生成。执行验证默认只读（不污染被测环境），勾下方可放行写/真实点击。</div>
 
@@ -189,6 +226,19 @@
         <button class="btn-ghost" onclick="exportCases(curPid)">导出用例 CSV</button>
       </div>
       <div id="tp_list"><span class="hint">生成完成后这里显示测试点列表（支持按类型/范围/关键词筛选）</span></div>
+    </div>
+
+    <div class="card">
+      <h2>⑤ 质量分析 <span id="qa_pid" class="badge t-unknown">—</span></h2>
+      <div class="actions" style="margin:0 0 10px;flex-wrap:wrap">
+        <button class="btn-ghost" onclick="loadTrend()">📈 通过率趋势</button>
+        <button class="btn-ghost" onclick="loadFlaky()">🌊 Flaky 识别</button>
+        <button class="btn-ghost" onclick="loadChangeLogs()">📜 变更历史</button>
+        <button class="btn-ghost" onclick="loadFps()">🧩 功能点</button>
+        <button class="btn-ghost" onclick="loadFilterOptions()">📊 维度分布</button>
+        <button class="btn-ghost" onclick="showImport()">📥 导入测试点</button>
+      </div>
+      <div id="quality_box"><span class="hint">需要先有项目ID（生成后自动带上）。趋势/Flaky 依赖执行留痕：至少执行验证过 1 次，趋势需 ≥2 批次。</span></div>
     </div>
   </div>
 </div>
@@ -460,7 +510,8 @@ function buildBody(){
     login_password: $("pwd").value.trim(),
     login_otp: $("otp").value.trim(),
     runtime_ui: !!($("test_url").value.trim()),
-    execute: false
+    execute: false,
+    selected_paths: collectSelectedPaths()
   };
   if(b.local_path.startsWith("git@") || b.local_path.endsWith(".git")){
     b.repo_url = b.local_path; b.local_path = "";
@@ -567,7 +618,8 @@ async function loadProjects(){
         `<td><a class="link" href="/api/v1/projects/${p.id}/report?format=html" target="_blank">报告</a> `+
         `<a class="link" onclick="loadTestPoints(${p.id})">测试点</a> `+
         `<a class="link" onclick="exportCases(${p.id})">导出</a> `+
-        `<a class="link" onclick="execPid(${p.id})">执行</a></td></tr>`;
+        `<a class="link" onclick="execPid(${p.id})">执行</a> `+
+        `<a class="link" onclick="qaFor(${p.id})">分析</a></td></tr>`;
     }
     html += "</table>";
     $("projects").innerHTML = html;
@@ -770,6 +822,257 @@ async function exportCases(pid){
     URL.revokeObjectURL(a.href);
     log(`✅ 用例已导出：${cases.length} 条 → cases_${pid}.csv`);
   }catch(e){ alert("导出失败: "+e.message); }
+}
+
+/* ============ 扫描 → 勾选范围（按子集生成） ============ */
+let scanItems = [];
+
+function _scanRepoPayload(){
+  const raw = $("repo").value.trim();
+  const refs = { ref: $("scan_ref").value.trim(), base_ref: $("scan_base_ref").value.trim() };
+  if(raw.startsWith("git@") || raw.endsWith(".git")){
+    return { repo_url: raw, local_path: "", ...refs };
+  }
+  if(!raw){ alert("请先在「代码目录」填入本地目录或仓库地址"); return null; }
+  return { local_path: raw, repo_url: "", ...refs };
+}
+
+async function scanCode(){
+  const payload = _scanRepoPayload();
+  if(!payload) return;
+  $("btn_scan").disabled = true;
+  try{
+    log("扫描代码中…");
+    const r = await api("/api/v1/scan", {method:"POST", body:JSON.stringify(payload)});
+    if(!r.ok){
+      log("❌ 扫描失败: "+(r.error||"未知错误"));
+      $("scan_list").innerHTML = '<span class="hint">扫描失败：'+(r.error||"")+'</span>';
+      return;
+    }
+    scanItems = (r.items||[]).filter(it => !it.path.endsWith("/")); // 只列文件（目录用分组体现）
+    renderScanItems();
+    const s = r.summary || {};
+    $("scan_meta").style.display = "inline-block";
+    $("scan_meta").className = "badge t-unknown";
+    $("scan_meta").textContent = `共 ${r.count} 个文件 · 新增 ${s.added||0} · 修改 ${s.modified||0} · 未变更 ${s.unchanged||0}`;
+    log(`✅ 扫描完成：文件 ${r.count}（新增 ${s.added||0}/修改 ${s.modified||0}/未变 ${s.unchanged||0}）`);
+  }catch(e){
+    log("❌ 扫描异常: "+e.message);
+    $("scan_list").innerHTML = '<span class="hint">扫描异常：'+e.message+'</span>';
+  }finally{
+    $("btn_scan").disabled = false;
+  }
+}
+
+function renderScanItems(){
+  const box = $("scan_list");
+  if(!scanItems.length){ box.innerHTML = '<span class="hint">未返回文件</span>'; return; }
+  // 按顶级目录分组
+  const groups = {};
+  for(const it of scanItems){
+    const top = it.path.includes("/") ? it.path.split("/")[0] : "（根目录）";
+    (groups[top] = groups[top] || []).push(it);
+  }
+  let html = "";
+  for(const g of Object.keys(groups)){
+    html += `<div class="scan-group">📁 ${g}（${groups[g].length}）</div>`;
+    for(const it of groups[g]){
+      const st = it.change_status || "unchanged";
+      const stTxt = st==="added"?"新增":st==="modified"?"修改":"未变";
+      const fc = (it.functions||[]).length, cc = (it.classes||[]).length;
+      const label = it.path + (it.name && it.name!==it.path ? `（${it.name}）` : "");
+      html += `<div class="scan-item" data-path="${it.path}" data-status="${st}">`+
+        `<input type="checkbox" class="scan-cb" data-path="${it.path}" data-status="${st}">`+
+        `<span class="p">${label}</span>`+
+        `<span class="meta">${fc?("ƒ"+fc):""}${cc?("𝒸"+cc):""}</span>`+
+        `<span class="badge st-${st}">${stTxt}</span></div>`;
+    }
+  }
+  box.innerHTML = html;
+}
+
+function collectSelectedPaths(){
+  const cbs = document.querySelectorAll(".scan-cb:checked");
+  return [...cbs].map(cb => cb.dataset.path);
+}
+
+function selectAll(on){
+  document.querySelectorAll(".scan-cb").forEach(cb => cb.checked = on);
+}
+function selectOnlyChanged(){
+  document.querySelectorAll(".scan-cb").forEach(cb => cb.checked = (cb.dataset.status==="added" || cb.dataset.status==="modified"));
+}
+
+/* ============ 分支选择（扫描前） ============ */
+async function loadBranches(){
+  const payload = _scanRepoPayload();
+  if(!payload) return;
+  if(!payload.repo_url){ alert("列分支需要 git 仓库地址（本地目录无法列分支）"); return; }
+  $("btn_branches").disabled = true;
+  try{
+    const r = await api("/api/v1/branches", {method:"POST", body:JSON.stringify({repo_url: payload.repo_url, code_source: {}})});
+    if(!r.ok){
+      log("❌ 获取分支失败: "+(r.error||"未知"));
+      alert("获取分支失败: "+(r.error||"远程仓库可能需要只读凭证（code_source）")); return;
+    }
+    const sel = $("scan_ref");
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">默认分支</option>' + (r.branches||[]).map(b=>{
+      const name = typeof b==="string" ? b : (b.name||"");
+      return `<option value="${name}">${name}</option>`;
+    }).join("");
+    if(cur) sel.value = cur;
+    log(`✅ 获取到 ${(r.branches||[]).length} 个分支`);
+  }catch(e){ log("❌ 获取分支异常: "+e.message); }
+  finally{ $("btn_branches").disabled = false; }
+}
+function onBranchChange(){
+  const v = $("scan_ref").value;
+  if(v){ $("target_ref").value = v; log("已把目标 ref 同步为分支："+v); }
+}
+function syncRefs(){
+  const v = $("scan_base_ref").value.trim();
+  if(v){ $("base_ref").value = v; }
+}
+
+/* ============ 一键闭环：生成 → 执行 → 报告 ============ */
+async function doScanAndTest(){
+  const body = buildBody();
+  if(!body.auto_input && !body.local_path && !body.repo_url && !body.test_url){
+    alert("请至少填写代码目录、仓库地址或被测环境地址"); return;
+  }
+  body.execute = true;
+  $("btn_onetwo").disabled = true;
+  try{
+    log("⚡ 一键闭环：生成 → 执行 → 报告（含执行验证，耗时较久）…");
+    const r = await api("/api/v1/execute", {method:"POST", body:JSON.stringify(body)});
+    $("task_id").textContent = r.task_id;
+    setBadge("task_state","running");
+    log("已接受，任务 "+r.task_id);
+    poll(r.task_id, (res)=>{
+      if(res.state==="success" && res.project_id){
+        curPid = res.project_id; $("pid").textContent = curPid;
+        const url = `/api/v1/projects/${curPid}/report?format=html`;
+        $("report_link").style.display="inline"; $("report_link").href=url;
+        $("btn_exec").disabled = false;
+        log("✅ 闭环完成，报告: "+url);
+        window.open(url, "_blank");
+        loadProjects();
+      }
+    });
+  }catch(e){
+    log("❌ "+e.message);
+    setBadge("task_state","failed");
+  }finally{
+    $("btn_onetwo").disabled = false;
+  }
+}
+
+/* ============ 质量分析（趋势 / Flaky / 变更 / 功能点 / 分布 / 导入） ============ */
+function requirePid(){
+  if(!curPid){ alert("没有项目ID——请先生成用例，或在项目列表点「分析」"); return false; }
+  $("qa_pid").textContent = "项目 "+curPid;
+  return true;
+}
+function qaFail(e){
+  $("quality_box").innerHTML = '<span class="hint">加载失败: '+e.message+'</span>';
+}
+async function loadTrend(){
+  if(!requirePid()) return;
+  try{
+    const r = await api(`/api/v1/projects/${curPid}/reports/trend`);
+    let html = `<div class="hint">整体方向：<b>${r.pass_rate_direction}</b> · 共 ${r.count} 个已完成批次</div>`;
+    if(!r.count){
+      html += '<span class="hint">暂无已完成的执行批次——先「执行验证」至少一次</span>';
+    }else{
+      html += '<table><tr><th>批次</th><th>开始时间</th><th>pass/fail</th><th>通过率</th><th style="width:130px"></th></tr>';
+      for(const p of r.points){
+        const pct = p.pass_rate==null ? null : Math.round(p.pass_rate*100);
+        const bar = pct==null ? "" : `<div style="background:#16a34a;height:8px;border-radius:4px;width:${pct}%"></div>`;
+        html += `<tr><td class="wrap-cell">${p.batch_id||""}</td><td>${p.started_at||""}</td><td>${p.pass}/${p.fail}</td><td>${pct==null?"—":pct+"%"}</td><td>${bar}</td></tr>`;
+      }
+      html += "</table>";
+    }
+    $("quality_box").innerHTML = html;
+  }catch(e){ qaFail(e); }
+}
+async function loadFlaky(){
+  if(!requirePid()) return;
+  try{
+    const r = await api(`/api/v1/projects/${curPid}/reports/flaky`);
+    let html = `<div class="hint">跨批次结果不一致的不稳定用例：${r.count} 条（判定阈值 ≥${r.min_batches} 批次且 ≥2 种结论）</div>`;
+    if(r.count){
+      html += '<table><tr><th>case_id</th><th>测试点</th><th>批次数</th><th>出现过的结论</th><th>最近结论</th></tr>';
+      for(const f of r.flaky){
+        html += `<tr><td>${f.case_id??""}</td><td>${f.tp_id||""}</td><td>${f.batch_count}</td><td>${f.statuses.join(" ↔ ")}</td><td>${f.last_status}</td></tr>`;
+      }
+      html += "</table>";
+    }
+    $("quality_box").innerHTML = html;
+  }catch(e){ qaFail(e); }
+}
+async function loadChangeLogs(){
+  if(!requirePid()) return;
+  try{
+    const r = await api(`/api/v1/projects/${curPid}/change_logs`);
+    let html = `<div class="hint">历次增量对比/变更记录：${r.count} 条</div>`;
+    if(r.count){
+      html += '<table><tr><th>时间</th><th>类型</th><th>详情</th></tr>';
+      for(const c of r.change_logs){
+        html += `<tr><td>${c.created_at||""}</td><td>${c.kind||""}</td><td class="wrap-cell">${(c.detail||"").slice(0,200)}</td></tr>`;
+      }
+      html += "</table>";
+    }
+    $("quality_box").innerHTML = html;
+  }catch(e){ qaFail(e); }
+}
+async function loadFps(){
+  if(!requirePid()) return;
+  try{
+    const r = await api(`/api/v1/projects/${curPid}/functional-points`);
+    let html = `<div class="hint">功能点共 ${r.count} 个</div>`;
+    if(r.count){
+      html += '<table><tr><th>契约ID</th><th>名称</th><th>文件</th><th>类型</th></tr>';
+      for(const f of r.functional_points.slice(0,200)){
+        html += `<tr><td>${f.contract_id||""}</td><td>${f.name||f.title||""}</td><td class="wrap-cell">${f.file_path||""}</td><td>${f.ftype||""}</td></tr>`;
+      }
+      html += "</table>";
+      if(r.count>200) html += `<div class="hint">（仅展示前 200 条，共 ${r.count}）</div>`;
+    }
+    $("quality_box").innerHTML = html;
+  }catch(e){ qaFail(e); }
+}
+async function loadFilterOptions(){
+  if(!requirePid()) return;
+  try{
+    const r = await api(`/api/v1/projects/${curPid}/filter-options`);
+    const dim = (d)=> (d||[]).map(x=>`<span class="pill">${x.value}: ${x.count}</span>`).join(" ") || '<span class="hint">—</span>';
+    let html = `<div class="hint">用例 ${r.total_cases} 条 · 测试点 ${r.total_test_points} 条</div>`;
+    html += '<table><tr><th>维度</th><th>取值分布</th></tr>';
+    for(const [k,v] of Object.entries(r.case_dimensions||{})){
+      html += `<tr><td>用例.${k}</td><td>${dim(v)}</td></tr>`;
+    }
+    for(const [k,v] of Object.entries(r.test_point_dimensions||{})){
+      html += `<tr><td>测试点.${k}</td><td>${dim(v)}</td></tr>`;
+    }
+    html += "</table>";
+    $("quality_box").innerHTML = html;
+  }catch(e){ qaFail(e); }
+}
+function qaFor(pid){
+  curPid = pid; $("pid").textContent = pid;
+  loadTrend();
+}
+async function showImport(){
+  if(!curPid){ alert("没有项目ID——请先生成用例"); return; }
+  const p = prompt(`把外部测试点 JSON 导入到项目 ${curPid}\n输入服务端 JSON 文件路径（结构 {"test_points":[…]}，兼容 test-accel 阶段2 产物 test_points_new.json）：`);
+  if(!p) return;
+  const replace = confirm("是否清空该项目现有测试点后全量导入？\n「确定」=全量替换（幂等刷新）；「取消」=按 tp_id 覆盖更新");
+  try{
+    const r = await api(`/api/v1/projects/${curPid}/import-test-points`, {method:"POST", body:JSON.stringify({json_path: p, replace})});
+    log(`✅ 导入完成：新增 ${r.imported} · 更新 ${r.updated} · 分布 ${JSON.stringify(r.by_category)}`);
+    loadTestPoints(curPid);
+  }catch(e){ alert("导入失败: "+e.message); }
 }
 
 log("控制台就绪。填写左侧被测对象后点「生成用例」；常用仓库/厂商可在「代码仓库」「LLM 配置」菜单管理。");

@@ -37,6 +37,7 @@ from core.errors import (
     ValidationError,
 )
 from core.log import get_logger, log_extra, set_request_id
+from engine import analytics
 from engine import pipeline
 from engine import report as report_engine
 from engine.codeup_client import CodeupError, parse_repo_to_repo_id
@@ -175,6 +176,10 @@ class PipelineRequest(BaseModel):
         default_factory=list,
         description="显式变更文件清单（F2，正斜杠相对路径）；优先于本地 git diff",
     )
+    selected_paths: list[str] = Field(
+        default_factory=list,
+        description="按子集生成（控制台「扫描→勾选范围」）：仅对勾选的文件/目录产出测试点；空=全量",
+    )
     project_name: str = Field("", description="项目名（缺省用目录名或被测主机名）")
     mode: str = Field("", description="full=全量扫描 / incremental=增量扫描（留空=默认 full）")
     base: str | None = Field(None, description="增量模式基线 ref")
@@ -277,6 +282,12 @@ class ExecuteRequest(BaseModel):
     exec_url: str = Field("", description="执行器被测服务地址（只跑接口层时单独指定）")
     allow_write: bool = Field(False, description="放行写操作；默认只跑只读请求")
     ui_click: bool = Field(False, description="UI 层执行真实点击（F13）；默认只做只读断言")
+    # —— 生成+执行路径的子集/增量透传（与 PipelineRequest 同名字段贯通，一键闭环用）——
+    base: str = Field("", description="基线 ref（增量模式计算 diff）")
+    target: str = Field("", description="目标 ref（增量模式）")
+    selected_paths: list[str] = Field(
+        default_factory=list, description="子集生成：仅对勾选的文件/目录生成测试点（空=全量）"
+    )
 
 
 def _run_execution_job(
@@ -383,6 +394,9 @@ def _apply_code_sources(req: PipelineRequest, opts: pipeline.PipelineOptions) ->
     files = [str(f).strip().replace("\\", "/") for f in req.changed_files if str(f).strip()]
     if files:
         opts.changed_files = files
+    sel = [str(p).strip().replace("\\", "/") for p in req.selected_paths if str(p).strip()]
+    if sel:
+        opts.selected_paths = sel
     if req.pull_deepen:
         opts.pull_deepen = int(req.pull_deepen)
 
@@ -621,6 +635,7 @@ def submit_execute(req: ExecuteRequest) -> JSONResponse:
             ",".join(sorted(req.scopes)),
             req.test_url,
             req.exec_url,
+            ",".join(sorted(req.selected_paths)),
         ]
     )
     existing = task_store.find_by_idempotency(idem)
@@ -942,6 +957,68 @@ def get_coverage(pid: int) -> dict[str, Any]:
 @app.get("/api/v1/workspaces", dependencies=[Depends(require_auth)])
 def list_workspaces() -> dict[str, Any]:
     return {"workspaces": [w.to_dict() for w in WorkspaceManager().list_all()]}
+
+
+# ============================================================================
+# 质量分析与数据导入（迁移自 test-accel：trend/flaky/change_logs/import 等）
+# ============================================================================
+@app.get("/api/v1/projects/{pid}/reports/trend", dependencies=[Depends(require_auth)])
+def project_trend(pid: int, only_finished: bool = True, limit: int = 50) -> dict[str, Any]:
+    """多批次通过率趋势（迁移自 test-accel analytics.trend）。"""
+    return analytics.trend(pid, only_finished=only_finished, limit=limit)
+
+
+@app.get("/api/v1/projects/{pid}/reports/flaky", dependencies=[Depends(require_auth)])
+def project_flaky(pid: int, min_batches: int = 2) -> dict[str, Any]:
+    """跨批次结果不一致的不稳定用例识别（迁移自 test-accel analytics.flaky）。"""
+    return analytics.flaky(pid, min_batches=min_batches)
+
+
+@app.get("/api/v1/projects/{pid}/change_logs", dependencies=[Depends(require_auth)])
+def project_change_logs(pid: int, limit: int = 100) -> dict[str, Any]:
+    """查看该项目历次增量对比/变更记录。"""
+    logs = store.list_change_logs(pid, limit=limit)
+    return {"ok": True, "count": len(logs), "change_logs": logs}
+
+
+@app.get("/api/v1/projects/{pid}/functional-points", dependencies=[Depends(require_auth)])
+def project_functional_points(pid: int, limit: int = 500) -> dict[str, Any]:
+    """功能点独立查询（此前仅内嵌于 /analyze 响应）。"""
+    fps = store.list_functional_points(pid)
+    return {"ok": True, "count": len(fps), "functional_points": fps[: max(1, int(limit))]}
+
+
+@app.get("/api/v1/projects/{pid}/filter-options", dependencies=[Depends(require_auth)])
+def project_filter_options(pid: int) -> dict[str, Any]:
+    """可用筛选维度与取值分布（cases + test_points），供前端筛选器。"""
+    opts = store.filter_options(pid)
+    return {"ok": True, "project_id": pid, **opts}
+
+
+class ImportTestPointsRequest(BaseModel):
+    """外部测试点导入：直接给 items 或给服务端 json_path（test-accel 阶段2 产物兼容）。"""
+
+    items: list[dict[str, Any]] = Field(default_factory=list, description="测试点列表")
+    json_path: str = Field("", description="服务端 JSON 文件路径（items 为空时读取）")
+    replace: bool = Field(True, description="true=清空后全量导入；false=按 tp_id 覆盖更新")
+
+
+@app.post("/api/v1/projects/{pid}/import-test-points", dependencies=[Depends(require_auth)])
+def project_import_test_points(pid: int, req: ImportTestPointsRequest) -> dict[str, Any]:
+    """导入外部测试点 JSON 到引擎库（「测试点 → 用例」链路的前置步骤）。"""
+    tps = req.items
+    if not tps and req.json_path:
+        try:
+            data = json.loads(Path(req.json_path).read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise ValidationError(f"读取测试点 JSON 失败：{exc}") from exc
+        tps = data.get("test_points") if isinstance(data, dict) else data
+        if not isinstance(tps, list):
+            raise ValidationError("JSON 结构不对：期望 {\"test_points\": [...]} 或数组")
+    if not tps:
+        raise ValidationError("请提供 items 或有效的 json_path")
+    result = store.import_test_points(pid, tps, replace=req.replace)
+    return {"ok": True, "project_id": pid, **result}
 
 
 # ============================================================================

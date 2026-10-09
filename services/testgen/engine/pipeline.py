@@ -119,6 +119,9 @@ class PipelineOptions:
     # 上游（CI / 平台）已算好变更集时直接传入，**优先于**本地 git diff：
     # 服务再跑一次 diff 既慢又可能因浅克隆而失真。路径须为正斜杠相对路径。
     changed_files: list[str] = field(default_factory=list)
+    # —— 按子集生成（控制台「扫描 → 勾选范围 → 生成」）——
+    # 非空的相对路径清单（文件或目录）；仅对命中的文件产出功能点/测试点，空=全量。
+    selected_paths: list[str] = field(default_factory=list)
     prd_source: str = ""  # P2：PRD 文件路径（启用 PRD 通道时读取）
     scopes: set[str] = field(default_factory=lambda: set(DEFAULT_SCOPE))
     review_status: str = "pending"
@@ -326,6 +329,21 @@ def stage_scan(opts: PipelineOptions, result: PipelineResult, progress: Progress
         return
     _emit(progress, "scan", path=opts.local_path)
     files = scan.Scanner(opts.local_path).index()
+    # 按子集生成：仅保留命中 selected_paths 的文件（精确匹配或目录前缀）。
+    if opts.selected_paths:
+        sel = {s.strip().replace("\\", "/").rstrip("/") for s in opts.selected_paths if s.strip()}
+        if sel:
+            kept = {
+                p: sf
+                for p, sf in files.items()
+                if any(p == s or p.startswith(s + "/") for s in sel)
+            }
+            dropped = len(files) - len(kept)
+            files = kept
+            result.notes.append(
+                f"按子集生成：勾选 {len(sel)} 条路径，命中 {len(files)} 个文件"
+                + (f"，滤除 {dropped} 个未勾选文件" if dropped else "")
+            )
     result.files = files
     result.counts["files"] = len(files)
     log.info("扫描完成", extra=log_extra(files=len(files)))
