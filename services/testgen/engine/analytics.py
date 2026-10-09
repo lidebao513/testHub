@@ -80,31 +80,48 @@ def flaky(pid: int, *, min_batches: int = 2, limit: int = 5000) -> dict[str, Any
 
     同一用例（case_id/tp_id）在 ≥min_batches 个批次中出现过 ≥2 种结论
     （pass/fail/error 之间摇摆）即判为不稳定；按涉及批次数降序。
+
+    返回中 ``batches`` 与 ``statuses`` 严格按批次时间**顺序对齐**（前者是后者的下标），
+    不会再像早期版本那样把批次集合与状态集合各自排序后假装成并行数组。
     """
     rows = store.run_case_histories(pid, limit=limit)
     by_case: dict[tuple[Any, Any], dict[str, Any]] = defaultdict(
-        lambda: {"batches": set(), "statuses": set(), "last_status": "", "last_at": ""}
+        lambda: {
+            "batch_status": {},  # batch_id -> 该批次结论（同批多条 runs 取最新）
+            "batch_at": {},  # batch_id -> 该批次时间（用 run.created_at 近似）
+            "last_status": "",
+            "last_at": "",
+        }
     )
     for r in rows:
         key = (r.get("case_id"), r.get("tp_id"))
         rec = by_case[key]
-        rec["batches"].add(r.get("batch_id"))
-        rec["statuses"].add(r.get("status"))
-        if str(r.get("created_at") or "") >= rec["last_at"]:
-            rec["last_at"] = str(r.get("created_at") or "")
+        bid = r.get("batch_id")
+        at = str(r.get("created_at") or "")
+        # 同一批次同一用例若落了多条 runs，保留时间最新的一条结论
+        if bid not in rec["batch_status"] or at >= rec["batch_at"].get(bid, ""):
+            rec["batch_status"][bid] = str(r.get("status") or "")
+            rec["batch_at"][bid] = at
+        if at >= rec["last_at"]:
+            rec["last_at"] = at
             rec["last_status"] = str(r.get("status") or "")
 
     flaky_list: list[dict[str, Any]] = []
     for (case_id, tp_id), rec in by_case.items():
-        statuses = rec["statuses"] & set(_VERDICT_STATUSES)
-        if len(rec["batches"]) >= max(2, int(min_batches)) and len(statuses) >= 2:
+        verdicts = {v for v in rec["batch_status"].values() if v in _VERDICT_STATUSES}
+        if len(rec["batch_status"]) >= max(2, int(min_batches)) and len(verdicts) >= 2:
+            # 按批次时间升序对齐：batches[i] 的结论就是 statuses[i]
+            ordered = sorted(
+                rec["batch_status"].items(),
+                key=lambda kv: rec["batch_at"].get(kv[0], ""),
+            )
             flaky_list.append(
                 {
                     "case_id": case_id,
                     "tp_id": tp_id,
-                    "batch_count": len(rec["batches"]),
-                    "batches": sorted(str(b) for b in rec["batches"] if b),
-                    "statuses": sorted(statuses),
+                    "batch_count": len(rec["batch_status"]),
+                    "batches": [b for b, _ in ordered],
+                    "statuses": [s for _, s in ordered],
                     "last_status": rec["last_status"],
                 }
             )

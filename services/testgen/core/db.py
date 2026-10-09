@@ -256,7 +256,12 @@ def connect(path: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection | None = None) -> None:
-    """建表 + 索引 + 幂等补列；可反复调用。"""
+    """建表 + 索引 + 幂等补列；可反复调用。
+
+    启动期（app lifespan）已调用一次，请求内重复调用仅作幂等兜底。
+    并发只读瞬时态（WAL 多连接 / 沙箱叠层）下不抛错——schema 已建好即可，
+    跳过版本登记与补列不会阻断只读请求。
+    """
     own = conn is None
     conn = conn or connect()
     try:
@@ -272,6 +277,12 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
             (SCHEMA_VERSION,),
         )
         conn.commit()
+    except sqlite3.OperationalError:
+        # 只读瞬时态：schema 已存在则跳过版本登记，不阻断请求。
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
     finally:
         if own:
             conn.close()
