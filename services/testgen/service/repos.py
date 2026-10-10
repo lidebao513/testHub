@@ -145,3 +145,105 @@ def probe_repo(url: str, ref: str = "") -> dict[str, Any]:
     if is_git_url(target):
         return _probe_git(target, ref, started)
     return _probe_local(target, started)
+
+
+def _empty_commit() -> dict[str, Any]:
+    """与 Codeup list_branches 的 commit 子结构同形状（git/本地拿不到提交信息则留空）。"""
+    return {
+        "short_id": "",
+        "title": "",
+        "message": "",
+        "author_name": "",
+        "authored_date": "",
+        "committed_date": "",
+    }
+
+
+def list_git_branches(url: str) -> list[dict[str, Any]]:
+    """用 ``git ls-remote --heads`` 只读列出远程分支（GitHub/自建 git 通用，不落盘）。
+
+    复用本机 git 凭据链（SSH key / credential helper），平台**不存密码**。
+    返回与 Codeup ``list_branches`` 同形状（commit 仅含 ``short_id``，ls-remote 拿不到标题/时间）。
+    """
+    git = shutil.which("git")
+    if not git:
+        raise RuntimeError("本机未安装 git，无法列出远程分支")
+    cmd = [git, "ls-remote", "--heads", url]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+            env=_git_env(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"连接超时（>{GIT_TIMEOUT_SECONDS}s）：仓库不可达或需要凭据"
+        ) from exc
+    if proc.returncode != 0:
+        raw = (proc.stderr or proc.stdout or "").strip().splitlines()
+        reason = raw[-1] if raw else f"exit={proc.returncode}"
+        raise RuntimeError(_translate_git_error(reason)[:200])
+    branches: list[dict[str, Any]] = []
+    for line in proc.stdout.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        sha, ref = parts
+        if not ref.startswith("refs/heads/"):
+            continue
+        name = ref[len("refs/heads/"):]
+        commit = _empty_commit()
+        commit["short_id"] = sha[:8]
+        branches.append(
+            {
+                "name": name,
+                "default_branch": False,
+                "protected": False,
+                "commit": commit,
+            }
+        )
+    return branches
+
+
+def list_local_branches(local_path: str) -> list[dict[str, Any]]:
+    """列出本地 git 仓库分支（含远程跟踪分支 ``refs/remotes/``）。"""
+    git = shutil.which("git")
+    p = Path(local_path).expanduser().resolve()
+    if not git or not (p / ".git").exists():
+        raise RuntimeError("不是本地 git 仓库，无法列分支")
+    proc = subprocess.run(
+        [
+            git,
+            "-C",
+            str(p),
+            "for-each-ref",
+            "--format=%(refname:short)\t%(objectname:short)",
+            "refs/heads/",
+            "refs/remotes/",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=GIT_TIMEOUT_SECONDS,
+        env=_git_env(),
+    )
+    if proc.returncode != 0:
+        reason = (proc.stderr or proc.stdout or "").strip().splitlines()
+        raise RuntimeError((reason[-1] if reason else "列本地分支失败")[:200])
+    branches: list[dict[str, Any]] = []
+    for line in proc.stdout.strip().splitlines():
+        name, sha = (line.split("\t") + ["", ""])[:2]
+        if not name:
+            continue
+        commit = _empty_commit()
+        commit["short_id"] = sha
+        branches.append(
+            {
+                "name": name,
+                "default_branch": False,
+                "protected": False,
+                "commit": commit,
+            }
+        )
+    return branches

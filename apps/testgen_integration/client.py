@@ -18,6 +18,7 @@ Session，避免 localhost/内网直连被代理拦截；远程部署（非 127.
 
 from __future__ import annotations
 
+import concurrent.futures
 import os
 from typing import Any
 
@@ -178,10 +179,17 @@ def get_cases(project_id: int) -> list[dict[str, Any]]:
 
 
 def list_branches(
-    *, repo_url: str, code_source: dict[str, Any] | None
+    *, repo_url: str, code_source: dict[str, Any] | None, local_path: str = ""
 ) -> dict[str, Any]:
-    """列仓库分支（供前端目标/基线 ref 下拉）。"""
-    payload = {"repo_url": repo_url or "", "code_source": code_source or {}}
+    """列仓库分支（供前端目标/基线 ref 下拉）。
+
+    后端按 access_key(Codeup) → local_path(本地 git) → git url(git ls-remote) 三路分派。
+    """
+    payload = {
+        "repo_url": repo_url or "",
+        "local_path": local_path or "",
+        "code_source": code_source or {},
+    }
     resp = _session.post(
         f"{base_url()}/api/v1/branches",
         json=payload,
@@ -271,6 +279,83 @@ def scan(
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def quality_trend(
+    project_id: int, *, only_finished: bool = True, limit: int = 50
+) -> dict[str, Any]:
+    """取 testgen 项目多批次通过率趋势（reports/trend）。"""
+    resp = _session.get(
+        f"{base_url()}/api/v1/projects/{project_id}/reports/trend",
+        params={"only_finished": str(only_finished), "limit": limit},
+        headers=_headers(),
+        timeout=timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def quality_flaky(project_id: int, *, min_batches: int = 2) -> dict[str, Any]:
+    """取 testgen 项目跨批次不稳定的 flaky 用例（reports/flaky）。"""
+    resp = _session.get(
+        f"{base_url()}/api/v1/projects/{project_id}/reports/flaky",
+        params={"min_batches": min_batches},
+        headers=_headers(),
+        timeout=timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def quality_filter_options(project_id: int) -> dict[str, Any]:
+    """取 testgen 项目可用筛选维度与取值分布（filter-options）。"""
+    resp = _session.get(
+        f"{base_url()}/api/v1/projects/{project_id}/filter-options",
+        headers=_headers(),
+        timeout=timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def quality_change_logs(project_id: int, *, limit: int = 100) -> dict[str, Any]:
+    """取 testgen 项目历次增量对比/变更记录（change_logs）。"""
+    resp = _session.get(
+        f"{base_url()}/api/v1/projects/{project_id}/change_logs",
+        params={"limit": limit},
+        headers=_headers(),
+        timeout=timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def quality_summary(project_id: int) -> dict[str, Any]:
+    """聚合 testgen 质量分析（趋势/flaky/维度分布/变更），供主平台 reports 入口一次性取。
+
+    - 四项并行调用（避免串行最坏 ~8 分钟阻塞）；
+    - 单项调用异常被 _safe 捕获为 ``{"ok": False, "error": ...}``，不影响其余项返回；
+    - 顶层 ``ok`` = 四项业务全部成功（子项 HTTP 200 但 ``ok=False`` 也计入失败）。
+    """
+    def _safe(fn):
+        try:
+            return fn(project_id)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)[:200]}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        trend = ex.submit(_safe, quality_trend).result()
+        flaky = ex.submit(_safe, quality_flaky).result()
+        filters = ex.submit(_safe, quality_filter_options).result()
+        changes = ex.submit(_safe, quality_change_logs).result()
+    all_ok = all(s.get("ok", False) for s in (trend, flaky, filters, changes))
+    return {
+        "ok": all_ok,
+        "trend": trend,
+        "flaky": flaky,
+        "filter_options": filters,
+        "change_logs": changes,
+    }
 
 
 def verdict(facts: dict[str, Any]) -> dict[str, Any]:

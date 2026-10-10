@@ -31,6 +31,7 @@ from .client import (
     get_cases,
     list_branches,
     list_commits,
+    quality_summary,
     scan,
     task_cases,
 )
@@ -149,11 +150,18 @@ class TestgenBranchesView(APIView):
     def post(self, request: Any) -> Response:
         body = request.data or {}
         repo_url = body.get("repo_url", "") or ""
+        local_path = body.get("local_path", "") or ""
         code_source = body.get("code_source") or {}
-        if not repo_url:
-            return Response({"ok": False, "error": "repo_url 必填"}, status=400)
+        if not repo_url and not local_path:
+            return Response(
+                {"ok": False, "error": "repo_url 或 local_path 必填"}, status=400
+            )
         try:
-            data = list_branches(repo_url=repo_url, code_source=code_source)
+            data = list_branches(
+                repo_url=repo_url,
+                code_source=code_source,
+                local_path=local_path,
+            )
         except Exception as exc:  # noqa: BLE001 - G2：连接/超时→502
             return _sidecar_error_response(exc)
         return Response({"ok": True, **data})
@@ -244,3 +252,28 @@ class TestgenScanView(APIView):
         except Exception as exc:  # noqa: BLE001
             return _sidecar_error_response(exc)
         return Response({"ok": True, **data})
+
+
+class TestgenQualityView(APIView):
+    """testgen 质量分析聚合（趋势/flaky/维度分布/变更），供主平台 reports 入口调用。
+
+    GET /api/testgen/quality?project_id=<testgen 项目 id>
+    """
+
+    permission_classes: ClassVar[list] = [IsAuthenticated]
+
+    def get(self, request: Any) -> Response:
+        project_id = request.query_params.get("project_id")
+        if not project_id:
+            return Response(
+                {"ok": False, "error": "project_id 必填（testgen 项目 id）"}, status=400
+            )
+        try:
+            pid = int(project_id)
+        except ValueError:
+            return Response({"ok": False, "error": "project_id 须为整数"}, status=400)
+        try:
+            data = quality_summary(pid)
+        except Exception as exc:  # noqa: BLE001
+            return _sidecar_error_response(exc)
+        return Response({"project_id": pid, **data})

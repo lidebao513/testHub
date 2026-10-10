@@ -944,10 +944,10 @@ function selectOnlyChanged(){
 async function loadBranches(){
   const payload = _scanRepoPayload();
   if(!payload) return;
-  if(!payload.repo_url){ alert("列分支需要 git 仓库地址（本地目录无法列分支）"); return; }
+  if(!payload.repo_url && !payload.local_path){ alert("列分支需要 git 仓库地址或本地 git 目录"); return; }
   $("btn_branches").disabled = true;
   try{
-    const r = await api("/api/v1/branches", {method:"POST", body:JSON.stringify({repo_url: payload.repo_url, code_source: {}})});
+    const r = await api("/api/v1/branches", {method:"POST", body:JSON.stringify({repo_url: payload.repo_url, local_path: payload.local_path, code_source: {}})});
     if(!r.ok){
       log("❌ 获取分支失败: "+(r.error||"未知"));
       alert("获取分支失败: "+(r.error||"远程仓库可能需要只读凭证（code_source）")); return;
@@ -959,7 +959,7 @@ async function loadBranches(){
       return `<option value="${name}">${name}</option>`;
     }).join("");
     if(cur) sel.value = cur;
-    log(`✅ 获取到 ${(r.branches||[]).length} 个分支`);
+    log(`✅ 获取到 ${(r.branches||[]).length} 个分支（来源：${r.source||"unknown"}）`);
   }catch(e){ log("❌ 获取分支异常: "+e.message); }
   finally{ $("btn_branches").disabled = false; }
 }

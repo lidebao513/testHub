@@ -1070,7 +1070,8 @@ def project_rerun_flaky(pid: int) -> dict[str, Any]:
 class RefsRequest(BaseModel):
     """分支/提交下拉所用：仓库 + 只读凭证 + （commits 用）ref。"""
 
-    repo_url: str = Field("", description="仓库地址")
+    repo_url: str = Field("", description="仓库地址（git@/ssh/https/*.git）")
+    local_path: str = Field("", description="本地 git 目录（与 repo_url 二选一）")
     code_source: dict[str, Any] = Field(
         default_factory=dict, description="只读凭证 {credential_type, org_id, access_key}"
     )
@@ -1100,11 +1101,26 @@ def _build_codeup_client(req: RefsRequest) -> tuple[Any, str]:
 def list_repo_branches(req: RefsRequest) -> dict[str, Any]:
     """列分支（供前端目标/基线 ref 下拉：分支名 + 最近提交时间 + 标题）。
 
+    分派顺序（打通三类仓库）：
+      1) Codeup 只读凭证（access_key）→ 走 Codeup API（企业内网仓库）；
+      2) 本地 git 目录（local_path）→ 列本地/远程跟踪分支；
+      3) 远程 git 地址（git@/ssh/https/*.git）→ ``git ls-remote``（GitHub/自建通用，复用本机 SSH/凭据）。
+
     远端不可达等业务失败以 ``ok=False`` 返回（不动 5xx），前端据 `error` 提示。
     """
+    code_source = req.code_source or {}
+    access_key = (code_source.get("access_key") or "").strip()
     try:
-        client, repo_id = _build_codeup_client(req)
-        branches = client.list_branches(repo_id)
+        if access_key:
+            client, repo_id = _build_codeup_client(req)
+            branches = client.list_branches(repo_id)
+            return {"ok": True, "branches": branches, "source": "codeup"}
+        if req.local_path and Path(req.local_path).expanduser().exists():
+            branches = service_repos.list_local_branches(req.local_path)
+            return {"ok": True, "branches": branches, "source": "local"}
+        if service_repos.is_git_url(req.repo_url):
+            branches = service_repos.list_git_branches(req.repo_url)
+            return {"ok": True, "branches": branches, "source": "git"}
     except CodeupError:
         raise  # AppError → 由统一异常处理器映射（远端鉴权/不可达）
     except ValidationError:
@@ -1112,7 +1128,11 @@ def list_repo_branches(req: RefsRequest) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - 远端不可达等通用异常
         log.warning("列分支失败", extra=log_extra(err=type(exc).__name__))
         return {"ok": False, "branches": [], "error": str(exc)[:200]}
-    return {"ok": True, "branches": branches}
+    return {
+        "ok": False,
+        "branches": [],
+        "error": "无法识别仓库类型：请提供 Codeup access_key，或有效的 git 地址 / 本地 git 目录",
+    }
 
 
 @app.post("/api/v1/commits", dependencies=[Depends(require_auth)])

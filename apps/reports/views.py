@@ -270,3 +270,39 @@ class TestReportViewSet(viewsets.ModelViewSet):
             })
             
         return Response(result)
+
+    @action(detail=False, methods=['get'])
+    def testgen_quality(self, request):
+        """testgen 质量分析统一入口（挂到主平台 reports 模块）。
+
+        主平台统一入口：底层与 /api/testgen/quality 同源，均经
+        apps.testgen_integration.client.quality_summary 并行代理 testgen sidecar 的
+        trend/flaky/filter_options/change_logs 四项端点（详见该函数的聚合与容错说明）。
+
+        把 testgen 侧的趋势(trend)/不稳定用例(flaky)/维度分布/变更记录聚合返回，
+        使团队可在主平台 reports 下统一查看，不必进 testgen 控制台。
+
+        query: project_id = testgen 侧项目 id（与 testhub 项目 id 不是同一套）。
+        """
+        project_id = request.query_params.get('project_id')
+        if not project_id:
+            return Response(
+                {'ok': False, 'error': 'project_id 必填（testgen 项目 id）'}, status=400
+            )
+        try:
+            pid = int(project_id)
+        except ValueError:
+            return Response(
+                {'ok': False, 'error': 'project_id 须为整数'}, status=400
+            )
+        try:
+            # 延迟导入：避免 reports 模块在导入期硬依赖 testgen_integration
+            from apps.testgen_integration.client import quality_summary
+
+            data = quality_summary(pid)
+        except Exception as exc:  # noqa: BLE001 - sidecar 不可达等
+            return Response(
+                {'ok': False, 'error': f'获取 testgen 质量分析失败：{exc}'}, status=502
+            )
+        # ok 由 quality_summary 聚合决定（四项全部业务成功才为 True），不再写死。
+        return Response({'project_id': pid, **data})
