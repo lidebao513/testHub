@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 开启 testHub 仓库 main 分支保护（require PR + 评审 + 管理员同样受约束）。
+# 开启 testHub 仓库 main 分支「轻量保护」：仅禁止 force push / 删分支；允许直推、不要求 PR、不卡管理员。
 #
 # 前置：
 #   1) 安装 gh（Windows Git Bash 下）：
@@ -12,12 +12,12 @@
 # 运行：
 #       bash scripts/enable_main_branch_protection.sh
 #
-# 说明（重要）：
-#   - 本仓库的 CI 工作流 testgen-gate 是「路径触发」的（仅 services/testgen/** 变更才跑），
-#     因此【不】把它设为 required status check——否则不改动 testgen 的 PR 会因该检查永不出现而卡死无法合并。
-#   - 若你希望 CI 也卡所有 PR，请把 .github/workflows/testgen-gate.yml 的 paths 过滤去掉，
-#     再在本脚本 JSON 里把 "required_status_checks" 打开（contexts 填 ["gate"]）。
-#   - 当前策略：禁止直推 main、必须 PR、至少需要 1 个审批、管理员同样受限、禁止 force push / 删除。
+# 说明：
+#   - 轻量策略：允许直接 push main、不要求 PR、管理员不受限；只设 allow_force_pushes=false / allow_deletions=false。
+#     你照旧直接 push，但 git push --force 与删分支会被 Git 拒绝——白捡安全网、零额外流程负担。
+#   - 若以后要「完整保护」（禁直推 + 必 PR + 必审批 + 管理员受限），把 enforce_admins 改 true、
+#     required_pull_request_reviews 填回评审对象（{"required_approving_review_count":1, ...}）即可。
+#   - CI 工作流 testgen-gate 路径触发，本就不设为 required status check。
 
 set -euo pipefail
 
@@ -44,21 +44,17 @@ if [ "$PERM" != "true" ]; then
   exit 1
 fi
 
-# 构造保护规则 body（GitHub REST API v3 分支保护）
+# 构造保护规则 body（GitHub REST API v3 分支保护）——轻量版：仅禁 force push / 删分支。
 BODY='{
   "required_status_checks": null,
-  "enforce_admins": true,
-  "required_pull_request_reviews": {
-    "dismiss_stale_reviews": true,
-    "require_code_owner_reviews": false,
-    "required_approving_review_count": 1
-  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
   "restrictions": null,
   "allow_force_pushes": false,
   "allow_deletions": false
 }'
 
-echo "🔒 正在为 ${REPO}:${BRANCH} 开启分支保护..."
+echo "🔒 正在为 ${REPO}:${BRANCH} 开启「轻量保护」（仅禁止 force push / 删分支）..."
 gh api "repos/${REPO}/branches/${BRANCH}/protection" \
   --method PUT \
   --header "Accept: application/vnd.github+json" \
