@@ -5,6 +5,7 @@
 # 与 legacy(test-accel) 同源，八环不变：
 #   secret scan -> ruff(lint + format) -> check_enums -> check_structure
 #   -> mypy -> bandit -> pytest(含覆盖率)
+# 另有 opt-in「UI 层回归」：设 RUN_UI_REGRESSION=1 才运行（默认 SKIP），见下方第 8 步。
 # 任一环节非零退出，则整体非零退出。
 #
 # 工具解析优先级：
@@ -91,9 +92,13 @@ def _pytest_env() -> dict:
 
 
 def _pytest_cmd() -> list:
-    """pytest 必须在含项目依赖的 venv 中跑；优先用项目 venv，否则回退当前 python。"""
-    venv_py = os.path.join(ROOT, "venv", "Scripts", "python.exe")
-    py = venv_py if os.path.isfile(venv_py) else sys.executable
+    """pytest 必须在含项目依赖的 venv 中跑；优先用项目 venv（.venv），否则回退当前 python。"""
+    py = sys.executable
+    for vdir in (".venv", "venv"):
+        venv_py = os.path.join(ROOT, vdir, "Scripts", "python.exe")
+        if os.path.isfile(venv_py):
+            py = venv_py
+            break
     return [
         py,
         "-m",
@@ -174,6 +179,29 @@ def main() -> int:
             ),
         )
     )
+
+    # 8) UI 层回归（opt-in）：默认跳过；CI / 本机设 RUN_UI_REGRESSION=1 且已装
+    #    Playwright + 浏览器时运行。脚本自带 sidecar 全封闭运行（自动拉起 :8211
+    #    并回收），不占用研发机常驻服务，也不依赖 Django 代理，纯测控制台行为。
+    #    放最后：即便 UI 回归因环境（无浏览器/无 LLM）失败，前 7 环结论已落定。
+    ui_venv = os.path.join(ROOT, ".venv", "Scripts", "python.exe")
+    ui_bin = ui_venv if os.path.isfile(ui_venv) else sys.executable
+    if os.environ.get("RUN_UI_REGRESSION") == "1":
+        failures.append(
+            (
+                "ui regression",
+                _step(
+                    "ui regression",
+                    [ui_bin, os.path.join(ROOT, "scripts", "ui_regression.py"), "--start-sidecar"],
+                    env=_pytest_env(),
+                    logfile=os.path.join(ROOT, "ui_regression.log"),
+                ),
+            )
+        )
+    else:
+        print(
+            "\n=== ui regression ===\n  (SKIP: 未设 RUN_UI_REGRESSION=1；需 Playwright+浏览器时才运行)"
+        )
 
     failed = [(name, rc) for name, rc in failures if rc != 0]
     print("\n" + "=" * 60)

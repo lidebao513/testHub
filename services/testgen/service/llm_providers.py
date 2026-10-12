@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+
 from core.errors import ValidationError
 
 
@@ -24,9 +25,9 @@ def _is_localhost(base_url: str) -> bool:
     """
     try:
         host = (urlparse(base_url or "").hostname or "").lower()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
-    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")  # nosec B104
 
 
 def probe_llm(base_url: str, api_key: str, model: str = "") -> dict[str, Any]:
@@ -65,7 +66,7 @@ def probe_llm(base_url: str, api_key: str, model: str = "") -> dict[str, Any]:
             try:
                 data = client.models.list().data
                 test_model = getattr(next(iter(data), None), "id", "") or ""
-            except Exception:
+            except Exception:  # noqa: BLE001
                 test_model = ""
         if not test_model:
             return {

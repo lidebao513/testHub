@@ -849,13 +849,29 @@ def report_snapshot(
 # ============================================================================
 # 代码仓库配置（控制台「代码仓库管理」菜单）：CRUD + 连接测试结果留痕
 # ============================================================================
+def _mask_key(key: str) -> str:
+    """凭证掩码：只留首尾可辨识片段，绝不回传明文。"""
+    k = (key or "").strip()
+    if not k:
+        return ""
+    if len(k) <= 10:
+        return "••••"
+    return f"{k[:5]}••••{k[-4:]}"
+
+
 def _repo_row(row: sqlite3.Row) -> dict[str, Any]:
+    keys = row.keys() if isinstance(row, sqlite3.Row) else []
+    org = row["codeup_org_id"] if "codeup_org_id" in keys else ""
+    key = row["codeup_access_key"] if "codeup_access_key" in keys else ""
     return {
         "id": int(row["id"]),
         "name": row["name"],
         "url": row["url"],
         "ref": row["ref"] or "",
         "remark": row["remark"] or "",
+        "codeup_org_id": org or "",
+        "codeup_has_key": bool((key or "").strip()),
+        "codeup_key_masked": _mask_key(key),
         "last_test_ok": None if row["last_test_ok"] is None else bool(row["last_test_ok"]),
         "last_test_msg": row["last_test_msg"] or "",
         "last_test_at": row["last_test_at"] or "",
@@ -887,12 +903,48 @@ def get_repo_config(rid: int, conn: sqlite3.Connection | None = None) -> dict[st
             conn.close()
 
 
-def create_repo_config(
+def find_repo_creds_by_url(
+    url: str, conn: sqlite3.Connection | None = None
+) -> dict[str, str] | None:
+    """按仓库地址匹配已保存的 Codeup 只读凭证（仅内部使用，绝不回传给前端）。
+
+    匹配规则：忽略大小写/尾部斜杠/`.git` 后缀。命中且已存 key 才返回
+    ``{"org_id", "access_key"}``，否则 None。
+    """
+    if not (url or "").strip():
+        return None
+
+    def _norm(u: str) -> str:
+        u = (u or "").strip().lower().rstrip("/")
+        return u[:-4] if u.endswith(".git") else u
+
+    own = conn is None
+    conn = conn or connect()
+    try:
+        rows_ = conn.execute(
+            "SELECT url, codeup_org_id, codeup_access_key FROM repo_configs"
+        ).fetchall()
+    finally:
+        if own:
+            conn.close()
+    target = _norm(url)
+    for r in rows_:
+        if _norm(r["url"]) != target:
+            continue
+        key = (r["codeup_access_key"] or "").strip()
+        if key:
+            return {"org_id": (r["codeup_org_id"] or "").strip(), "access_key": key}
+    return None
+
+
+def create_repo_config(  # noqa: PLR0913 - 新增 codeup 凭证字段导致参数增多（部分插入语义天然多参）
     name: str,
     url: str,
     *,
     ref: str = "",
     remark: str = "",
+    codeup_org_id: str = "",
+    codeup_access_key: str = "",
     conn: sqlite3.Connection | None = None,
 ) -> int:
     """新增仓库配置；name 重复抛 ValidationError 由调用方转换。"""
@@ -902,9 +954,18 @@ def create_repo_config(
     try:
         with conn:
             cur = conn.execute(
-                "INSERT INTO repo_configs(name, url, ref, remark, created_at, updated_at)"
-                " VALUES(?,?,?,?,?,?)",
-                (name, url, ref, remark, _now(), _now()),
+                "INSERT INTO repo_configs(name, url, ref, remark, codeup_org_id,"
+                " codeup_access_key, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    name,
+                    url,
+                    ref,
+                    remark,
+                    codeup_org_id.strip(),
+                    codeup_access_key.strip(),
+                    _now(),
+                    _now(),
+                ),
             )
             return int(cur.lastrowid or 0)
     except sqlite3.IntegrityError as exc:
@@ -1017,6 +1078,8 @@ def update_repo_config(  # noqa: PLR0913 - 部分更新语义天然多参：None
     url: str | None = None,
     ref: str | None = None,
     remark: str | None = None,
+    codeup_org_id: str | None = None,
+    codeup_access_key: str | None = None,  # None=不改（保留原值）；""=清除；非空=覆盖
     conn: sqlite3.Connection | None = None,
 ) -> bool:
     """按需更新（None=不改）；改名重名抛 ContractViolation。返回是否命中行。"""
@@ -1035,6 +1098,16 @@ def update_repo_config(  # noqa: PLR0913 - 部分更新语义天然多参：None
                 conn.execute("UPDATE repo_configs SET ref=? WHERE id=?", (ref, rid))
             if remark is not None:
                 conn.execute("UPDATE repo_configs SET remark=? WHERE id=?", (remark, rid))
+            if codeup_org_id is not None:
+                conn.execute(
+                    "UPDATE repo_configs SET codeup_org_id=? WHERE id=?",
+                    (codeup_org_id.strip(), rid),
+                )
+            if codeup_access_key is not None:
+                conn.execute(
+                    "UPDATE repo_configs SET codeup_access_key=? WHERE id=?",
+                    (codeup_access_key.strip(), rid),
+                )
             conn.execute("UPDATE repo_configs SET updated_at=? WHERE id=?", (_now(), rid))
             return True
     except sqlite3.IntegrityError as exc:
@@ -1126,7 +1199,9 @@ def get_llm_provider(pid: int, conn: sqlite3.Connection | None = None) -> dict[s
             conn.close()
 
 
-def get_llm_provider_secret(pid: int, conn: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+def get_llm_provider_secret(
+    pid: int, conn: sqlite3.Connection | None = None
+) -> dict[str, Any] | None:
     """取明文凭证（仅连接测试/引擎调用内部使用，**绝不**经 API 返回给前端）。"""
     own = conn is None
     conn = conn or connect()
@@ -1146,7 +1221,7 @@ def get_llm_provider_secret(pid: int, conn: sqlite3.Connection | None = None) ->
             conn.close()
 
 
-def create_llm_provider(
+def create_llm_provider(  # noqa: PLR0913
     name: str,
     base_url: str,
     *,
@@ -1186,7 +1261,7 @@ def create_llm_provider(
             conn.close()
 
 
-def update_llm_provider(  # noqa: PLR0913 - 部分更新语义天然多参：None=不改
+def update_llm_provider(  # noqa: PLR0913, C901 - 部分更新语义天然多参：None=不改（保留原值）；分支多导致复杂度略超
     pid: int,
     *,
     name: str | None = None,
@@ -1221,9 +1296,7 @@ def update_llm_provider(  # noqa: PLR0913 - 部分更新语义天然多参：Non
                     (1 if is_default else 0, pid),
                 )
             if priority is not None:
-                conn.execute(
-                    "UPDATE llm_providers SET priority=? WHERE id=?", (int(priority), pid)
-                )
+                conn.execute("UPDATE llm_providers SET priority=? WHERE id=?", (int(priority), pid))
             conn.execute("UPDATE llm_providers SET updated_at=? WHERE id=?", (_now(), pid))
             return True
     except sqlite3.IntegrityError as exc:
@@ -1350,19 +1423,19 @@ def filter_options(pid: int, *, conn: sqlite3.Connection | None = None) -> dict[
     try:
         case_dims: dict[str, list[dict[str, Any]]] = {}
         for col in ("priority", "module", "case_type", "test_type", "ctype", "review_status"):
-            rows = conn.execute(  # noqa: S608 - 列名来自白名单
-                "SELECT {col} AS k, COUNT(*) AS c FROM cases"
-                " WHERE project_id = ? AND status != 'obsolete' AND {col} != ''"
-                " GROUP BY {col} ORDER BY c DESC".format(col=col),
+            rows = conn.execute(
+                f"SELECT {col} AS k, COUNT(*) AS c FROM cases"
+                f" WHERE project_id = ? AND status != 'obsolete' AND {col} != ''"
+                f" GROUP BY {col} ORDER BY c DESC",
                 (pid,),
             ).fetchall()
             case_dims[col] = [{"value": r["k"], "count": r["c"]} for r in rows]
         tp_dims: dict[str, list[dict[str, Any]]] = {}
         for col in ("category", "tag", "dimension"):
             rows = conn.execute(
-                "SELECT {col} AS k, COUNT(*) AS c FROM test_points"
-                " WHERE project_id = ? AND {col} != ''"
-                " GROUP BY {col} ORDER BY c DESC".format(col=col),
+                f"SELECT {col} AS k, COUNT(*) AS c FROM test_points"
+                f" WHERE project_id = ? AND {col} != ''"
+                f" GROUP BY {col} ORDER BY c DESC",
                 (pid,),
             ).fetchall()
             tp_dims[col] = [{"value": r["k"], "count": r["c"]} for r in rows]
@@ -1423,7 +1496,10 @@ def import_test_points(
         imported = updated = 0
         with conn:  # 事务：全部成功或全部回滚
             for tp in tps:
-                row = {col: tp.get(old) if tp.get(old) is not None else tp.get(new) for col, old, new in _TP_IMPORT_FIELDS}
+                row = {
+                    col: tp.get(old) if tp.get(old) is not None else tp.get(new)
+                    for col, old, new in _TP_IMPORT_FIELDS
+                }
                 if not row["tp_id"]:
                     continue
                 cat = row["category"] or "正常"
@@ -1438,9 +1514,17 @@ def import_test_points(
                         " semantic=?, title=?, source=?, method=?, area=?, expect=?,"
                         " dimension=?, tag=? WHERE id = ?",
                         (
-                            row["fp_contract_id"], row["category"], row["module"],
-                            row["semantic"], row["title"], row["source"], row["method"],
-                            row["area"], row["expect"], row["dimension"], row["tag"],
+                            row["fp_contract_id"],
+                            row["category"],
+                            row["module"],
+                            row["semantic"],
+                            row["title"],
+                            row["source"],
+                            row["method"],
+                            row["area"],
+                            row["expect"],
+                            row["dimension"],
+                            row["tag"],
                             existing["id"],
                         ),
                     )
@@ -1452,15 +1536,94 @@ def import_test_points(
                         " expect, dimension, tag, review_status)"
                         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
-                            pid, row["tp_id"], row["fp_contract_id"], row["category"],
-                            row["module"], row["semantic"], row["title"], row["source"],
-                            row["method"], row["area"], row["expect"], row["dimension"],
-                            row["tag"], "pending",
+                            pid,
+                            row["tp_id"],
+                            row["fp_contract_id"],
+                            row["category"],
+                            row["module"],
+                            row["semantic"],
+                            row["title"],
+                            row["source"],
+                            row["method"],
+                            row["area"],
+                            row["expect"],
+                            row["dimension"],
+                            row["tag"],
+                            "pending",
                         ),
                     )
                     imported += 1
                 by_category[cat] = by_category.get(cat, 0) + 1
         return {"imported": imported, "updated": updated, "by_category": by_category}
+    finally:
+        if own:
+            conn.close()
+
+
+# ============================================================================
+# 文件中文描述缓存（扫描增强：describe 命中复用，避免重复烧 LLM）
+# ============================================================================
+def get_file_descriptions(
+    repo_url: str, paths: list[str], *, conn: sqlite3.Connection | None = None
+) -> dict[str, dict[str, Any]]:
+    """按 (repo_url, file_path) 批量取缓存；返回 {path: {description, symbols_sig}}。"""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        if not paths:
+            return {}
+        placeholders = ",".join("?" for _ in paths)
+        rows = conn.execute(
+            "SELECT file_path, description, symbols_sig FROM file_descriptions"
+            f" WHERE repo_url = ? AND file_path IN ({placeholders})",
+            (repo_url, *paths),
+        ).fetchall()
+        return {
+            r["file_path"]: {
+                "description": r["description"],
+                "symbols_sig": r["symbols_sig"],
+            }
+            for r in rows
+        }
+    finally:
+        if own:
+            conn.close()
+
+
+def upsert_file_description(
+    repo_url: str,
+    path: str,
+    symbols_sig: str,
+    description: str,
+    model: str,
+) -> None:
+    """写回/覆盖单条描述缓存（同 (repo_url, file_path) 幂等 upsert）。"""
+    conn = connect()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO file_descriptions(repo_url, file_path, symbols_sig, description,"
+                " model, updated_at) VALUES(?,?,?,?,?,?)"
+                " ON CONFLICT(repo_url, file_path) DO UPDATE SET"
+                " symbols_sig=excluded.symbols_sig, description=excluded.description,"
+                " model=excluded.model, updated_at=excluded.updated_at",
+                (repo_url, path, symbols_sig, description, model, _now()),
+            )
+    finally:
+        conn.close()
+
+
+def clear_file_descriptions(repo_url: str = "", *, conn: sqlite3.Connection | None = None) -> int:
+    """清空描述缓存。repo_url 为空 = 清空全部；否则只清该仓库。返回删除行数。"""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        if repo_url:
+            cur = conn.execute("DELETE FROM file_descriptions WHERE repo_url = ?", (repo_url,))
+        else:
+            cur = conn.execute("DELETE FROM file_descriptions")
+        conn.commit()
+        return int(cur.rowcount or 0)
     finally:
         if own:
             conn.close()

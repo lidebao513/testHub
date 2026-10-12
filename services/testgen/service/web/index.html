@@ -44,12 +44,15 @@
   .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
   .hint{font-size:12px;color:var(--sub);margin-top:6px;line-height:1.5}
   .sec{margin-top:14px;border-top:1px dashed var(--line);padding-top:12px}
+  .sec-title{font-weight:700;font-size:13px;margin-bottom:8px;color:var(--fg)}
+  .sec-title .step{display:inline-block;min-width:20px;text-align:center;background:var(--line);border-radius:4px;margin-right:6px;font-size:12px}
   .log{background:#0f172a;color:#d6e2f5;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;border-radius:9px;padding:12px;height:280px;overflow:auto;white-space:pre-wrap;line-height:1.55}
   .badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600}
   .b-pending,.b-running{background:#fef3c7;color:#92400e}
   .b-success{background:#dcfce7;color:#166534}
   .b-failed,.b-cancelled{background:#fee2e2;color:#991b1b}
   .t-unknown{background:#f1f5f9;color:#65758a}
+  .t-info{background:#e0f2fe;color:#0369a1}
   .kv{display:flex;gap:8px;font-size:13px;margin:4px 0}
   .kv b{color:var(--sub);font-weight:600;min-width:84px}
   a.link{color:var(--brand);text-decoration:none;font-size:13px;cursor:pointer}
@@ -71,6 +74,8 @@
   .scan-item:hover{background:#eef2ff}
   .scan-item input{margin:0}
   .scan-item .p{color:var(--ink);flex:1;word-break:break-all}
+  .scan-item .p .desc{display:block;font-size:11px;color:var(--sub);margin-top:1px}
+  .scan-item .p .desc.sym{color:#64748b;font-style:normal}
   .scan-item .meta{color:var(--sub);font-size:11px;white-space:nowrap}
   .st-added{background:#dcfce7;color:#166534}
   .st-modified{background:#fef3c7;color:#92400e}
@@ -97,36 +102,7 @@
     <h2>① 填写被测对象</h2>
 
     <div class="sec">
-      <label>扫描并勾选生成范围（可选 · 按子集生成）</label>
-      <div class="hint" style="margin-top:0">先点「扫描代码目录」列出文件，勾选要生成用例的<b>文件/目录</b>；不勾选则「生成用例」时全量生成。配合「生成模式」可进一步选择全量或增量。</div>
-      <div class="actions" style="margin-top:8px">
-        <button class="btn-ghost" id="btn_scan" onclick="scanCode()">🔍 扫描代码目录</button>
-        <button class="btn-ghost" onclick="selectAll(true)">全选</button>
-        <button class="btn-ghost" onclick="selectOnlyChanged()">仅 新增+修改</button>
-        <button class="btn-ghost" onclick="selectAll(false)">清空</button>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <div>
-          <label>分支（远端仓库可获取；选定后同步为生成模式的「目标 ref」）</label>
-          <div style="display:flex;gap:6px">
-            <select id="scan_ref" style="flex:1" onchange="onBranchChange()"><option value="">默认分支</option></select>
-            <button class="btn-ghost" id="btn_branches" onclick="loadBranches()">🔄 获取分支</button>
-          </div>
-        </div>
-        <div>
-          <label>基线 ref（对比出 新增/修改，可空）</label>
-          <input type="text" id="scan_base_ref" placeholder="如 master；留空只列文件不标变更" onchange="syncRefs()">
-        </div>
-      </div>
-      <div id="scan_meta" class="badge t-unknown" style="display:none"></div>
-      <div id="scan_list" class="scan-box"><span class="hint">点击「扫描代码目录」加载文件清单（基于上方「代码目录」字段）</span></div>
-    </div>
-
-    <label>统一智能输入框（把地址+账号+密码+动态口令+代码路径混在一起写也行）</label>
-    <textarea id="auto_input" placeholder="例：http://47.97.154.50:8090/chat 账号 test_ft001@ft.cntaiping.com 密码 Tp0909@test 动态口令 123456"></textarea>
-
-    <div class="sec">
-      <label>或分项填写（更清晰）</label>
+      <div class="sec-title"><span class="step">A</span>选择代码源</div>
       <div class="row">
         <div>
           <label>选择已配置仓库（可选） <a class="link" onclick="switchView('repos')">→ 管理仓库</a></label>
@@ -136,8 +112,85 @@
         </div>
       </div>
       <div class="row">
-        <div><label>代码目录 / 仓库地址</label><input type="text" id="repo" placeholder="D:/code/myrepo 或 git@...:x/y.git"></div>
+        <div><label>代码目录 / 仓库地址</label><input type="text" id="repo" placeholder="本地目录 或 git@...:x/y.git 或 https://codeup.aliyun.com/ns/repo.git" oninput="autoMatchRepo()"></div>
       </div>
+      <div class="row"><div id="repo_match_hint" class="hint" style="display:none"></div></div>
+      <div class="row">
+        <div><label>代码源类型</label>
+          <select id="code_src_type" onchange="onCodeSrcTypeChange()">
+            <option value="local">本地目录（本机文件夹）</option>
+            <option value="github">GitHub / Git(SSH·HTTPS)</option>
+            <option value="codeup">阿里云 Codeup（只读拉取）</option>
+          </select>
+        </div>
+      </div>
+      <div class="row" id="codeup_cred_row" style="display:none">
+        <div><label>Codeup 组织 ID</label><input type="text" id="codeup_org_id" placeholder="如 69cf2ce1f167bac7fd252020"></div>
+        <div>
+          <label>只读凭证 access_key(PAT)</label>
+          <select id="codeup_key_mode" onchange="onKeyModeChange()">
+            <option value="stored">使用仓库配置的凭证（自动带出）</option>
+            <option value="manual">手动输入 PAT…</option>
+          </select>
+          <input type="password" id="codeup_access_key" placeholder="个人访问令牌，仅用于读代码/列分支" style="display:none;margin-top:6px;width:100%">
+        </div>
+      </div>
+      <div class="row" id="codeup_hint" style="display:none">
+        <div class="hint">凭证已存入仓库配置（本机数据库，列表仅显示掩码），选择仓库时自动带出；要修改/清除请到 <a class="link" onclick="switchView('repos')">管理仓库</a>。上方手动填写的内容仅本机浏览器临时记忆（可<a href="javascript:void(0)" onclick="clearCodeupCreds()">清除</a>）。</div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title"><span class="step">B</span>圈定生成范围（可选）</div>
+      <div class="hint" style="margin-top:0">先「获取分支」选择目标分支与基线 ref，再点「扫描」列出文件并勾选生成范围（不勾选 = 全部文件）；要按代码变更生成，选好「基线 ref」后选「增量」。</div>
+      <div style="margin-top:8px">
+        <button class="btn-ghost btn-sm" id="btn_branches" onclick="loadBranches()">🔄 获取分支</button>
+      </div>
+      <div style="margin-top:8px">
+        <label>分支（增量模式的目标 ref）</label>
+        <select id="scan_ref" style="width:100%" onchange="onBranchChange()"><option value="">默认分支</option></select>
+      </div>
+      <div style="margin-top:8px">
+        <label>基线 ref（可空）</label>
+        <select id="scan_base_ref" style="width:100%" onchange="syncRefs()"><option value="">（留空 = 不对比，只列文件）</option></select>
+      </div>
+      <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
+        <button class="btn-primary btn-sm" id="btn_scan" onclick="scanCode()">🔍 扫描</button>
+        <span style="flex:1"></span>
+        <span style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--sub)">生成模式
+          <span class="scopes" style="margin-top:0">
+            <label><input type="radio" name="gen_mode" value="full" checked onchange="onModeChange()">全量</label>
+            <label><input type="radio" name="gen_mode" value="incremental" onchange="onModeChange()">增量</label>
+          </span>
+        </span>
+      </div>
+      <div class="actions" style="margin-top:8px;align-items:center">
+        <button class="btn-ghost btn-sm" onclick="selectAll(true)">全选</button>
+        <button class="btn-ghost btn-sm" onclick="selectOnlyChanged()">仅变更文件</button>
+        <button class="btn-ghost btn-sm" onclick="selectAll(false)">清空</button>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--sub)"><input type="checkbox" id="view_only_changed" onchange="onViewFilterChange()">只看变更</label>
+        <span style="flex:1"></span>
+        <button class="btn-ghost btn-sm" id="btn_clear_desc" onclick="clearDescCache()" title="清空本地已保存的文件描述缓存（换模型或强制刷新时用）">🧹 清空描述缓存</button>
+        <span class="hint" style="margin:0">扫描后用这些按钮勾选生成范围</span>
+      </div>
+      <div class="hint">「分支」即增量模式的目标 ref；「基线 ref」用于对比出新增/修改（留空只列文件不标变更）。增量 = 只对两者的 diff 范围生成测试点，需 git 仓库。点「获取分支」刷新两个下拉框。</div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title"><span class="step">C</span>测试范围（默认全选）</div>
+      <div class="scopes" id="scopes">
+        <label><input type="checkbox" value="正常" checked>正常</label>
+        <label><input type="checkbox" value="异常" checked>异常</label>
+        <label><input type="checkbox" value="安全" checked>安全</label>
+        <label><input type="checkbox" value="边界" checked>边界</label>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title"><span class="step">D</span>被测环境（可选 · 执行验证 / 一键闭环时需要）</div>
+      <label>统一智能输入框（把地址+账号+密码+动态口令+代码路径混在一起写也行）</label>
+      <textarea id="auto_input" placeholder="例：http://47.97.154.50:8090/chat 账号 test_ft001@ft.cntaiping.com 密码 Tp0909@test 动态口令 123456"></textarea>
+      <label style="margin-top:8px">或分项填写（更清晰）</label>
       <div class="row">
         <div><label>被测环境地址(URL)</label><input type="text" id="test_url" placeholder="http://host:port/chat"></div>
         <div><label>登录页(可空)</label><input type="text" id="login_url" placeholder="留空自动判定"></div>
@@ -150,42 +203,19 @@
         <div><label>动态口令(OTP)</label><input type="text" id="otp" placeholder="6位动态码"></div>
         <div><label>项目名(可空)</label><input type="text" id="pname" placeholder="自动命名"></div>
       </div>
-      <label>测试范围（默认全选）</label>
-      <div class="scopes" id="scopes">
-        <label><input type="checkbox" value="正常" checked>正常</label>
-        <label><input type="checkbox" value="异常" checked>异常</label>
-        <label><input type="checkbox" value="安全" checked>安全</label>
-        <label><input type="checkbox" value="边界" checked>边界</label>
-      </div>
     </div>
 
     <div class="sec">
-      <label>生成模式</label>
-      <div class="scopes">
-        <label><input type="radio" name="gen_mode" value="full" checked onchange="onModeChange()">全量 (full)</label>
-        <label><input type="radio" name="gen_mode" value="incremental" onchange="onModeChange()">增量 (incremental)</label>
+      <div class="sec-title"><span class="step">E</span>生成与执行</div>
+      <div class="actions" style="margin-top:0">
+        <button class="btn-primary" id="btn_gen" onclick="doGenerate()">▶ 生成用例</button>
+        <button class="btn-ok" id="btn_exec" onclick="doExecute()" disabled>▶ 执行验证</button>
+        <button class="btn-ok" id="btn_onetwo" onclick="doScanAndTest()">⚡ 一键闭环（生成→执行→报告）</button>
       </div>
-      <div class="row" id="incremental_refs" style="display:none;margin-top:8px">
-        <div><label>基线 ref (base)</label><input type="text" id="base_ref" placeholder="如 master 或 commit"></div>
-        <div><label>目标 ref (target)</label><input type="text" id="target_ref" placeholder="如 feature/x 或 HEAD"></div>
-      </div>
-      <div class="hint">增量模式仅对 diff 范围内代码生成测试点；需提供 git 仓库地址（非本地目录）以计算变更集。</div>
-    </div>
-
-    <div class="actions">
-      <button class="btn-primary" id="btn_gen" onclick="doGenerate()">▶ 生成用例</button>
-      <button class="btn-ok" id="btn_exec" onclick="doExecute()" disabled>▶ 执行验证</button>
-      <button class="btn-ok" id="btn_onetwo" onclick="doScanAndTest()">⚡ 一键闭环（生成→执行→报告）</button>
-    </div>
-    <div class="hint">提示：只填「代码目录」= 纯代码生成；只填「被测地址+账号」= 浏览器自动发现页面/接口生成。执行验证默认只读（不污染被测环境），勾下方可放行写/真实点击。</div>
-
-    <div class="sec">
-      <label>执行选项</label>
-      <div class="scopes">
-        <label><input type="checkbox" id="allow_write">放行写操作</label>
-        <label><input type="checkbox" id="ui_click">UI 真实点击</label>
-      </div>
+      <div class="hint">提示：只填「代码目录」= 纯代码生成；只填「被测地址+账号」= 浏览器自动发现页面/接口生成。执行验证默认只读（不污染被测环境），勾下方可放行写/真实点击。</div>
       <div class="row" style="margin-top:8px">
+        <div><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="allow_write">放行写操作</label></div>
+        <div><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ui_click">UI 真实点击</label></div>
         <div><label>指定已有项目ID执行(可选)</label><input type="text" id="exec_pid" placeholder="如 15"></div>
       </div>
     </div>
@@ -199,8 +229,14 @@
     </details>
   </div>
 
-  <!-- 右：进度 + 结果 -->
+  <!-- 右：扫描结果 + 进度 + 结果 -->
   <div style="display:flex;flex-direction:column;gap:16px">
+    <div class="card">
+      <h2>🔍 扫描结果 <span id="scan_meta" class="badge t-unknown" style="display:none"></span></h2>
+      <div id="scan_list" class="scan-box" style="max-height:420px"><span class="hint">先在 A 区选定代码源，再点 B 区「🔍 扫描」加载文件清单</span></div>
+      <!-- 增量的基线/目标 ref 已并入 B 区「基线 ref / 分支」，此隐藏字段供 buildBody 读取，联动函数自动同步 -->
+      <input type="hidden" id="base_ref"><input type="hidden" id="target_ref">
+    </div>
     <div class="card">
       <h2>② 实时进度</h2>
       <div class="kv"><b>当前任务</b><span id="task_id">—</span><span id="task_state" class="badge b-pending">idle</span></div>
@@ -257,9 +293,15 @@
     <label>名称（必填，唯一）</label>
     <input type="text" id="repo_name" placeholder="如：testhub 主仓库">
     <label>仓库地址（本地目录 或 git 地址）</label>
-    <input type="text" id="repo_url" placeholder="D:/code/myrepo 或 git@github.com:x/y.git 或 https://.../y.git">
+    <input type="text" id="repo_url" placeholder="D:/code/myrepo 或 git@github.com:x/y.git 或 https://.../y.git" oninput="onRepoUrlFormInput()">
     <label>分支 / ref（可空；git 测试时顺带校验是否存在）</label>
     <input type="text" id="repo_ref" placeholder="如 master / main，留空不校验">
+    <div id="repo_cred_fields" style="display:none">
+      <label>Codeup 组织 ID（阿里云仓库才需要）</label>
+      <input type="text" id="repo_codeup_org" placeholder="如 69cf2ce1f167bac7fd252020">
+      <label>只读凭证 access_key(PAT)（存入本机数据库，接口只回掩码；编辑时留空=不改）</label>
+      <input type="password" id="repo_codeup_key" placeholder="个人访问令牌，仅用于只读拉代码/列分支">
+    </div>
     <label>备注</label>
     <input type="text" id="repo_remark" placeholder="用途说明（可空）">
     <div class="actions">
@@ -419,7 +461,7 @@ function renderRepoList(){
   let html = '<table><tr><th>ID</th><th>名称</th><th>类型</th><th>地址</th><th>ref</th><th>最近测试</th><th>操作</th></tr>';
   for(const r of repoCache){
     const tested = r.last_test_at ? `${testBadge(r)}<br><span class="hint">${r.last_test_at}<br>${escapeHtml(r.last_test_msg)}</span>` : testBadge(r);
-    html += `<tr><td>${r.id}</td><td>${escapeHtml(r.name)}${r.remark?`<br><span class="hint">${escapeHtml(r.remark)}</span>`:""}</td>`+
+    html += `<tr><td>${r.id}</td><td>${escapeHtml(r.name)}${r.codeup_has_key?' <span title="已存只读凭证">🔑</span>':''}${r.remark?`<br><span class="hint">${escapeHtml(r.remark)}</span>`:""}</td>`+
       `<td>${kindPill(r)}</td><td class="wrap-cell">${escapeHtml(r.url)}</td><td>${escapeHtml(r.ref||"—")}</td>`+
       `<td>${tested}</td>`+
       `<td><a class="link" onclick="probeRepo(${r.id})">测试</a> `+
@@ -443,10 +485,84 @@ function renderRepoPreset(){
   sel.value = cur;
 }
 
+let matchedRepo = null;  // 当前选/匹配到的已配置仓库对象（用于自动带出已存 Codeup 凭证）
+
 function applyRepoPreset(id){
-  if(!id){ $("repo").value=""; return; }
+  if(!id){ matchedRepo=null; $("repo").value=""; $("code_src_type").value="local"; onCodeSrcTypeChange(); return; }
   const r = repoCache.find(x=>String(x.id)===String(id));
-  if(r){ $("repo").value = r.url; log(`已选择仓库「${r.name}」: ${r.url}`); }
+  if(r){ matchedRepo=r; $("repo").value = r.url; $("code_src_type").value = inferSrcType(r.url); onCodeSrcTypeChange(); applyRepoCreds(r); log(`已选择仓库「${r.name}」: ${r.url}`); }
+}
+
+/* 凭证来源二选一：仓库配置自动带出（默认）/ 手动输入 */
+function onKeyModeChange(){
+  const manual = ($("codeup_key_mode").value === "manual");
+  $("codeup_access_key").style.display = manual ? "block" : "none";
+  if(!manual){ $("codeup_access_key").value = ""; }
+}
+
+/* 已配置仓库存了 Codeup 凭证时，下拉自动切「使用仓库配置」并显示掩码；没存则只能手动输入 */
+function applyRepoCreds(r){
+  const hint = $("repo_match_hint");
+  if(r && r.codeup_org_id){ $("codeup_org_id").value = r.codeup_org_id; }
+  const modeSel = $("codeup_key_mode");
+  const storedOpt = modeSel.querySelector('option[value="stored"]');
+  if(r && r.codeup_has_key){
+    storedOpt.disabled = false;
+    storedOpt.textContent = `使用仓库配置的凭证（${r.codeup_key_masked}）`;
+    if(modeSel.value !== "manual"){ modeSel.value = "stored"; }
+    onKeyModeChange();
+    if(hint){ hint.style.display="block"; hint.style.color="var(--ok,#167f53)"; hint.textContent=`🔑 已自动带出「${r.name}」保存的只读凭证（${r.codeup_key_masked}）`; }
+  }else{
+    storedOpt.textContent = "使用仓库配置的凭证（该仓库未保存）";
+    storedOpt.disabled = true;
+    if(modeSel.value === "stored"){ modeSel.value = "manual"; }
+    onKeyModeChange();
+  }
+}
+
+/* 根据仓库地址自动判断代码源类型：阿里云 Codeup / GitHub·Git / 本地目录 */
+function inferSrcType(url){
+  const u = String(url||"").toLowerCase();
+  if(u.includes("codeup.aliyun.com")) return "codeup";
+  if(u.startsWith("git@") || u.includes("github.com") || u.endsWith(".git") || /^https?:\/\//.test(u)) return "github";
+  return "local";
+}
+
+/* 正向自动匹配：在 repo 文本框输入/粘贴后，反查已配置仓库并自动选中下拉 */
+function normalizeRepoKey(s){
+  if(!s) return "";
+  let k = String(s).trim().toLowerCase();
+  k = k.replace(/\\/g, "/").replace(/\/+$/, "");           // 反斜杠归一、去尾部斜杠
+  k = k.replace(/^https?:\/\//, "").replace(/^ssh:\/\//, ""); // 去协议
+  k = k.replace(/\.git$/, "");                              // 去 .git
+  if(k.startsWith("git@")){ k = k.slice(4).replace(/:/, "/"); } // git@host:path -> host/path
+  return k;
+}
+function autoMatchRepo(){
+  const val = $("repo").value.trim();
+  const hint = $("repo_match_hint");
+  const sel = $("repo_preset");
+  if(!val){ sel.value=""; hint.style.display="none"; return; }
+  const key = normalizeRepoKey(val);
+  const r = (repoCache||[]).find(x => normalizeRepoKey(x.url) === key);
+  if(r){
+    sel.value = String(r.id);
+    matchedRepo = r;
+    const t = inferSrcType(r.url);
+    $("code_src_type").value = t; onCodeSrcTypeChange(); applyRepoCreds(r);
+    hint.style.display = "block";
+    hint.style.color = "var(--ok,#167f53)";
+    hint.textContent = `✅ 已自动匹配仓库「${r.name}」(${srcTypeLabel(t)})${r.ref?(" ref="+r.ref):""}${r.codeup_has_key?" 🔑凭证已带出":""}`;
+    log(`自动匹配仓库「${r.name}」: ${r.url}`);
+  }else{
+    sel.value = "";
+    matchedRepo = null;
+    const t = inferSrcType(val);            // 手动输入也能顺带判断类型
+    if(t){ $("code_src_type").value = t; onCodeSrcTypeChange(); }
+    hint.style.display = "block";
+    hint.style.color = "var(--muted,#65758a)";
+    hint.textContent = "· 未匹配到已配置仓库，已按输入内容自动判断类型（可忽略，或去「管理仓库」登记）";
+  }
 }
 
 function escapeHtml(s){
@@ -456,8 +572,16 @@ function escapeHtml(s){
 function resetRepoForm(){
   $("repo_edit_id").value=""; $("repo_name").value=""; $("repo_url").value="";
   $("repo_ref").value=""; $("repo_remark").value="";
+  $("repo_codeup_org").value=""; $("repo_codeup_key").value="";
+  onRepoUrlFormInput();
   $("repo_form_result").innerHTML="";
   $("repo_form_title").textContent="➕ 新增仓库";
+}
+
+/* 地址含 codeup.aliyun.com 时展开凭证字段 */
+function onRepoUrlFormInput(){
+  const isCodeup = $("repo_url").value.toLowerCase().includes("codeup.aliyun.com");
+  $("repo_cred_fields").style.display = isCodeup ? "block" : "none";
 }
 
 async function saveRepo(){
@@ -465,10 +589,14 @@ async function saveRepo(){
     name: $("repo_name").value.trim(),
     url: $("repo_url").value.trim(),
     ref: $("repo_ref").value.trim(),
-    remark: $("repo_remark").value.trim()
+    remark: $("repo_remark").value.trim(),
+    codeup_org_id: $("repo_codeup_org").value.trim()
   };
-  if(!body.name || !body.url){ alert("名称与仓库地址必填"); return; }
+  const keyInput = $("repo_codeup_key").value.trim();
   const editId = $("repo_edit_id").value;
+  // 编辑时 key 留空 = 不修改原值（发 null）；新增时留空 = 不设凭证（发 ""）
+  body.codeup_access_key = keyInput || (editId ? null : "");
+  if(!body.name || !body.url){ alert("名称与仓库地址必填"); return; }
   try{
     if(editId){
       await api("/api/v1/repos/"+editId, {method:"PUT", body:JSON.stringify(body)});
@@ -506,6 +634,9 @@ function editRepo(id){
   if(!r) return;
   $("repo_edit_id").value=r.id; $("repo_name").value=r.name; $("repo_url").value=r.url;
   $("repo_ref").value=r.ref||""; $("repo_remark").value=r.remark||"";
+  $("repo_codeup_org").value=r.codeup_org_id||""; $("repo_codeup_key").value="";
+  $("repo_codeup_key").placeholder = r.codeup_has_key ? `已保存（${r.codeup_key_masked}），留空=不修改` : "个人访问令牌，仅用于只读拉代码/列分支";
+  onRepoUrlFormInput();
   $("repo_form_title").textContent=`✏️ 编辑仓库 #${r.id}`;
   window.scrollTo({top:0,behavior:"smooth"});
 }
@@ -522,8 +653,10 @@ async function delRepo(id){
 function fillRepo(id){
   const r = repoCache.find(x=>String(x.id)===String(id));
   if(!r) return;
+  matchedRepo = r;
   $("repo_preset").value = String(id);
   $("repo").value = r.url;
+  $("code_src_type").value = inferSrcType(r.url); onCodeSrcTypeChange(); applyRepoCreds(r);
   switchView("console");
   log(`已填入仓库「${r.name}」: ${r.url}`);
 }
@@ -769,7 +902,22 @@ async function delLLM(id){
 /* ============ 生成模式联动（P1：增量入口） ============ */
 function onModeChange(){
   const m = document.querySelector('input[name="gen_mode"]:checked').value;
-  $("incremental_refs").style.display = (m==="incremental") ? "flex" : "none";
+  if(m==="incremental"){
+    // 增量的 base/target 不再单独展示输入框，直接复用 B 区「基线 ref / 分支」（隐藏字段兜底）
+    if(!$("base_ref").value.trim() && $("scan_base_ref").value.trim()){
+      $("base_ref").value = $("scan_base_ref").value.trim();
+    }
+    if(!$("target_ref").value.trim() && $("scan_ref").value.trim()){
+      $("target_ref").value = $("scan_ref").value.trim();
+    }
+    log("增量模式：基线/目标 ref 复用 B 区的「基线 ref / 分支」（base=" + ($("base_ref").value.trim()||"空") + ", target=" + ($("target_ref").value.trim()||"空") + "）");
+    // 增量模式：列表只看变更文件 + 只勾选变更文件（扫描后同样生效）
+    if($("view_only_changed")){ $("view_only_changed").checked = true; onViewFilterChange(); }
+    selectOnlyChanged();
+  }else{
+    // 全量模式：恢复显示全部文件
+    if($("view_only_changed")){ $("view_only_changed").checked = false; onViewFilterChange(); }
+  }
 }
 
 /* ============ 测试点查看器（P0：列表 + 全量/更新徽标 + 筛选；P3：导出） ============ */
@@ -864,20 +1012,83 @@ async function exportCases(pid){
 /* ============ 扫描 → 勾选范围（按子集生成） ============ */
 let scanItems = [];
 
+function onCodeSrcTypeChange(){
+  const show = ($("code_src_type").value==="codeup");
+  $("codeup_cred_row").style.display = show ? "flex" : "none";
+  $("codeup_hint").style.display = show ? "block" : "none";
+}
+
+// 浏览器临时记忆 Codeup 凭证（次选）：主存储是仓库配置（数据库），此处仅缓存手填值便于下次回填。
+const LS_ORG = "tg_codeup_org_id", LS_KEY = "tg_codeup_access_key";
+function saveCodeupCreds(org, key){
+  try { localStorage.setItem(LS_ORG, org); localStorage.setItem(LS_KEY, key); } catch(e){}
+}
+function loadCodeupCreds(){
+  let org = "", key = "";
+  try { org = localStorage.getItem(LS_ORG) || ""; key = localStorage.getItem(LS_KEY) || ""; } catch(e){}
+  if(org || key){
+    $("codeup_org_id").value = org;
+    $("codeup_access_key").value = key;
+    $("codeup_key_mode").value = key ? "manual" : "stored";
+    onKeyModeChange();
+    $("code_src_type").value = "codeup";
+    onCodeSrcTypeChange();
+  }
+}
+function clearCodeupCreds(){
+  try { localStorage.removeItem(LS_ORG); localStorage.removeItem(LS_KEY); } catch(e){}
+  $("codeup_org_id").value = "";
+  $("codeup_access_key").value = "";
+  $("codeup_key_mode").value = "stored";
+  onKeyModeChange();
+  alert("已清除本机浏览器临时记忆的 Codeup 凭证（仓库配置里保存的凭证不受影响，请在「管理仓库」中修改）");
+}
+
+// 仅采集只读凭证（PAT），构造 code_source；不写回代码、不上传第三方。
+// 凭证来源（下拉二选一）：①仓库配置自动带出 → access_key 留空由后端按地址解析；②手动输入 → 用手填值并记入浏览器临时记忆。
+function _collectCodeSource(){
+  if($("code_src_type").value !== "codeup") return {};
+  const org = $("codeup_org_id").value.trim();
+  if($("codeup_key_mode").value === "manual"){
+    const key = $("codeup_access_key").value.trim();
+    if(!key){ alert("已选「手动输入 PAT」，请填写只读凭证 access_key（或切回「使用仓库配置的凭证」）"); return null; }
+    saveCodeupCreds(org, key);
+    return { credential_type: "pat", org_id: org, access_key: key };
+  }
+  if(matchedRepo && matchedRepo.codeup_has_key){
+    return { credential_type: "pat", org_id: org || (matchedRepo.codeup_org_id||""), access_key: "" };
+  }
+  alert("该仓库未保存 Codeup 凭证：请在下方切「手动输入 PAT」填写，或到「管理仓库」给仓库保存凭证");
+  return null;
+}
+
+loadCodeupCreds();  // 页面加载即回填上次保存的 Codeup 凭证
+
+function srcTypeLabel(t){ return t==="codeup" ? "阿里云 Codeup" : (t==="github" ? "GitHub/Git" : "本地目录"); }
+
 function _scanRepoPayload(){
   const raw = $("repo").value.trim();
   const refs = { ref: $("scan_ref").value.trim(), base_ref: $("scan_base_ref").value.trim() };
-  if(raw.startsWith("git@") || raw.endsWith(".git")){
-    return { repo_url: raw, local_path: "", ...refs };
-  }
+  const cs = _collectCodeSource();
+  if(cs === null) return null;
   if(!raw){ alert("请先在「代码目录」填入本地目录或仓库地址"); return null; }
-  return { local_path: raw, repo_url: "", ...refs };
+  const kind = $("code_src_type").value;
+  const isRemote = (kind==="codeup") || raw.startsWith("git@") || raw.endsWith(".git") || /^https?:\/\//.test(raw);
+  if(isRemote){
+    return { repo_url: raw, local_path: "", code_source: cs, ...refs };
+  }
+  return { local_path: raw, repo_url: "", code_source: cs, ...refs };
 }
 
 async function scanCode(){
   const payload = _scanRepoPayload();
   if(!payload) return;
-  $("btn_scan").disabled = true;
+  lastRepoUrl = payload.repo_url || "";  // 供 describe 缓存命中（按 repo_url + path 区分）
+  const btn = $("btn_scan");
+  btn.disabled = true;
+  const btnTxt = btn.textContent;
+  btn.textContent = "⏳ 扫描中…";
+  $("scan_list").innerHTML = '<span class="hint">⏳ 正在扫描代码目录，请稍候…</span>';
   try{
     log("扫描代码中…");
     const r = await api("/api/v1/scan", {method:"POST", body:JSON.stringify(payload)});
@@ -887,26 +1098,128 @@ async function scanCode(){
       return;
     }
     scanItems = (r.items||[]).filter(it => !it.path.endsWith("/")); // 只列文件（目录用分组体现）
+    scanDescMap = {};  // 新扫描重置中文描述缓存
+    scanCachedMap = {};  // 重置缓存命中标记
+    lastScanSummary = r.summary || {};
+    lastScanCount = r.count || scanItems.length;
     renderScanItems();
-    const s = r.summary || {};
+    if(_isIncrementalMode()) selectOnlyChanged();  // 增量：扫描完自动只勾选变更文件
+    const s = lastScanSummary;
+    const trunc = (r.total && r.count < r.total) ? `（过滤后源文件共 ${r.total}，已优先展示变更文件，其余截断）` : "";
     $("scan_meta").style.display = "inline-block";
     $("scan_meta").className = "badge t-unknown";
-    $("scan_meta").textContent = `共 ${r.count} 个文件 · 新增 ${s.added||0} · 修改 ${s.modified||0} · 未变更 ${s.unchanged||0}`;
-    log(`✅ 扫描完成：文件 ${r.count}（新增 ${s.added||0}/修改 ${s.modified||0}/未变 ${s.unchanged||0}）`);
+    $("scan_meta").textContent = `共 ${r.count} 个文件 · 新增 ${s.added||0} · 修改 ${s.modified||0} · 未变更 ${s.unchanged||0}${trunc}`;
+    log(`✅ 扫描完成：文件 ${r.count}${trunc}（新增 ${s.added||0}/修改 ${s.modified||0}/未变 ${s.unchanged||0}）`);
+    if(r.truncated) log("ℹ️ 存在截断：勾选范围建议用「仅变更文件」，或缩小目录后重扫");
+    enrichScanDescriptions();  // 异步补中文功能描述，不阻塞勾选
   }catch(e){
     log("❌ 扫描异常: "+e.message);
     $("scan_list").innerHTML = '<span class="hint">扫描异常：'+e.message+'</span>';
   }finally{
-    $("btn_scan").disabled = false;
+    btn.disabled = false;
+    btn.textContent = btnTxt;
+  }
+}
+
+/* 清空文件描述缓存：默认只清当前仓库（lastRepoUrl），未扫过则清全部。 */
+async function clearDescCache(){
+  const btn = $("btn_clear_desc");
+  btn.disabled = true;
+  try{
+    const scope = lastRepoUrl || "";
+    const r = await api("/api/v1/describe/cache/clear", {method:"POST", body:JSON.stringify({repo_url: scope})});
+    if(r && r.ok){
+      scanDescMap = {}; scanCachedMap = {};
+      renderScanItems();
+      log(`🧹 已清空描述缓存 ${scope ? "（当前仓库）" : "（全部）"}：${r.deleted} 条`);
+      if(scope) enrichScanDescriptions();  // 清完立即按当前扫描结果重新生成
+    }else{
+      log("⚠️ 清空描述缓存失败：" + ((r && r.error) || "未知"));
+    }
+  }catch(e){ log("⚠️ 清空描述缓存异常：" + e.message); }
+  finally{ btn.disabled = false; }
+}
+
+/* 扫描后异步调 /describe 批量翻译文件中文功能描述（LLM 失败时在日志里如实说明，不静默吞掉）。
+   即便 LLM 不可用，renderScanItems 也会回退展示文件内部真实提取到的类/函数名，保证「里面有什么功能」始终可见。 */
+let scanDescMap = {};
+let scanCachedMap = {};   // path → true(历史缓存) / false(本次新生成或缓存未命中)
+let lastScanSummary = {};
+let lastScanCount = 0;
+let lastRepoUrl = "";     // 当前扫描的仓库地址，供 describe 缓存命中
+async function enrichScanDescriptions(){
+  if(!scanItems.length) return;
+  // 增量模式只给「变更文件」生成描述（新增/修改，上限 60 个）；全量模式给前 120 个。
+  // 每批 30 个、两批并发，显著缩短等待。
+  const inc = _isIncrementalMode();
+  const pool = inc
+    ? scanItems.filter(it => (it.change_status||"unchanged") !== "unchanged").slice(0, 60)
+    : scanItems.slice(0, 120);
+  if(!pool.length) return;
+  const total = pool.length;
+  const badge = $("scan_meta");
+  badge.style.display = "inline-block";
+  badge.className = "badge t-info";
+  badge.textContent = `🔄 正在生成中文功能描述（0/${total}${inc ? "·仅变更" : ""}）…`;
+  const doneSet = new Set();
+  const refreshBadge = () => { badge.textContent = `🔄 正在生成中文功能描述（${doneSet.size}/${total}${inc ? "·仅变更" : ""}）…`; };
+  const BATCH = 5;  // 单批条数调小：每批发 30 条一次调 LLM 易超时被整批丢弃，5 条/调用更稳更快
+  const batches = [];
+  for(let off = 0; off < pool.length; off += BATCH) batches.push(pool.slice(off, off + BATCH));
+  const runBatch = async batch => {
+    const items = batch.map(it => ({
+      path: it.path,
+      name: it.name || it.path,
+      kind: "file",
+      functions: (it.functions||[]).slice(0, 20),
+      classes: (it.classes||[]).slice(0, 12),
+    }));
+    const r = await api("/api/v1/describe", {method:"POST", body:JSON.stringify({items, repo_url: lastRepoUrl})});
+    if(r && r.ok && r.descriptions && Object.keys(r.descriptions).length){
+      scanDescMap = Object.assign({}, scanDescMap, r.descriptions);
+      if(r.cached) Object.assign(scanCachedMap, r.cached);  // 记录每条是「历史缓存」还是「本次新生成」
+      Object.keys(r.descriptions).forEach(k => doneSet.add(k));
+      renderScanItems();
+      refreshBadge();
+    }else if(r && r.ok && r.llm === false){
+      log("⚠️ 中文描述未生成（未配置 LLM）：" + (r.error || "") + "——已回退展示文件内部类/函数名");
+      return false;  // 未配 LLM：后面的批次也不用再试
+    }else{
+      log("⚠️ 中文描述未生成：" + ((r && r.error) || "LLM 未返回有效结果") + "——已回退展示文件内部类/函数名");
+      return false;
+    }
+    return true;
+  };
+  try{
+    // 两批并发推进（Promise.allSettled 保证单批失败不拖垮整体）
+    for(let i = 0; i < batches.length; i += 2){
+      const results = await Promise.allSettled(batches.slice(i, i + 2).map(b => runBatch(b)));
+      if(results.some(x => x.status === "fulfilled" && x.value === false)) break;  // 未配 LLM/失败：停止后续批次
+    }
+    const hits = Object.values(scanCachedMap).filter(v => v === true).length;
+    if(doneSet.size) log(`✅ 已加载 ${doneSet.size}/${total} 条中文描述（缓存命中 ${hits} · 新生成 ${doneSet.size - hits}）${inc ? "（仅变更文件）" : ""}`);
+  }catch(e){ log("⚠️ 中文描述加载失败：" + e.message + "（不影响扫描结果，已回退展示类/函数名）"); }
+  finally{
+    // 还原为扫描统计徽标（描述生成是附加信息，不长期占用徽标）
+    const s = lastScanSummary || {};
+    badge.className = "badge t-unknown";
+    badge.textContent = `共 ${lastScanCount} 个文件 · 新增 ${s.added||0} · 修改 ${s.modified||0} · 未变更 ${s.unchanged||0}`;
   }
 }
 
 function renderScanItems(){
   const box = $("scan_list");
   if(!scanItems.length){ box.innerHTML = '<span class="hint">未返回文件</span>'; return; }
+  // 「只看变更」过滤（勾选框在 B 区；增量模式自动勾上）
+  const onlyChanged = $("view_only_changed") && $("view_only_changed").checked;
+  const visible = onlyChanged ? scanItems.filter(it => (it.change_status||"unchanged") !== "unchanged") : scanItems;
+  if(!visible.length){
+    box.innerHTML = '<span class="hint">没有变更文件（当前过滤：只看变更）。取消勾选「只看变更」可查看全部文件。</span>';
+    return;
+  }
   // 按顶级目录分组
   const groups = {};
-  for(const it of scanItems){
+  for(const it of visible){
     const top = it.path.includes("/") ? it.path.split("/")[0] : "（根目录）";
     (groups[top] = groups[top] || []).push(it);
   }
@@ -918,9 +1231,22 @@ function renderScanItems(){
       const stTxt = st==="added"?"新增":st==="modified"?"修改":"未变";
       const fc = (it.functions||[]).length, cc = (it.classes||[]).length;
       const label = it.path + (it.name && it.name!==it.path ? `（${it.name}）` : "");
+      // LLM 中文概括（优先）；若未生成，回退展示文件内部真实提取到的类/函数名，保证「里面有什么功能」始终可见
+      const desc = scanDescMap[it.path] || scanDescMap[it.name] || "";
+      const cached = scanCachedMap[it.path] || scanCachedMap[it.name];  // true=历史缓存, false=本次新生成/未命中
+      let info = "";
+      if(desc){
+        const tag = (cached === true) ? "💾 历史" : "✨ 新生成";
+        info = `<span class="desc">${tag}｜💬 ${escapeHtml(desc)}</span>`;
+      }else{
+        const syms = [];
+        if((it.classes||[]).length) syms.push("𝒸 " + it.classes.slice(0,6).join("、"));
+        if((it.functions||[]).length) syms.push("ƒ " + it.functions.slice(0,10).join("、"));
+        if(syms.length) info = `<span class="desc sym">🔧 内部：${escapeHtml(syms.join("　"))}</span>`;
+      }
       html += `<div class="scan-item" data-path="${it.path}" data-status="${st}">`+
         `<input type="checkbox" class="scan-cb" data-path="${it.path}" data-status="${st}">`+
-        `<span class="p">${label}</span>`+
+        `<span class="p">${label}${info}</span>`+
         `<span class="meta">${fc?("ƒ"+fc):""}${cc?("𝒸"+cc):""}</span>`+
         `<span class="badge st-${st}">${stTxt}</span></div>`;
     }
@@ -939,6 +1265,11 @@ function selectAll(on){
 function selectOnlyChanged(){
   document.querySelectorAll(".scan-cb").forEach(cb => cb.checked = (cb.dataset.status==="added" || cb.dataset.status==="modified"));
 }
+function onViewFilterChange(){ renderScanItems(); }
+function _isIncrementalMode(){
+  const el = document.querySelector('input[name="gen_mode"]:checked');
+  return !!(el && el.value === "incremental");
+}
 
 /* ============ 分支选择（扫描前） ============ */
 async function loadBranches(){
@@ -947,18 +1278,31 @@ async function loadBranches(){
   if(!payload.repo_url && !payload.local_path){ alert("列分支需要 git 仓库地址或本地 git 目录"); return; }
   $("btn_branches").disabled = true;
   try{
-    const r = await api("/api/v1/branches", {method:"POST", body:JSON.stringify({repo_url: payload.repo_url, local_path: payload.local_path, code_source: {}})});
+    const r = await api("/api/v1/branches", {method:"POST", body:JSON.stringify({repo_url: payload.repo_url, local_path: payload.local_path, code_source: payload.code_source || {}})});
     if(!r.ok){
       log("❌ 获取分支失败: "+(r.error||"未知"));
       alert("获取分支失败: "+(r.error||"远程仓库可能需要只读凭证（code_source）")); return;
     }
     const sel = $("scan_ref");
     const cur = sel.value;
+    const fmtDate = iso => { try{ return iso.slice(5,10).replace("-","/") + " " + iso.slice(11,19); }catch(e){ return ""; } };
     sel.innerHTML = '<option value="">默认分支</option>' + (r.branches||[]).map(b=>{
       const name = typeof b==="string" ? b : (b.name||"");
-      return `<option value="${name}">${name}</option>`;
+      const c = (typeof b==="object" && b.commit) || null;
+      const extra = c ? ` · ${fmtDate(c.committed_date||"")}` + (c.title ? ` · ${String(c.title).slice(0,26)}` : "") : "";
+      return `<option value="${name}">${name}${extra}</option>`;
     }).join("");
     if(cur) sel.value = cur;
+    // 基线 ref 下拉同步填充（与分支下拉一致：带日期 + 提交备注；保留已选值；首项为「留空 = 不对比」）
+    const bsel = $("scan_base_ref");
+    const curB = bsel.value;
+    bsel.innerHTML = '<option value="">（留空 = 不对比，只列文件）</option>' + (r.branches||[]).map(b=>{
+      const name = typeof b==="string" ? b : (b.name||"");
+      const c = (typeof b==="object" && b.commit) || null;
+      const extra = c ? ` · ${fmtDate(c.committed_date||"")}` + (c.title ? ` · ${String(c.title).slice(0,26)}` : "") : "";
+      return `<option value="${name}">${name}${extra}</option>`;
+    }).join("");
+    if(curB) bsel.value = curB;
     log(`✅ 获取到 ${(r.branches||[]).length} 个分支（来源：${r.source||"unknown"}）`);
   }catch(e){ log("❌ 获取分支异常: "+e.message); }
   finally{ $("btn_branches").disabled = false; }

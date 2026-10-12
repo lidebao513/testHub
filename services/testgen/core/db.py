@@ -162,7 +162,8 @@ SCHEMA: tuple[str, ...] = (
     )
     """,
     # 控制台「代码仓库管理」：可配置的仓库清单（增删改查 + 连接测试结果留痕）。
-    # 安全约定：只存地址/分支/备注，**不存访问凭据**（连接测试复用本机 git 凭据链）。
+    # 安全约定（2026-10-10 经用户确认调整）：允许把 Codeup 只读凭证(PAT)/组织ID 存入本仓库配置，
+    # 免去每次手填；库文件位于 gitignore 的 data/ 下，绝不入版本库；导出/列表接口只回传掩码。
     """
     CREATE TABLE IF NOT EXISTS repo_configs (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,10 +200,24 @@ SCHEMA: tuple[str, ...] = (
         value TEXT
     )
     """,
+    # 文件中文描述缓存（扫描增强 describe 命中复用，避免重复烧 LLM）。
+    # 复合主键 (repo_url, file_path)：避免不同仓库同名文件串味；
+    # symbols_sig = 文件函数/类排序后的 sha1，sig 一致视为「内容/结构未变」→ 直接读历史，否则重新生成。
+    """
+    CREATE TABLE IF NOT EXISTS file_descriptions (
+        repo_url     TEXT NOT NULL,
+        file_path    TEXT NOT NULL,
+        symbols_sig  TEXT NOT NULL,
+        description  TEXT NOT NULL,
+        model        TEXT DEFAULT '',
+        updated_at   TEXT,
+        PRIMARY KEY (repo_url, file_path)
+    )
+    """,
 )
 
-# schema 版本：新增 runs / run_batches（F12 执行留痕）→ 1 → 2；repo_configs（仓库管理）→ 3；llm_providers（多厂商独立 key）→ 4
-SCHEMA_VERSION = "4"
+# schema 版本：新增 runs / run_batches（F12 执行留痕）→ 1 → 2；repo_configs（仓库管理）→ 3；llm_providers（多厂商独立 key）→ 4；repo_configs 存 Codeup 只读凭证 → 5；file_descriptions（描述缓存）→ 6
+SCHEMA_VERSION = "6"
 
 INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_fp_project ON functional_points(project_id)",
@@ -228,6 +243,7 @@ INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_runs_batch ON runs(batch_id)",
     "CREATE INDEX IF NOT EXISTS idx_runs_case ON runs(case_id)",
     "CREATE INDEX IF NOT EXISTS idx_run_batches_project ON run_batches(project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_file_desc_repo ON file_descriptions(repo_url)",
 )
 
 # v1.1 预留列（只加不改）
@@ -237,6 +253,9 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("test_points", "origin", "TEXT"),
     ("test_points", "unverified", "INTEGER DEFAULT 0"),
     ("functional_points", "semantic", "TEXT"),
+    # 仓库配置存 Codeup 只读凭证（2026-10-10 用户确认）：列表/导出接口只回传掩码，绝不回明文
+    ("repo_configs", "codeup_org_id", "TEXT DEFAULT ''"),
+    ("repo_configs", "codeup_access_key", "TEXT DEFAULT ''"),
 )
 
 

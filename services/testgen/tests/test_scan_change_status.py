@@ -3,8 +3,9 @@
 不触网：
 - ``_change_map_from_diffs``：newFile→added、普通修改→modified、deleted 跳过、
   renamed→modified（取 newPath）；
+- ``_change_map_bidirectional``：双向 compare 合并（目标分支落后基线时反向也能标出差异）；
 - ``scan_repository``：monkeypatch 假 client，验证逐文件 change_status 标注
-  （added/modified/unchanged），且不传 base_ref 时绝不调用 compare；
+  （added/modified/unchanged）、变更文件优先入选，且不传 base_ref 时绝不调用 compare；
 - ``scan_local``：非 git 目录 + base_ref → best-effort 静默降级为全 unchanged；
 - ``_local_git_change_map``：base_ref 为空 → {}；
 - ``_looks_like_sha``：commit SHA 形态识别。
@@ -54,7 +55,7 @@ class _FakeNode:
 class _FakeClient:
     def __init__(self, tree, diffs) -> None:
         self._tree = tree
-        self._diffs = diffs
+        self._diffs = diffs  # 正向（base→target）diffs；反向固定返回 []
         self.compare_calls = 0
 
     def list_tree(self, repo_id, *, ref="", recursive=True):
@@ -65,8 +66,11 @@ class _FakeClient:
 
     def compare(self, repo_id, *, from_ref, to_ref):
         self.compare_calls += 1
-        assert from_ref == "master" and to_ref == "dev"
-        return self._diffs
+        if from_ref == "master" and to_ref == "dev":
+            return self._diffs
+        if from_ref == "dev" and to_ref == "master":
+            return []  # 反向
+        raise AssertionError(f"意外的 compare 方向: {from_ref} -> {to_ref}")
 
 
 def _patch_client(monkeypatch, fake: _FakeClient) -> None:
@@ -91,23 +95,80 @@ def test_scan_repository_annotates_change_status(monkeypatch):
     ]
     fake = _FakeClient(tree, diffs)
     _patch_client(monkeypatch, fake)
-    items = remote_scan.scan_repository({}, "https://x/repo.git", ref="dev", base_ref="master")
-    assert fake.compare_calls == 1
+    items, meta = remote_scan.scan_repository(
+        {}, "https://x/repo.git", ref="dev", base_ref="master"
+    )
+    assert fake.compare_calls == 2  # 双向对比：正向 + 反向
     st = {it["path"]: it["change_status"] for it in items}
     assert st == {
         "pkg/new_mod.py": remote_scan.CHANGE_ADDED,
         "pkg/mod.py": remote_scan.CHANGE_MODIFIED,
         "pkg/same.py": remote_scan.CHANGE_UNCHANGED,
     }
+    assert meta == {"total_matched": 3, "truncated": False}
 
 
 def test_scan_repository_no_base_skips_compare(monkeypatch):
     tree = [_FakeNode("pkg/a.py", "a.py")]
     fake = _FakeClient(tree, [])
     _patch_client(monkeypatch, fake)
-    items = remote_scan.scan_repository({}, "https://x/repo.git", ref="", base_ref="")
+    items, meta = remote_scan.scan_repository({}, "https://x/repo.git", ref="", base_ref="")
     assert fake.compare_calls == 0  # 未提供基线绝不调用 compare
     assert all(it["change_status"] == remote_scan.CHANGE_UNCHANGED for it in items)
+    assert meta["truncated"] is False
+
+
+def test_scan_repository_prioritizes_changed_under_cap(monkeypatch):
+    """截断时变更文件必须优先入选（旧实现按树序截 400 会把变更文件截掉）。"""
+    tree = [_FakeNode(f"pkg/f{i}.py", f"f{i}.py") for i in range(5)]
+    tree.append(_FakeNode("pkg/changed.py", "changed.py"))
+    diffs = [
+        {
+            "newPath": "pkg/changed.py",
+            "oldPath": "pkg/changed.py",
+            "newFile": False,
+            "deletedFile": False,
+        },
+    ]
+    fake = _FakeClient(tree, diffs)
+    _patch_client(monkeypatch, fake)
+    monkeypatch.setattr(remote_scan, "_MAX_FILES", 3)
+    items, meta = remote_scan.scan_repository(
+        {}, "https://x/repo.git", ref="dev", base_ref="master"
+    )
+    paths = [it["path"] for it in items]
+    assert len(paths) == 3
+    assert "pkg/changed.py" in paths  # 变更文件不被截断
+    assert meta == {"total_matched": 6, "truncated": True}
+
+
+# ---------------------------------------------------------------------------
+# _change_map_bidirectional：目标分支落后基线时，反向 diffs 也要标出差异
+# ---------------------------------------------------------------------------
+def test_bidirectional_reverse_diffs_marked():
+    class _C:
+        def compare(self, repo_id, *, from_ref, to_ref):
+            if from_ref == "master" and to_ref == "dev":
+                return []  # 正向为空（dev 落后于 master）
+            return [
+                # 反向（dev→master）：两分支有差异 → modified
+                {"newPath": "a/x.py", "oldPath": "a/x.py", "newFile": False, "deletedFile": False},
+                # 反向 deletedFile = 文件在目标树存在而基线没有 → added
+                {
+                    "newPath": "",
+                    "oldPath": "a/only_in_target.py",
+                    "newFile": False,
+                    "deletedFile": True,
+                },
+                # 反向 newFile = 基线新增的文件不在目标树 → 跳过
+                {"newPath": "a/added_in_base.py", "newFile": True, "deletedFile": False},
+            ]
+
+    m = remote_scan._change_map_bidirectional(_C(), "1", "master", "dev")
+    assert m == {
+        "a/x.py": remote_scan.CHANGE_MODIFIED,
+        "a/only_in_target.py": remote_scan.CHANGE_ADDED,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -119,9 +180,10 @@ def test_local_change_map_empty_base(tmp_path):
 
 def test_scan_local_non_git_dir_all_unchanged(tmp_path):
     (tmp_path / "mod.py").write_text("def f():\n    return 1\n", encoding="utf-8")
-    items = remote_scan.scan_local(str(tmp_path), base_ref="master")
+    items, meta = remote_scan.scan_local(str(tmp_path), base_ref="master")
     assert [it["path"] for it in items] == ["mod.py"]
     assert items[0]["change_status"] == remote_scan.CHANGE_UNCHANGED
+    assert meta == {"total_matched": 1, "truncated": False}
 
 
 # ---------------------------------------------------------------------------

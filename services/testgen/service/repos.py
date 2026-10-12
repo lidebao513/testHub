@@ -178,9 +178,7 @@ def list_git_branches(url: str) -> list[dict[str, Any]]:
             env=_git_env(),
         )
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"连接超时（>{GIT_TIMEOUT_SECONDS}s）：仓库不可达或需要凭据"
-        ) from exc
+        raise RuntimeError(f"连接超时（>{GIT_TIMEOUT_SECONDS}s）：仓库不可达或需要凭据") from exc
     if proc.returncode != 0:
         raw = (proc.stderr or proc.stdout or "").strip().splitlines()
         reason = raw[-1] if raw else f"exit={proc.returncode}"
@@ -193,7 +191,7 @@ def list_git_branches(url: str) -> list[dict[str, Any]]:
         sha, ref = parts
         if not ref.startswith("refs/heads/"):
             continue
-        name = ref[len("refs/heads/"):]
+        name = ref[len("refs/heads/") :]
         commit = _empty_commit()
         commit["short_id"] = sha[:8]
         branches.append(
@@ -211,7 +209,17 @@ def list_local_branches(local_path: str) -> list[dict[str, Any]]:
     """列出本地 git 仓库分支（含远程跟踪分支 ``refs/remotes/``）。"""
     git = shutil.which("git")
     p = Path(local_path).expanduser().resolve()
-    if not git or not (p / ".git").exists():
+    if not git:
+        raise RuntimeError("本机未安装 git，无法列分支")
+    # 支持仓库子目录：用 rev-parse 让 git 自动向上定位仓库根（不再要求 .git 为直接子级）。
+    probe = subprocess.run(
+        [git, "-C", str(p), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        timeout=GIT_TIMEOUT_SECONDS,
+        env=_git_env(),
+    )
+    if probe.returncode != 0 or (probe.stdout or "").strip() != "true":
         raise RuntimeError("不是本地 git 仓库，无法列分支")
     proc = subprocess.run(
         [
@@ -219,7 +227,7 @@ def list_local_branches(local_path: str) -> list[dict[str, Any]]:
             "-C",
             str(p),
             "for-each-ref",
-            "--format=%(refname:short)\t%(objectname:short)",
+            "--format=%(refname:short)\t%(objectname:short)\t%(committerdate:iso)\t%(subject)",
             "refs/heads/",
             "refs/remotes/",
         ],
@@ -233,11 +241,14 @@ def list_local_branches(local_path: str) -> list[dict[str, Any]]:
         raise RuntimeError((reason[-1] if reason else "列本地分支失败")[:200])
     branches: list[dict[str, Any]] = []
     for line in proc.stdout.strip().splitlines():
-        name, sha = (line.split("\t") + ["", ""])[:2]
+        parts = [*line.split("\t"), "", "", "", ""][:4]
+        name, sha, committed_date, subject = parts
         if not name:
             continue
         commit = _empty_commit()
         commit["short_id"] = sha
+        commit["committed_date"] = (committed_date or "").strip()
+        commit["title"] = (subject or "").strip()
         branches.append(
             {
                 "name": name,

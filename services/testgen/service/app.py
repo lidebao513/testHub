@@ -38,8 +38,7 @@ from core.errors import (
     ValidationError,
 )
 from core.log import get_logger, log_extra, set_request_id
-from engine import analytics
-from engine import pipeline
+from engine import analytics, pipeline
 from engine import report as report_engine
 from engine.codeup_client import CodeupError, parse_repo_to_repo_id
 from engine.comparator import (
@@ -61,8 +60,8 @@ from engine.remote_scan import (
 from engine.verdict import run_five_dimension_verdict
 from output.report_writer import ReportExportError, export_report, render_html, render_markdown
 from output.writer import OutputWriter
-from service import repos as service_repos
 from service import llm_providers as service_llm
+from service import repos as service_repos
 from service.tasks import (
     BackgroundExecutor,
     GenerationTask,
@@ -129,6 +128,21 @@ async def request_context(request: Request, call_next: Any) -> Any:
 async def app_error_handler(_: Request, exc: AppError) -> JSONResponse:
     log.warning("业务异常", extra=log_extra(code=exc.code, message=exc.message))
     return JSONResponse(status_code=exc.http_status, content=exc.to_payload())
+
+
+@app.exception_handler(CodeupError)
+async def codeup_error_handler(_: Request, exc: CodeupError) -> JSONResponse:
+    """Codeup 远端失败映射：401/403 → 401（凭证问题），其余 → 502（远端不可用）。
+
+    只透出状态码与远端摘要，不泄露内部细节。
+    """
+    status = exc.status or 0
+    http = 401 if status in (401, 403) else 502
+    log.warning("Codeup 远端失败", extra=log_extra(code=f"codeup_{status}", message=exc.message))
+    return JSONResponse(
+        status_code=http,
+        content={"code": "codeup_error", "message": f"Codeup API [{status}] {exc.message}"},
+    )
 
 
 @app.exception_handler(Exception)
@@ -1014,9 +1028,10 @@ def project_import_test_points(pid: int, req: ImportTestPointsRequest) -> dict[s
             data = json.loads(Path(req.json_path).read_text(encoding="utf-8"))
         except OSError as exc:
             raise ValidationError(f"读取测试点 JSON 失败：{exc}") from exc
-        tps = data.get("test_points") if isinstance(data, dict) else data
-        if not isinstance(tps, list):
-            raise ValidationError("JSON 结构不对：期望 {\"test_points\": [...]} 或数组")
+        loaded: object = data.get("test_points") if isinstance(data, dict) else data
+        if not isinstance(loaded, list):
+            raise ValidationError('JSON 结构不对：期望 {"test_points": [...]} 或数组')
+        tps = loaded
     if not tps:
         raise ValidationError("请提供 items 或有效的 json_path")
     result = store.import_test_points(pid, tps, replace=req.replace)
@@ -1037,7 +1052,7 @@ async def project_import_test_points_upload(
         raise ValidationError(f"解析上传文件失败：{exc}") from exc
     tps = data.get("test_points") if isinstance(data, dict) else data
     if not isinstance(tps, list):
-        raise ValidationError("JSON 结构不对：期望 {\"test_points\": [...]} 或数组")
+        raise ValidationError('JSON 结构不对：期望 {"test_points": [...]} 或数组')
     if not tps:
         raise ValidationError("文件为空或没有 test_points")
     result = store.import_test_points(pid, tps, replace=replace)
@@ -1078,15 +1093,71 @@ class RefsRequest(BaseModel):
     ref: str = Field("", description="分支/标签/commit（commits 端点必填）")
 
 
-class DescribeRequest(BaseModel):
-    """把扫描出的函数/类节点批量翻译成中文功能描述。"""
+class DescribeItem(BaseModel):
+    """单个待描述项：文件（也可为函数/类）。"""
 
-    items: list[dict[str, Any]] = Field(default_factory=list, description="[{path, name, kind}]")
+    path: str = ""
+    name: str = ""
+    kind: str = "file"
+    functions: list[str] = Field(default_factory=list)
+    classes: list[str] = Field(default_factory=list)
+
+
+class DescribeRequest(BaseModel):
+    """把扫描出的文件节点批量翻译成中文功能描述。
+
+    ``repo_url``：用于描述缓存命中（同名文件按 (repo_url, file_path) 区分，避免串味）；
+    为空则不做缓存，全部走 LLM（兼容旧调用）。
+    """
+
+    items: list[DescribeItem] = Field(default_factory=list)
+    repo_url: str = ""
+
+
+class DescribeCacheClearRequest(BaseModel):
+    """清空文件描述缓存：repo_url 为空 = 清空全部；否则只清该仓库。"""
+
+    repo_url: str = ""
+
+
+def _describe_item_key(it: Any) -> str:
+    """取缓存键：优先 path，回退 name。"""
+    if isinstance(it, DescribeItem):
+        return (it.path or it.name or "").strip()
+    return str((it.get("path") or it.get("name") or "").strip())
+
+
+def _describe_symbols_sig(it: Any) -> str:
+    """文件「结构指纹」：函数/类排序后 sha1。sig 一致 = 内容/结构未变 → 可复用历史描述。"""
+    import hashlib
+    import json
+
+    if isinstance(it, DescribeItem):
+        funcs = sorted(it.functions or [])
+        classes = sorted(it.classes or [])
+    else:
+        funcs = sorted(it.get("functions") or [])
+        classes = sorted(it.get("classes") or [])
+    raw = json.dumps({"f": funcs, "c": classes}, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()  # nosec B324 - 仅作缓存内容指纹，非安全用途
+
+
+def _resolve_code_source(repo_url: str, code_source: dict[str, Any]) -> dict[str, Any]:
+    """凭证解析：请求未带 access_key 时，按仓库地址从仓库配置表取已存凭证（免每次手填）。"""
+    cs = dict(code_source or {})
+    if not (cs.get("access_key") or "").strip():
+        saved = store.find_repo_creds_by_url(repo_url or "")
+        if saved:
+            cs.setdefault("credential_type", "pat")
+            if not (cs.get("org_id") or "").strip():
+                cs["org_id"] = saved["org_id"]
+            cs["access_key"] = saved["access_key"]
+    return cs
 
 
 def _build_codeup_client(req: RefsRequest) -> tuple[Any, str]:
     """从 RefsRequest 构造只读 Codeup 客户端（统一校验口径）。"""
-    code_source = req.code_source or {}
+    code_source = _resolve_code_source(req.repo_url, req.code_source or {})
     if not req.repo_url:
         raise ValidationError("repo_url 必填")
     access_key = (code_source.get("access_key") or "").strip()
@@ -1108,7 +1179,7 @@ def list_repo_branches(req: RefsRequest) -> dict[str, Any]:
 
     远端不可达等业务失败以 ``ok=False`` 返回（不动 5xx），前端据 `error` 提示。
     """
-    code_source = req.code_source or {}
+    code_source = _resolve_code_source(req.repo_url or "", req.code_source)
     access_key = (code_source.get("access_key") or "").strip()
     try:
         if access_key:
@@ -1176,65 +1247,190 @@ def _extract_json_block(content: str) -> Any:
     return None
 
 
-@app.post("/api/v1/describe", dependencies=[Depends(require_auth)])
-def describe_features(req: DescribeRequest) -> dict[str, Any]:
-    """把扫描出的函数/类节点批量翻译成中文功能描述。
+def _describe_cache_lookup(
+    repo_url: str, items: list[Any]
+) -> tuple[dict[str, str], dict[str, bool], list[Any]]:
+    """缓存命中判断：返回 (descriptions, cached_map, need)。
 
-    诚实降级：未配置 LLM / LLM 失败 → ``llm`` 标记 + 空 ``descriptions``，前端回退原名。
+    统一按 (repo_url, file_path) + 符号指纹查库（repo_url 为空时以空串作命名空间，
+    使本地目录场景也能复用缓存）；指纹一致且有描述 → 命中（cached=True），否则进 need 待 LLM 生成。
     """
-    items = req.items or []
-    if not items:
-        return {"ok": True, "llm": False, "descriptions": {}, "error": "empty"}
-    if not (settings.llm_api_key and settings.llm_base_url and settings.llm_model):
-        return {
-            "ok": True,
-            "llm": False,
-            "descriptions": {},
-            "error": "未配置 LLM（llm_api_key / llm_base_url / llm_model 不全）",
-        }
-    lines = [
-        f"- 路径: {it.get('path', '')} | 名称: {it.get('name', '')} | 类型: {it.get('kind', 'function')}"
-        for it in items
-    ]
-    prompt = (
-        "你是测试用例系统的代码分析助手。下面列出若干代码中的函数/类，"
-        "请为每一项用一句简洁的中文描述它承担的「业务功能」（不是翻译函数名，而是说明它做什么业务动作）。\n"
-        '只输出 JSON，格式：{"结果": [{"名称": <原名称>, "功能": <中文功能描述>}, ...]}\n'
+    descriptions: dict[str, str] = {}
+    cached_map: dict[str, bool] = {}
+    sigs = {_describe_item_key(it): _describe_symbols_sig(it) for it in items}
+    cached_rows = store.get_file_descriptions(repo_url, list(sigs.keys()))
+    need: list[Any] = []
+    for it in items:
+        key = _describe_item_key(it)
+        row = cached_rows.get(key)
+        if row and row["symbols_sig"] == sigs[key] and row["description"]:
+            descriptions[key] = row["description"]
+            cached_map[key] = True
+        else:
+            cached_map[key] = False
+            need.append(it)
+    return descriptions, cached_map, need
+
+
+def _describe_build_prompt(need: list[Any]) -> str:
+    """构造 LLM 提示词：把文件内部真实符号喂给模型，让其对每个文件生成中文功能描述。"""
+    lines = []
+    for it in need:
+        key = _describe_item_key(it)
+        if isinstance(it, DescribeItem):
+            name = it.name or it.path
+            funcs = it.functions or []
+            classes = it.classes or []
+        else:
+            name = it.get("name") or it.get("path") or key
+            funcs = it.get("functions") or []
+            classes = it.get("classes") or []
+        symbols = []
+        if classes:
+            symbols.append("类[" + ", ".join(classes[:12]) + "]")
+        if funcs:
+            symbols.append("函数[" + ", ".join(funcs[:20]) + "]")
+        sym_txt = "；".join(symbols) if symbols else "（未提取到符号）"
+        lines.append(f"- key: {key} | 文件: {name} | 内部符号: {sym_txt}")
+    return (
+        "你是测试用例系统的代码分析助手。下面列出若干代码文件及其内部真实提取到的类/函数名，"
+        "请为每一项用 1-2 句简洁的中文描述：①这个文件是做什么的（什么模块/页面/服务）；"
+        "②它主要承载哪些业务功能（结合内部符号推断，不要逐字翻译符号名）。\n"
+        '只输出 JSON，格式：{"结果": [{"key": <文件key>, "功能": <中文描述>}, ...]}\n'
         + "\n".join(lines)
     )
-    try:
-        resp = chat_with_fallback(
-            channel="describe",
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url,
-            model=settings.llm_model,
-            timeout=float(settings.llm_timeout or 60),
-            model_chain=settings.llm_model_chain or None,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        content = resp.choices[0].message.content or ""
-        parsed = _extract_json_block(content)
-    except Exception as exc:  # noqa: BLE001 - 诚实降级：LLM 失败不阻塞前端
-        log.warning("describe LLM 失败，回退原名", extra=log_extra(err=type(exc).__name__))
-        return {
-            "ok": True,
-            "llm": True,
-            "descriptions": {},
-            "error": f"LLM 调用失败：{type(exc).__name__}",
-        }
-    descriptions: dict[str, str] = {}
-    if isinstance(parsed, dict):
-        rows = parsed.get("结果") or parsed.get("result") or parsed.get("items") or []
-    else:
-        rows = []
+
+
+def _describe_persist(repo_url: str, need: list[Any], new_desc: dict[str, str]) -> None:
+    """把 LLM 新生成的描述写回缓存（按 (repo_url, path) 作唯一键，repo_url 为空时亦缓存）。"""
+    for it in need:
+        key = _describe_item_key(it)
+        if key in new_desc:
+            store.upsert_file_description(
+                repo_url, key, _describe_symbols_sig(it), new_desc[key], settings.llm_model or ""
+            )
+
+
+def _describe_parse(parsed: Any) -> dict[str, str]:
+    """从 LLM 输出解析出 {path: 中文描述}（兼容 结果/result/items 多种键）。"""
+    new_desc: dict[str, str] = {}
+    rows = (
+        parsed.get("结果") or parsed.get("result") or parsed.get("items") or []
+        if isinstance(parsed, dict)
+        else []
+    )
     for row in rows:
         if not isinstance(row, dict):
             continue
-        nm = row.get("名称") or row.get("name") or ""
+        key = row.get("key") or row.get("名称") or row.get("name") or ""
         fn = row.get("功能") or row.get("desc") or ""
-        if nm:
-            descriptions[str(nm)] = str(fn)
-    return {"ok": True, "llm": True, "descriptions": descriptions}
+        if key and fn:
+            new_desc[str(key)] = str(fn)
+    return new_desc
+
+
+def _describe_merge(
+    need: list[Any],
+    new_desc: dict[str, str],
+    descriptions: dict[str, str],
+    cached_map: dict[str, bool],
+) -> int:
+    """把 LLM 新描述合并进结果；返回未拿到描述（需回退展示符号）的文件数。"""
+    unresolved = 0
+    for it in need:
+        key = _describe_item_key(it)
+        if key in new_desc:
+            descriptions[key] = new_desc[key]
+            cached_map[key] = False
+        else:
+            cached_map[key] = False
+            unresolved += 1
+    return unresolved
+
+
+@app.post("/api/v1/describe", dependencies=[Depends(require_auth)])
+def describe_features(req: DescribeRequest) -> dict[str, Any]:
+    """把扫描出的文件节点批量翻译成中文功能描述（带缓存命中，避免重复烧 LLM）。
+
+    缓存策略：
+      - 统一按 (repo_url, file_path) + 符号指纹查 ``file_descriptions``（repo_url 为空时以空串作命名空间，
+        本地目录同样可复用缓存）；指纹一致 → 直接读历史描述（标记 cached=True），不再调 LLM；
+        否则调 LLM 生成并写回缓存。
+    诚实降级：未配置 LLM / LLM 失败 → 已命中的缓存照常返回，未命中的文件前端回退展示类/函数名。
+    """
+    items = req.items or []
+    if not items:
+        return {"ok": True, "llm": False, "descriptions": {}, "cached": {}, "error": "empty"}
+    llm_ready = bool(settings.llm_api_key and settings.llm_base_url and settings.llm_model)
+    repo_url = (req.repo_url or "").strip()
+
+    descriptions, cached_map, need = _describe_cache_lookup(repo_url, items)
+    if not need:
+        return {
+            "ok": True,
+            "llm": llm_ready,
+            "descriptions": descriptions,
+            "cached": cached_map,
+            "cache_hits": len(descriptions),
+            "unresolved": 0,
+            "error": "" if llm_ready else "未配置 LLM（仅命中缓存）",
+        }
+    if not llm_ready:
+        return {
+            "ok": True,
+            "llm": False,
+            "descriptions": descriptions,
+            "cached": cached_map,
+            "cache_hits": sum(1 for v in cached_map.values() if v),
+            "unresolved": len(need),
+            "error": "未配置 LLM（llm_api_key / llm_base_url / llm_model 不全）——未命中缓存的文件将回退展示类/函数名",
+        }
+
+    new_desc: dict[str, str] = {}
+    unresolved = 0
+    # 单批量过大（如 30 条一次调 LLM）易超时被整批丢弃；改为每 5 条一组分别调用，
+    # 单组失败只回退该组，不拖累整批。
+    chunk_size = 5
+    for i in range(0, len(need), chunk_size):
+        chunk = need[i : i + chunk_size]
+        prompt = _describe_build_prompt(chunk)
+        try:
+            resp = chat_with_fallback(
+                channel="describe",
+                api_key=settings.llm_api_key,
+                base_url=settings.llm_base_url,
+                model=settings.llm_model,
+                timeout=float(settings.llm_timeout or 60),
+                model_chain=settings.llm_model_chain or None,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            content = resp.choices[0].message.content or ""
+            parsed = _extract_json_block(content)
+            chunk_desc = _describe_parse(parsed)
+            if chunk_desc:
+                new_desc.update(chunk_desc)
+                _describe_persist(repo_url, chunk, chunk_desc)
+        except Exception as exc:  # noqa: BLE001 - 诚实降级：该组 LLM 失败不阻塞其他组
+            log.warning("describe LLM 失败，该组回退原名", extra=log_extra(err=type(exc).__name__))
+    unresolved = _describe_merge(need, new_desc, descriptions, cached_map)
+    return {
+        "ok": True,
+        "llm": True,
+        "descriptions": descriptions,
+        "cached": cached_map,
+        "cache_hits": sum(1 for v in cached_map.values() if v),
+        "unresolved": unresolved,
+    }
+
+
+@app.post("/api/v1/describe/cache/clear", dependencies=[Depends(require_auth)])
+def clear_describe_cache(req: DescribeCacheClearRequest) -> dict[str, Any]:
+    """清空文件描述缓存（换模型 / 强制刷新时用）。
+
+    ``repo_url`` 为空 = 清空全部；否则只清该仓库。
+    """
+    deleted = store.clear_file_descriptions((req.repo_url or "").strip())
+    return {"ok": True, "deleted": deleted, "scope": (req.repo_url or "").strip() or "all"}
 
 
 @app.post("/api/v1/tasks/{task_id}/cancel", dependencies=[Depends(require_auth)])
@@ -1267,18 +1463,19 @@ class ScanRequest(BaseModel):
     local_path: str = Field("", description="本地目录（local 模式）")
 
 
-def _dispatch_scan(req: ScanRequest) -> tuple[list[dict[str, Any]], str]:
-    """执行扫描并返回 (items, source)；远端/本地异常由调用方统一处理。"""
+def _dispatch_scan(req: ScanRequest) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
+    """执行扫描并返回 (items, source, meta)；远端/本地异常由调用方统一处理。"""
     if req.local_path:
-        return scan_local(req.local_path, base_ref=req.base_ref), "local"
+        items, meta = scan_local(req.local_path, base_ref=req.base_ref)
+        return items, "local", meta
     if req.repo_url:
-        cs = req.code_source or {}
+        cs = _resolve_code_source(req.repo_url, req.code_source or {})
         if not (cs.get("access_key") or "").strip():
             raise ValidationError("远程扫描：凭证（access_key）为空")
-        return (
-            scan_repository(cs, req.repo_url, ref=req.ref, base_ref=req.base_ref, verify_ssl=False),
-            "remote",
+        items, meta = scan_repository(
+            cs, req.repo_url, ref=req.ref, base_ref=req.base_ref, verify_ssl=False
         )
+        return items, "remote", meta
     raise ValidationError("repo_url 或 local_path 至少给一个")
 
 
@@ -1288,10 +1485,11 @@ def scan_code(req: ScanRequest) -> dict[str, Any]:
 
     - git 模式：远程只读列树 + 取符号（前若干文件）；
     - local 模式：复用本地 Scanner；
-    - 提供 ``base_ref`` 时经 compare 标注 ``change_status``（新增/修改/未变更）。
+    - 提供 ``base_ref`` 时经 compare 标注 ``change_status``（新增/修改/未变更），
+      变更文件优先入选；``total``/``truncated`` 如实回报截断情况。
     """
     try:
-        items, source = _dispatch_scan(req)
+        items, source, meta = _dispatch_scan(req)
     except (CodeupError, ValidationError):
         raise
     except Exception as exc:  # noqa: BLE001
@@ -1317,6 +1515,8 @@ def scan_code(req: ScanRequest) -> dict[str, Any]:
         "items": items,
         "summary": summary,
         "count": len(items),
+        "total": int(meta.get("total_matched", len(items))),
+        "truncated": bool(meta.get("truncated", False)),
     }
 
 
@@ -1344,12 +1544,16 @@ def verdict(req: VerdictRequest) -> dict[str, Any]:
 # 代码仓库管理（控制台「代码仓库」菜单）：可配置仓库清单 + 连接测试
 # ============================================================================
 class RepoConfigRequest(BaseModel):
-    """仓库配置入参（**不含凭据**：连接测试复用本机 git 凭据链）。"""
+    """仓库配置入参（可存 Codeup 只读凭证，2026-10-10 用户确认；接口只回掩码）。"""
 
     name: str = Field(..., min_length=1, max_length=100, description="显示名称（唯一）")
     url: str = Field(..., min_length=1, max_length=500, description="本地目录或 git 仓库地址")
     ref: str = Field("", max_length=200, description="分支/标签（可空，测试时顺带校验）")
     remark: str = Field("", max_length=300, description="备注")
+    codeup_org_id: str = Field("", max_length=100, description="Codeup 组织 ID（可空）")
+    codeup_access_key: str | None = Field(
+        None, description="Codeup 只读 PAT；更新时 None=不改（保留原值），空串=清除"
+    )
 
 
 class RepoProbeRequest(BaseModel):
@@ -1390,9 +1594,10 @@ def import_repos(req: ImportReposRequest) -> dict[str, Any]:
             data = json.loads(Path(req.json_path).read_text(encoding="utf-8"))
         except OSError as exc:
             raise ValidationError(f"读取仓库配置 JSON 失败：{exc}") from exc
-        items = data.get("repo_configs") if isinstance(data, dict) else data
-        if not isinstance(items, list):
-            raise ValidationError("JSON 结构不对：期望 {\"repo_configs\": [...]} 或数组")
+        loaded: object = data.get("repo_configs") if isinstance(data, dict) else data
+        if not isinstance(loaded, list):
+            raise ValidationError('JSON 结构不对：期望 {"repo_configs": [...]} 或数组')
+        items = loaded
     if not items:
         raise ValidationError("请提供 items 或有效的 json_path")
     res = store.import_repo_configs(items)
@@ -1404,7 +1609,12 @@ def create_repo(req: RepoConfigRequest) -> dict[str, Any]:
     """新增仓库配置（name 唯一）。"""
     try:
         rid = store.create_repo_config(
-            req.name.strip(), req.url.strip(), ref=req.ref.strip(), remark=req.remark.strip()
+            req.name.strip(),
+            req.url.strip(),
+            ref=req.ref.strip(),
+            remark=req.remark.strip(),
+            codeup_org_id=req.codeup_org_id,
+            codeup_access_key=req.codeup_access_key or "",
         )
     except ContractViolation as exc:
         raise ValidationError(str(exc)) from exc
@@ -1421,6 +1631,8 @@ def update_repo(rid: int, req: RepoConfigRequest) -> dict[str, Any]:
             url=req.url.strip(),
             ref=req.ref.strip(),
             remark=req.remark.strip(),
+            codeup_org_id=req.codeup_org_id,
+            codeup_access_key=req.codeup_access_key,  # None=保留原值（前端编辑留空即不改）
         )
     except ContractViolation as exc:
         raise ValidationError(str(exc)) from exc

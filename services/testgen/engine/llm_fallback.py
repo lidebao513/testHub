@@ -32,8 +32,8 @@ from core.log import get_logger
 
 log = get_logger(__name__)
 
-# 进程内缓存：(base_url, channel) -> 已验证可用模型下标
-_best_index: dict[tuple[str, str], int] = {}
+# 进程内缓存：channel -> 已验证可用 (provider_idx, model_idx)
+_best_index: dict[str, tuple[int, int]] = {}
 
 # 免费额度耗尽 / 模型不可用 的关键字（作为降级触发信号，视作该模型暂不可用）
 _QUOTA_HINTS = (
@@ -76,7 +76,7 @@ def _is_localhost_url(base_url: str) -> bool:
         host = (urlparse(base_url or "").hostname or "").lower()
     except Exception:
         return False
-    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")  # nosec B104
 
 
 def _is_quota_unavailable(exc: Exception) -> bool:
@@ -171,14 +171,14 @@ def _load_db_providers() -> list[dict[str, Any]]:
         from core import store
 
         specs = store.load_llm_provider_specs()
-    except Exception:  # noqa: BLE001 - DB 不可用时退化为仅主通道
+    except Exception:
         specs = []
     _PROVIDER_CACHE["ts"] = now
     _PROVIDER_CACHE["specs"] = specs
     return specs
 
 
-def chat_with_fallback(
+def chat_with_fallback(  # noqa: C901, PLR0912, PLR0915
     *,
     channel: str,
     api_key: str = "",
@@ -217,7 +217,7 @@ def chat_with_fallback(
             )
         try:
             plist.extend(_load_db_providers())
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     if not plist:
@@ -270,9 +270,7 @@ def chat_with_fallback(
                     if _is_auth_error(exc):
                         if p_idx < len(plist) - 1:
                             last_err = exc
-                            log.warning(
-                                "厂商 %s 鉴权失败，切换下一个 provider", prov.get("label")
-                            )
+                            log.warning("厂商 %s 鉴权失败，切换下一个 provider", prov.get("label"))
                             break  # 跳到下一个 provider
                         # 已是最后一个 provider：按旧行为直接判死（单 provider 测试一致）
                         raise LLMError(f"模型 {m} 调用失败：{type(exc).__name__}") from exc

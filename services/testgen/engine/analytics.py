@@ -12,14 +12,15 @@ from typing import Any
 from core import store
 from core.enums import ExecStatus, RunBatchState
 
+
 # 真正「有结论」的状态——用于判定不稳定（环境态不计入）
 _VERDICT_STATUSES = (ExecStatus.PASS.value, ExecStatus.FAIL.value, ExecStatus.ERROR.value)
 
 
 def _pass_rate(status_counts: dict[str, int]) -> float | None:
     """有效通过率 = pass / (pass + fail)；无有效结论返回 None。"""
-    effective = (
-        status_counts.get(ExecStatus.PASS.value, 0) + status_counts.get(ExecStatus.FAIL.value, 0)
+    effective = status_counts.get(ExecStatus.PASS.value, 0) + status_counts.get(
+        ExecStatus.FAIL.value, 0
     )
     if effective <= 0:
         return None
