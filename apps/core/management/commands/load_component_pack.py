@@ -134,5 +134,5 @@ class Command(BaseCommand):
         
         self.stdout.write(self.style.SUCCESS('📋 下一步:'))
         self.stdout.write('   1. 启动前端: cd frontend && npm run dev')
-        self.stdout.write('   2. 访问场景编排器: http://localhost:3000/app-automation/test-cases/scene-builder')
+        self.stdout.write('   2. 访问场景编排器: http://localhost:3900/app-automation/test-cases/scene-builder')
         self.stdout.write('   3. 在左侧组件面板查看所有组件')

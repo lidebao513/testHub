@@ -34,6 +34,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -63,6 +64,10 @@ STATE_NOT_REPO = "not_repo"
 # `https://user:pass@host/path` → 掩码凭证；同时吃掉 query 里的 token
 _CREDENTIAL_RE = re.compile(r"//[^/@\s]+@")
 
+# codeup HTTPS 仓库凭据注入：环境变量 `CODEUP_TOKEN`（platform 仍不存凭据，
+# token 只放 .env / 进程环境；clone 与 fetch 前动态拼入 URL，结果与日志恒掩码）。
+_CODEUP_HOST_SUFFIX = "codeup.aliyun.com"
+
 
 def mask_url(url: str) -> str:
     """掩码 URL 中的凭证（**结果与日志里绝不出现明文**）。"""
@@ -70,6 +75,29 @@ def mask_url(url: str) -> str:
         return ""
     masked = _CREDENTIAL_RE.sub("//***@", url)
     return masked.split("?", 1)[0] if "@" in url else masked
+
+
+def inject_credentials(url: str) -> str:
+    """给 codeup HTTPS 地址注入 PAT（环境变量 `CODEUP_TOKEN`，oauth2 方式）。
+
+    背景：codeup 的 PAT 走本机 credential helper 会被 GCM 缓存的失效旧令牌覆盖
+    （403 / terminal prompts disabled），URL 内嵌凭证是最稳的通道。规则：
+    - 仅处理 `https?://` 且 host 以 codeup.aliyun.com 结尾的地址；
+    - URL 已带凭证（userinfo）或未配置 `CODEUP_TOKEN` → 原样返回；
+    - 注入只发生在发起 git 命令前，`result.url` / 日志仍走 `mask_url` 掩码。
+    """
+    if not url or "://" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    if scheme not in ("http", "https"):
+        return url
+    authority = rest.split("/", 1)[0]
+    if "@" in authority or not authority.endswith(_CODEUP_HOST_SUFFIX):
+        return url
+    token = os.getenv("CODEUP_TOKEN", "").strip()
+    if not token:
+        return url
+    return f"{scheme}://oauth2:{token}@{rest}"
 
 
 @dataclass
@@ -170,6 +198,11 @@ def _rev(repo: str | Path, ref: str) -> str:
     return cp.stdout.strip() if cp.returncode == 0 else ""
 
 
+def _resolve_ref(repo: str | Path, ref: str) -> str:
+    """把短名 ref 归一化为本地可解析形式（实现在 diff_tag.resolve_ref，此处薄封装）。"""
+    return diff_tag.resolve_ref(repo, ref)
+
+
 def _fail(result: PullResult, status: str, message: str) -> PullResult:
     result.status = status
     result.success = False
@@ -241,8 +274,15 @@ def _clone_or_fail(result: PullResult, url: str, local_path: str) -> PullResult:
         )
     result.mode = PullMode.CLONE.value
     Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+    clone_url = inject_credentials(url)
     cp = _run(
-        ["git", "clone", *(_GIT_PROTOCOL_PREFIX if _looks_remote(url) else ()), url, local_path],
+        [
+            "git",
+            "clone",
+            *(_GIT_PROTOCOL_PREFIX if _looks_remote(clone_url) else ()),
+            clone_url,
+            local_path,
+        ],
         timeout=_NET_TIMEOUT,
     )
     if cp.returncode != 0:
@@ -269,8 +309,9 @@ def _update_from_remote(result: PullResult, local_path: str, *, deepen: int) -> 
     if not origin:
         result.mode = PullMode.OFFLINE.value
         result.fetch_status = FetchStatus.SKIPPED.value
-        result.errors.append("本地仓库没有 remote：跳过远端更新，直接使用本地已有代码")
+        result.errors.append("本地仓库没有 remote：跳过远端更新，直接使用已有代码")
         return
+    _ensure_remote_credentials(local_path)
     cp = _git(local_path, ["fetch", "--all", "--tags", "--prune"], timeout=_NET_TIMEOUT, net=True)
     if cp.returncode != 0:
         result.mode = PullMode.OFFLINE.value
@@ -293,6 +334,21 @@ def _update_from_remote(result: PullResult, local_path: str, *, deepen: int) -> 
 
 def _is_shallow(repo: str | Path) -> bool:
     return _git(repo, ["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true"
+
+
+def _ensure_remote_credentials(local_path: str) -> None:
+    """远端为裸 codeup HTTPS 地址且配置了 `CODEUP_TOKEN` 时，把 PAT 拼进 origin URL。
+
+    幂等：URL 已带凭证、非 codeup、或未配置 token 时不做任何改动（set-url 只在
+    注入结果与现值不同时执行，避免每轮生成重写 .git/config）。
+    """
+    cp = _git(local_path, ["remote", "get-url", "origin"])
+    if cp.returncode != 0:
+        return
+    current = (cp.stdout or "").strip()
+    injected = inject_credentials(current)
+    if injected and injected != current:
+        _git(local_path, ["remote", "set-url", "origin", injected])
 
 
 def _worktree_has_files(repo: str | Path) -> bool:
@@ -339,17 +395,23 @@ def _finish_refs(
     「ref 不可解析」（与 F7 修复的是同一类静默/误报陷阱）。
     """
     worktree = diff_tag.is_worktree_target(target)
-    refs = [r for r in (base, target) if r and not diff_tag.is_worktree_target(r)]
+    # G8：先归一化（短名 → origin/<短名>），再校验/取 SHA/checkout/算 diff——
+    # 校验失败时报错仍用用户原始输入，避免出现 `origin/origin/xxx` 式困惑。
+    base_ref = _resolve_ref(local_path, base) if base else ""
+    target_ref = "" if worktree else (_resolve_ref(local_path, target) if target else "")
+    refs = [r for r in (base_ref, target_ref) if r]
     if refs and not diff_tag.refs_available(local_path, *refs):
         return _fail(
             result,
             PullStatus.REFS_UNAVAILABLE.value,
             f"ref 不可解析：{base!r} / {target!r}；请核对 ref（git rev-parse --verify <ref>）",
         )
-    result.base_sha = _rev(local_path, base) if base else ""
-    result.target_sha = "" if worktree else (_rev(local_path, target) if target else "")
-    _maybe_checkout(result, local_path, target)
-    result.changed_files = sorted(_changed_files_of(local_path, base=base, target=target))
+    result.base_sha = _rev(local_path, base_ref) if base_ref else ""
+    result.target_sha = _rev(local_path, target_ref) if target_ref else ""
+    _maybe_checkout(result, local_path, target_ref)
+    result.changed_files = sorted(
+        _changed_files_of(local_path, base=base_ref, target=target if worktree else target_ref)
+    )
     log.info(
         "取码完成",
         extra=log_extra(

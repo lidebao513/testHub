@@ -403,6 +403,20 @@ def _semantic_of(fp: FunctionalPoint, category: str) -> str:
     return f"{_SEMANTIC_ACTION[category]}：{fp.title}"
 
 
+# 标题可读性（2026-10-14）：`[正常] agents · register_m3_harness_profiles` 这种裸 `模块 · 函数名`
+# 用户看不出测的是什么。优先用 docstring 中文摘要做标题主体；无中文摘要时退回
+# `模块 · 函数名`。维度（Dimension.value 本身是中文短语，如「安全-越权」）始终拼在尾部。
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _readable_core(fp: FunctionalPoint) -> str:
+    """标题主体：有中文功能描述用描述，否则退回 `模块 · 名称`。"""
+    sem = (fp.semantic or "").strip()
+    if sem and _CJK_RE.search(sem) and len(sem) > len(fp.name) + 2:
+        return sem if len(sem) <= 48 else sem[:46] + "…"
+    return fp.title
+
+
 # G-5：需要注入故障/特定上下文才能验证的异常流，自动化默认无法判定，标记为低把握 + 未验证。
 # 这些用例的价值是「覆盖出错」的设计层覆盖；真实验证需专项/人工/压测（详见覆盖评估报告 G-5）。
 _BEST_EFFORT_DIMS: frozenset[str] = frozenset(
@@ -565,7 +579,7 @@ def expand_functional_point(
                 fp_contract_id=fp.fp_id,
                 category=category,
                 module=fp.module,
-                title=f"[{category}] {fp.title}",
+                title=f"[{category}] {_readable_core(fp)} · {dimension}",
                 semantic=_semantic_of(fp, category),
                 source=fp.file_path,
                 method=method,

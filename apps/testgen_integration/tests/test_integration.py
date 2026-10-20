@@ -4,7 +4,7 @@
    /ready 不泄漏密钥、/parse-input 掩码密码（不触发真实 LLM 生成）；
 2) 离线编排：用仿 testgen 返回用例，跑 mapping + flow 端到端，验证回流字段正确。
 
-本机若缺 testgen venv 或 8100 端口被占，实时部分自动跳过；离线编排始终运行。
+本机若缺 testgen venv 或 8910 端口被占，实时部分自动跳过；离线编排始终运行。
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ _REPO = os.path.dirname(
 )
 _TESTGEN_DIR = os.path.join(_REPO, "services", "testgen")
 _VENV_PY = os.path.join(_TESTGEN_DIR, ".venv", "Scripts", "python.exe")
-_BASE = "http://127.0.0.1:8100"
+_BASE = "http://127.0.0.1:8910"
 
 
 def _sidecar_available() -> bool:
@@ -45,7 +45,7 @@ class TestgenSidecarLive(unittest.TestCase):
         cls._proc = subprocess.Popen(
             [
                 _VENV_PY, "-m", "uvicorn", "service.app:app",
-                "--host", "127.0.0.1", "--port", "8100", "--log-level", "warning",
+                "--host", "127.0.0.1", "--port", "8910", "--log-level", "warning",
             ],
             cwd=_TESTGEN_DIR,
             stdout=subprocess.DEVNULL,

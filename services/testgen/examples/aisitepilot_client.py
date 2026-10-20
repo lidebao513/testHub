@@ -11,7 +11,7 @@
 
 用法：
     python examples/aisitepilot_client.py \
-        --base-url http://127.0.0.1:8000 \
+        --base-url http://127.0.0.1:8900 \
         --auth-token **** \
         --analyze C:/path/to/project
 """
@@ -140,7 +140,7 @@ def _demo(base_url: str, auth_token: str, local_path: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="aiSitePilot 调用 testgen 能力示例")
-    ap.add_argument("--base-url", default="http://127.0.0.1:8000")
+    ap.add_argument("--base-url", default="http://127.0.0.1:8900")
     ap.add_argument("--auth-token", default="")
     ap.add_argument("--analyze", default="", help="要抽取功能点的本地代码路径")
     args = ap.parse_args(argv)

@@ -90,7 +90,7 @@ def _snapshot_with_files(file_items):
         'load_config': {'model': 'CONCURRENCY', 'concurrency': 1,
                         'duration': 10, 'ramp_up': 1},
         'runtime_config': {},
-        'env_config': {'base_url': 'http://localhost:8000'},
+        'env_config': {'base_url': 'http://localhost:8900'},
         'steps': [{'name': '上传', 'enabled': True, 'is_setup': False,
                    'method': 'POST', 'url': '/upload',
                    'body_type': 'FORM', 'body': 'remark=hello',

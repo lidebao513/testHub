@@ -5,14 +5,14 @@
   - ``/api/v1/...``    → 转发到 sidecar 的 ``/api/v1/...``（控制台 JS 用的绝对路径 API）
 
 目的：让「根据项目生成测试用例」的 testgen 控制台嵌入主平台 SPA 时，
-页面与 API 都走同源的 8000 端口，避免前端 iframe 直连 :8100 的跨端口问题，
+页面与 API 都走同源的 8900 端口，避免前端 iframe 直连 :8910 的跨端口问题，
 也无需改动 sidecar 控制台源码（其 JS 写死了 ``/api/v1/`` 绝对路径）。
 
 行为：
   - 转发所有方法(GET/POST/PUT/DELETE/...)与请求体；
   - 剥掉 Host 等逐跳头，其余透传(含 Authorization)；
   - query string 透传(支持 ``?embed=1&zone=``)；
-  - sidecar 地址可用环境变量 ``TESTGEN_SIDECAR_URL`` 覆盖，默认 ``http://127.0.0.1:8100``。
+  - sidecar 地址可用环境变量 ``TESTGEN_SIDECAR_URL`` 覆盖，默认 ``http://127.0.0.1:8910``。
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from django.http import HttpResponse
 from django.views.decorators.clickjacking import xframe_options_exempt
 from django.views.decorators.csrf import csrf_exempt
 
-SIDECAR_BASE = os.environ.get("TESTGEN_SIDECAR_URL", "http://127.0.0.1:8100").rstrip("/")
+SIDECAR_BASE = os.environ.get("TESTGEN_SIDECAR_URL", "http://127.0.0.1:8910").rstrip("/")
 
 # 不向下游透传的逐跳头/敏感头
 _HOP_BY_HOP = {

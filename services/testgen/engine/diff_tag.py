@@ -119,6 +119,31 @@ _SHA_HEX = re.compile(r"^[0-9a-fA-F]{4,}$")
 _FULL_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
+def _resolves(repo: str | Path, ref: str) -> bool:
+    """单个 ref 是否能解析为 commit。"""
+    try:
+        cp = run_git(repo, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return cp.returncode == 0
+
+
+def resolve_ref(repo: str | Path, ref: str) -> str:
+    """把短名 ref 归一化为本地可解析形式：`ref` → 解析不到时回退 `origin/<ref>`。
+
+    为什么需要：克隆工作区通常**只有远端跟踪分支**（origin/xxx）、没有本地分支；
+    `git rev-parse --verify xxx` 对短名不会自动尝试 origin/ 前缀，远端明明有该
+    分支也会被误判为「ref 不可解析」（G8 修复：`oa-20260909` 实测踩中）。
+    解析不到时原样返回——由调用方的校验逻辑照常报错，错误信息仍显示用户原始输入。
+    """
+    if not ref or is_worktree_target(ref):
+        return ref
+    if _resolves(repo, ref):
+        return ref
+    remote_ref = f"origin/{ref}"
+    return remote_ref if _resolves(repo, remote_ref) else ref
+
+
 def refs_available(repo: str | Path, *refs: str) -> bool:
     """给定的 base/target ref 是否**逐个**都能解析为 commit。
 
@@ -134,11 +159,7 @@ def refs_available(repo: str | Path, *refs: str) -> bool:
     for ref in refs:
         if _SHA_HEX.match(ref) and not _FULL_SHA.match(ref):
             return False
-        try:
-            cp = run_git(repo, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
-        except (OSError, subprocess.SubprocessError):
-            return False
-        if cp.returncode != 0:
+        if not _resolves(repo, ref):
             return False
     return True
 
@@ -270,16 +291,21 @@ def build_context(repo: str | Path, base: str | None, target: str | None) -> Dif
         return DiffContext()
     if repo_escape_blocked(repo):
         raise WorkspaceEscapeBlocked(f"{repo} 的 git 顶层逃逸到祖先目录，已阻断")
+    # G8：短名归一化（`xxx` → 解析不到时回退 `origin/xxx`）；解析仍失败时报错
+    # 用**用户原始输入**，避免 `origin/origin/xxx` 式困惑。
+    raw_base, raw_target = base, target
+    base = resolve_ref(repo, base)
+    target = resolve_ref(repo, target)
     if is_worktree_target(target):
         if not refs_available(repo, base):
-            raise ValueError(f"基线 ref 不可解析：{base}（工作树模式只校验基线）")
+            raise ValueError(f"基线 ref 不可解析：{raw_base}（工作树模式只校验基线）")
         return DiffContext(
             changed_files=compute_changed_files(repo, base, None),
             hunks=compute_diff_hunks(repo, base, None),
             aligned=True,  # 行号取自当前工作区，与被扫描的源码天然对齐
         )
     if not refs_available(repo, base, target):
-        raise ValueError(f"ref 不可解析：{base} / {target}")
+        raise ValueError(f"ref 不可解析：{raw_base} / {raw_target}")
     return DiffContext(
         changed_files=compute_changed_files(repo, base, target),
         hunks=compute_diff_hunks(repo, base, target),

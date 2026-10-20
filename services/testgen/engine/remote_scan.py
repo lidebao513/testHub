@@ -19,7 +19,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from engine import scan as _scan
+from engine import diff_tag, scan as _scan
 from engine.codeup_client import CodeupClient, CodeupError, parse_repo_to_repo_id
 
 
@@ -133,6 +133,10 @@ def _local_git_change_map(local_path: str, base_ref: str) -> dict[str, str]:
     if not base_ref:
         return {}
     try:
+        # G8 补漏（2026-10-14）：短名 ref（如 `oa-20260909`）在只有远端跟踪分支的克隆里
+        # 会让 `git diff` 报 bad revision → except 静默返回 {} → 全部误判「未变更」。
+        # 与 pull/diff_tag 同口径：先做 origin/ 前缀归一化。
+        base_ref = diff_tag.resolve_ref(local_path, base_ref)
         p = subprocess.run(
             ["git", "-C", local_path, "diff", "--relative", "--name-status", base_ref, "--", "."],
             capture_output=True,

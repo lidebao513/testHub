@@ -10,12 +10,12 @@
 #   - 清空描述缓存按钮生效（log 出现「已清空描述缓存」）
 #
 # 用法:
-#   # 直接验证已运行的 sidecar（默认 http://127.0.0.1:8100/）
+#   # 直接验证已运行的 sidecar（默认 http://127.0.0.1:8910/）
 #   python scripts/ui_regression.py
 #   # 自带 sidecar 全封闭运行（CI / 单机，自动拉起并回收）
 #   python scripts/ui_regression.py --start-sidecar
-#   # 验证经 Django 代理的集成路径（真实 App 走 :8000/testgen/）
-#   python scripts/ui_regression.py --url http://127.0.0.1:8000/testgen/?embed=1
+#   # 验证经 Django 代理的集成路径（真实 App 走 :8900/testgen/）
+#   python scripts/ui_regression.py --url http://127.0.0.1:8900/testgen/?embed=1
 #
 # 退出码非 0 = 回归失败。该脚本被 scripts/gate_all.py 以「opt-in」方式接入
 # 八门禁：仅当环境变量 RUN_UI_REGRESSION=1 时才真正运行，否则门禁打印 SKIP
@@ -320,8 +320,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="testgen 控制台 UI 层回归用例")
     ap.add_argument(
         "--url",
-        default="http://127.0.0.1:8100/",
-        help="控制台地址（默认 sidecar 直连；可填 :8000/testgen/ 测代理）",
+        default="http://127.0.0.1:8910/",
+        help="控制台地址（默认 sidecar 直连；可填 :8900/testgen/ 测代理）",
     )
     ap.add_argument("--target-repo", default=DEFAULT_TARGET, help="扫描目标本地仓库目录")
     ap.add_argument(

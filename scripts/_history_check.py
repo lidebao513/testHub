@@ -3,13 +3,13 @@
 import sys
 from playwright.sync_api import sync_playwright
 
-BASE = "http://localhost:3000"
+BASE = "http://localhost:3900"
 SHOT = "logs/shot_history.png"
 
 
 def frame_of(page):
     for f in page.frames:
-        if ":8000/testgen/" in (f.url or ""):
+        if ":8900/testgen/" in (f.url or ""):
             return f
     return None
 

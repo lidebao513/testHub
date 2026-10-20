@@ -2022,7 +2022,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     return origin
 
                 # 兼容未配置时的本地开发默认
-                local_defaults = ['http://localhost:3000', 'http://127.0.0.1:3000']
+                local_defaults = ['http://localhost:3900', 'http://127.0.0.1:3900']
                 if origin in local_defaults:
                     return origin
 
@@ -2031,7 +2031,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     return allowed_origins[0]
 
                 # 最后兜底：返回请求 origin（若存在）
-                return origin or 'http://localhost:3000'
+                return origin or 'http://localhost:3900'
 
             cors_origin = get_allowed_origin(request_origin)
 
@@ -2274,14 +2274,14 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 if origin in allowed_origins:
                     return origin
 
-                local_defaults = ['http://localhost:3000', 'http://127.0.0.1:3000']
+                local_defaults = ['http://localhost:3900', 'http://127.0.0.1:3900']
                 if origin in local_defaults:
                     return origin
 
                 if allowed_origins:
                     return allowed_origins[0]
 
-                return origin or 'http://localhost:3000'
+                return origin or 'http://localhost:3900'
 
             cors_origin = get_allowed_origin(request_origin)
             response = HttpResponse(

@@ -29,7 +29,7 @@ const consoleSrc = computed(() => {
   // 指向后端 Django(8000) 的 /testgen/ 反向代理（页面），其 API 走 /api/v1/ 代理；
   // 不能沿用 SPA 自身端口(3000)，否则 vite 没有该路由。
   const zone = route.query.zone || 'generate'
-  return `${protocol}//${hostname}:8000/testgen/?embed=1&zone=${encodeURIComponent(zone)}`
+  return `${protocol}//${hostname}:8900/testgen/?embed=1&zone=${encodeURIComponent(zone)}`
 })
 
 // 把 SPA 已登录的 JWT 注入 iframe（console.html 监听 TESTGEN_AUTH_TOKEN）

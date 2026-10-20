@@ -54,7 +54,7 @@ def _start_sidecar() -> None:
     env["no_proxy"] = "127.0.0.1,localhost"
     _SIDECAR_PROC = subprocess.Popen(
         [VENV_PY, "-m", "uvicorn", "service.app:app",
-         "--host", "127.0.0.1", "--port", "8100", "--log-level", "warning"],
+         "--host", "127.0.0.1", "--port", "8910", "--log-level", "warning"],
         cwd=TESTGEN_DIR,
         env=env,
         stdout=subprocess.DEVNULL,

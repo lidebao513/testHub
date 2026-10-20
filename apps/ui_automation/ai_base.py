@@ -1684,7 +1684,7 @@ class BaseBrowserAgent:
             final_task += "13. EXTREMELY MINIMIZE output tokens for speed. Keep responses as short as possible while maintaining accuracy.\n"
 
         # 核心修复: 清理 task 长文本中的 URL，防止中文标点紧贴 URL 导致 browser-use 解析错误
-        # 例如 "http://localhost:3000，" -> "http://localhost:3000 "
+        # 例如 "http://localhost:3900，" -> "http://localhost:3900 "
         try:
             # 在中文标点前加空格，避免它们成为 URL 的一部分
             final_task = re.sub(r'(https?://[^\s\u4e00-\u9fa5]+?)(?=[，；。、！])', r'\1 ', final_task)

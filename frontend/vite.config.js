@@ -29,7 +29,7 @@ export default defineConfig({
     target: 'es2022',
   },
   server: {
-    port: 3000,
+    port: 3900,
     host: '0.0.0.0',
     headers: {
       'Cache-Control': 'no-cache, no-store, must-revalidate',
@@ -38,27 +38,27 @@ export default defineConfig({
     },
     proxy: {
       '^/api/': {
-        target: 'http://127.0.0.1:8000',
+        target: 'http://127.0.0.1:8900',
         changeOrigin: true,
         secure: false,
       },
       '^/media/': {
-        target: 'http://127.0.0.1:8000',
+        target: 'http://127.0.0.1:8900',
         changeOrigin: true,
         secure: false,
       },
       '^/app-automation-templates/': {
-        target: 'http://127.0.0.1:8000',
+        target: 'http://127.0.0.1:8900',
         changeOrigin: true,
         secure: false,
       },
       '^/app-automation-reports/': {
-        target: 'http://127.0.0.1:8000',
+        target: 'http://127.0.0.1:8900',
         changeOrigin: true,
         secure: false,
       },
       '^/ws/': {
-        target: 'ws://127.0.0.1:8000',
+        target: 'ws://127.0.0.1:8900',
         ws: true,
         changeOrigin: true,
         configure: (proxy) => {

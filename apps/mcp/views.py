@@ -195,7 +195,7 @@ class McpProtocolFallbackView(View):
                 status=status.HTTP_403_FORBIDDEN)
         return self._json_response({
             'error': 'MCP streamable-http 协议端点需要 ASGI 服务器',
-            'hint': '请使用 daphne 启动：daphne -b 0.0.0.0 -p 8000 backend.asgi:application',
+            'hint': '请使用 daphne 启动：daphne -b 0.0.0.0 -p 8900 backend.asgi:application',
             'endpoint': '/api/mcp/',
         }, status=status.HTTP_501_NOT_IMPLEMENTED)
 

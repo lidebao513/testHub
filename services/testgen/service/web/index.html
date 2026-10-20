@@ -69,7 +69,8 @@
   .test-result.ok{background:#dcfce7;color:#166534}
   .test-result.bad{background:#fee2e2;color:#991b1b}
   .scan-box{max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:8px;background:#fbfcfe}
-  .scan-group{font-size:12px;color:var(--sub);font-weight:600;margin:8px 0 4px;padding-bottom:3px;border-bottom:1px dashed var(--line)}
+  .scan-group{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--sub);font-weight:600;margin:8px 0 4px;padding-bottom:3px;border-bottom:1px dashed var(--line);cursor:pointer;user-select:none}
+  .scan-group input{accent-color:var(--ink,#2563eb);cursor:pointer}
   .scan-item{display:flex;align-items:center;gap:8px;font-size:12px;padding:3px 4px;border-radius:6px}
   .scan-item:hover{background:#eef2ff}
   .scan-item input{margin:0}
@@ -77,6 +78,8 @@
   .scan-item .p .desc{display:block;font-size:11px;color:var(--sub);margin-top:1px}
   .scan-item .p .desc.sym{color:#64748b;font-style:normal}
   .scan-item .meta{color:var(--sub);font-size:11px;white-space:nowrap}
+  .tp-sem{font-size:11px;color:var(--sub);margin-top:2px}
+  .tp-exp{font-size:11px;color:#15803d;margin-top:1px}
   .st-added{background:#dcfce7;color:#166534}
   .st-modified{background:#fef3c7;color:#92400e}
   .st-unchanged{background:#eef2f7;color:#475569}
@@ -211,6 +214,15 @@
         <button class="btn-primary" id="btn_gen" onclick="doGenerate()">▶ 生成用例</button>
         <button class="btn-ok" id="btn_exec" onclick="doExecute()" disabled>▶ 执行验证</button>
         <button class="btn-ok" id="btn_onetwo" onclick="doScanAndTest()">⚡ 一键闭环（生成→执行→报告）</button>
+        <button class="btn-danger" id="btn_cancel_task" style="display:none" onclick="cancelCurrentTask()">✖ 取消任务</button>
+      </div>
+      <div id="gen_progress" style="display:none;margin-top:10px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:#666">
+          <span>阶段：<span id="gen_stage">—</span></span><span id="gen_frac"></span>
+        </div>
+        <div style="height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden;margin-top:4px">
+          <div id="gen_bar" style="height:100%;width:0;background:#5b57d1;border-radius:3px"></div>
+        </div>
       </div>
       <div class="hint">提示：只填「代码目录」= 纯代码生成；只填「被测地址+账号」= 浏览器自动发现页面/接口生成。执行验证默认只读（不污染被测环境），勾下方可放行写/真实点击。</div>
       <div class="row" style="margin-top:8px">
@@ -243,6 +255,15 @@
       <div class="kv"><b>阶段</b><span id="stage">—</span><span id="frac">—</span></div>
       <div class="kv"><b>生成项目</b><span id="pid">—</span> <a class="link" id="report_link" style="display:none" target="_blank">查看报告 ↗</a></div>
       <div class="log" id="log">等待操作…</div>
+    </div>
+
+    <div class="card">
+      <h2>⏳ 任务列表 <span id="tasks_running_badge" class="badge b-running" style="display:none">有运行中任务</span></h2>
+      <div class="actions" style="margin:0 0 10px">
+        <button class="btn-ghost" onclick="loadTasks()">刷新任务</button>
+        <span class="hint">运行中每 3 秒自动刷新；任务持久化在服务端，刷新页面/重启服务不丢失</span>
+      </div>
+      <div id="tasks_list"><span class="hint">加载中…</span></div>
     </div>
 
     <div class="card">
@@ -689,33 +710,63 @@ function buildBody(){
   return b;
 }
 
-async function doGenerate(){
+/* ---- 任务状态：忙碌态 / 最近任务记忆 / 任务列表（A+B+C 改版） ---- */
+const LS_LAST_TASK = "testgen_last_task";
+const LS_LAST_BODY = "testgen_last_body";
+let activeTaskId = null;
+
+function saveLastTask(id, kind){
+  activeTaskId = id;
+  try{ localStorage.setItem(LS_LAST_TASK, JSON.stringify({id, kind})); }catch(e){}
+}
+function setBusy(busy){
+  const b = $("btn_gen");
+  b.disabled = busy;
+  b.textContent = busy ? "⟳ 生成中…" : "▶ 生成用例";
+  $("btn_onetwo").disabled = busy;
+  $("btn_cancel_task").style.display = busy ? "inline-block" : "none";
+  $("gen_progress").style.display = busy ? "block" : "none";
+  if(!busy){ $("gen_stage").textContent="—"; $("gen_frac").textContent=""; $("gen_bar").style.width="0"; }
+}
+function applyTaskProject(r){
+  if(r.project_id == null) return;
+  curPid = r.project_id;
+  $("pid").textContent = curPid;
+  $("report_link").style.display="inline";
+  $("report_link").href = `/api/v1/projects/${curPid}/report?format=html`;
+  $("btn_exec").disabled = false;
+}
+async function submitGeneration(body){
   $("btn_gen").disabled = true;
+  setBusy(true);
   try{
-    const body = buildBody();
-    if(!body.auto_input && !body.local_path && !body.repo_url && !body.test_url){
-      alert("请至少填写代码目录、仓库地址或被测环境地址"); return;
-    }
     log("提交生成任务…");
     const r = await api("/api/v1/generate", {method:"POST", body:JSON.stringify(body)});
     $("task_id").textContent = r.task_id;
     setBadge("task_state","running");
     log("已接受，任务 "+r.task_id);
-    poll(r.task_id, (res)=>{
-      curPid = res.project_id || curPid;
-      if(curPid){ $("pid").textContent = curPid; }
-      if(curPid){
-        $("report_link").style.display="inline";
-        $("report_link").href = `/api/v1/projects/${curPid}/report?format=html`;
-        $("btn_exec").disabled = false;
-      }
-    });
+    saveLastTask(r.task_id, "generate");
+    try{ localStorage.setItem(LS_LAST_BODY, JSON.stringify(body)); }catch(e){}
+    poll(r.task_id);
   }catch(e){
     log("❌ "+e.message);
     setBadge("task_state","failed");
-  }finally{
-    $("btn_gen").disabled = false;
+    setBusy(false);
   }
+}
+function doGenerate(){
+  const body = buildBody();
+  if(!body.auto_input && !body.local_path && !body.repo_url && !body.test_url){
+    alert("请至少填写代码目录、仓库地址或被测环境地址"); return;
+  }
+  submitGeneration(body);
+}
+function regenLast(){
+  let b=null;
+  try{ b=JSON.parse(localStorage.getItem(LS_LAST_BODY)||"null"); }catch(e){}
+  if(!b){ alert("没有可复用的生成参数——请重新填写后点「生成用例」"); return; }
+  log("使用上次的参数重新提交生成任务…");
+  submitGeneration(b);
 }
 
 async function doExecute(){
@@ -739,6 +790,7 @@ async function doExecute(){
     $("task_id").textContent = r.task_id;
     setBadge("task_state","running");
     log("已接受，任务 "+r.task_id);
+    saveLastTask(r.task_id, "execute");
     poll(r.task_id, ()=>{});
   }catch(e){
     log("❌ "+e.message);
@@ -756,25 +808,110 @@ function poll(taskId, onUpdate){
       setBadge("task_state", r.state);
       $("stage").textContent = r.stage || "—";
       $("frac").textContent = r.progress!=null ? Math.round(r.progress*100)+"%" : "—";
-      if(r.project_id){ $("pid").textContent = r.project_id; curPid=r.project_id;
-        $("report_link").style.display="inline"; $("report_link").href=`/api/v1/projects/${r.project_id}/report?format=html`; $("btn_exec").disabled=false; }
+      if(r.stage) $("gen_stage").textContent = r.stage;
+      if(r.progress!=null){
+        const pc = Math.round(r.progress*100)+"%";
+        $("gen_frac").textContent = pc;
+        $("gen_bar").style.width = pc;
+      }
+      applyTaskProject(r);
       if(r.error) log("❌ "+r.error);
       if(r.state==="success"){
         clearInterval(pollTimer);
         log("✅ 完成！项目ID="+r.project_id);
         if(r.result && r.result.summary) log("摘要: "+JSON.stringify(r.result.summary));
         if(r.result && r.result.outputs) log("产物: "+JSON.stringify(r.result.outputs));
+        setBusy(false);
         loadProjects();
         loadTestPoints(r.project_id);
+        loadTasks();
       }else if(r.state==="failed" || r.state==="cancelled"){
         clearInterval(pollTimer);
         if(r.error) log("终态错误: "+r.error);
+        setBusy(false);
+        loadTasks();
       }
       if(onUpdate) onUpdate(r);
     }catch(e){
       log("轮询异常: "+e.message);
     }
   }, 1500);
+}
+
+/* ---- 重进页面恢复 + 任务列表 ---- */
+const _STATE_LABEL = {pending:"排队中",running:"运行中",success:"成功",failed:"失败",cancelled:"已取消"};
+const _STATE_BADGE = {pending:"b-pending",running:"b-running",success:"b-success",failed:"b-failed",cancelled:"b-cancelled"};
+function stateBadgeHtml(s){
+  return `<span class="badge ${_STATE_BADGE[s]||"t-unknown"}">${_STATE_LABEL[s]||s||"—"}</span>`;
+}
+async function restoreLastTask(){
+  let last=null;
+  try{ last=JSON.parse(localStorage.getItem(LS_LAST_TASK)||"null"); }catch(e){}
+  if(last && last.id){
+    try{
+      const r = await api("/api/v1/tasks/"+last.id);
+      $("task_id").textContent = r.task_id;
+      setBadge("task_state", r.state);
+      if(r.state==="pending" || r.state==="running"){
+        log("检测到进行中的任务 "+r.task_id+"（"+(r.kind||"")+"），已恢复轮询");
+        setBusy(true);
+        poll(r.task_id);
+      }else{
+        applyTaskProject(r);
+        if(r.state==="failed" && r.error) log("上次任务失败: "+r.error);
+      }
+    }catch(e){
+      // 任务已被服务端归档/删除（如 404）时清理本地记录，避免每次进入都永久重试死任务
+      if(/404/.test(e.message)){ try{ localStorage.removeItem(LS_LAST_TASK); }catch(_){} log("上次任务已不存在，已清理本地记录"); }
+      else { log("恢复上次任务失败: "+e.message); }
+    }
+  }
+  loadTasks();
+}
+
+let tasksTimer = null;
+async function loadTasks(){
+  try{
+    const r = await api("/api/v1/tasks?limit=20");
+    const ts = r.tasks || [];
+    const running = ts.some(t=>t.state==="pending"||t.state==="running");
+    $("tasks_running_badge").style.display = running ? "inline-block" : "none";
+    $("tasks_list").innerHTML = renderTasks(ts);
+    if(running && !tasksTimer) tasksTimer = setInterval(loadTasks, 3000);
+    if(!running && tasksTimer){ clearInterval(tasksTimer); tasksTimer=null; }
+  }catch(e){ $("tasks_list").innerHTML = '<span class="hint">加载失败: '+e.message+'</span>'; }
+}
+function renderTasks(ts){
+  if(!ts.length) return '<span class="hint">还没有任务记录</span>';
+  let html = '<table><tr><th>任务ID</th><th>类型</th><th>状态</th><th>阶段 / 进度</th><th>项目</th><th>操作</th></tr>';
+  for(const t of ts){
+    const isRun = t.state==="pending"||t.state==="running";
+    let prog;
+    if(isRun) prog = `${t.stage||"—"} · ${t.progress!=null?Math.round(t.progress*100)+"%":"—"}`;
+    else if(t.state==="failed") prog = String(t.error||"失败").slice(0,40);
+    else if(t.state==="success") prog = "done · 100%";
+    else prog = "—";
+    const pid = (t.project_id!=null && t.project_id!=="") ? "#"+t.project_id : "—";
+    let ops = "";
+    if(isRun) ops = `<a class="link" style="color:#991b1b" onclick="cancelTask('${t.task_id}')">取消</a>`;
+    else if(t.state==="success" && t.project_id!=null)
+      ops = `<a class="link" href="/api/v1/projects/${t.project_id}/report?format=html" target="_blank">报告</a> <a class="link" onclick="loadTestPoints(${t.project_id})">测试点</a>`;
+    else if(t.state==="failed" && t.kind==="generate") ops = `<a class="link" onclick="regenLast()">重新生成</a>`;
+    html += `<tr${isRun?' style="background:#fef9c3"':''}><td style="font-family:monospace">${t.task_id}</td><td>${t.kind||""}</td><td>${stateBadgeHtml(t.state)}</td><td>${prog}</td><td>${pid}</td><td>${ops}</td></tr>`;
+  }
+  return html+"</table>";
+}
+async function cancelTask(id){
+  if(!confirm("确定取消任务 "+id+"？")) return;
+  try{
+    await api("/api/v1/tasks/"+id+"/cancel", {method:"POST"});
+    log("已请求取消任务 "+id);
+    loadTasks();
+  }catch(e){ alert("取消失败: "+e.message); }
+}
+function cancelCurrentTask(){
+  if(!activeTaskId){ alert("当前没有进行中的任务"); return; }
+  cancelTask(activeTaskId);
 }
 
 async function loadProjects(){
@@ -799,6 +936,7 @@ function execPid(id){ $("exec_pid").value=id; doExecute(); }
 
 loadProjects();
 loadRepos();
+restoreLastTask();
 
 /* ============ LLM 厂商配置 ============ */
 let llmCache = [];
@@ -968,7 +1106,8 @@ function renderTestPoints(tps){
     if(ft && (t.tag||"")!==ft) return false;
     if(fs && (t.category||"")!==fs) return false;
     if(kw){
-      const hay = ((t.title||"")+" "+(t.module||"")+" "+(t.source||"")+" "+(t.dimension||"")).toLowerCase();
+      // 搜索覆盖：标题/模块/来源/子维度 + 验证内容(semantic) + 预期(expect)，按内容也能搜到点
+      const hay = ((t.title||"")+" "+(t.module||"")+" "+(t.source||"")+" "+(t.dimension||"")+" "+(t.semantic||"")+" "+(t.expect||"")).toLowerCase();
       if(!hay.includes(kw)) return false;
     }
     return true;
@@ -977,8 +1116,12 @@ function renderTestPoints(tps){
   if(!list.length){ el.innerHTML='<span class="hint">无匹配测试点（调整筛选条件）</span>'; return; }
   let html = '<table><tr><th>TP ID</th><th>标题</th><th>范围</th><th>类型</th><th>子维度</th><th>置信度</th><th>模块/来源</th></tr>';
   for(const t of list.slice(0,500)){
+    // 标题下带「验证内容(semantic) + 预期(expect)」，让每行一眼看出测什么、期望什么
+    let titleCell = escapeHtml(t.title||"");
+    if(t.semantic && t.semantic !== t.title) titleCell += `<div class="tp-sem">💬 ${escapeHtml(t.semantic)}</div>`;
+    if(t.expect) titleCell += `<div class="tp-exp">✔ 预期：${escapeHtml(t.expect)}</div>`;
     html += `<tr><td>${escapeHtml(t.tp_id||"")}</td>`+
-      `<td>${escapeHtml(t.title||"")}</td>`+
+      `<td>${titleCell}</td>`+
       `<td>${catBadge(t.category)}</td>`+
       `<td>${tagBadge(t.tag)}</td>`+
       `<td>${escapeHtml(t.dimension||"—")}</td>`+
@@ -1217,7 +1360,8 @@ function renderScanItems(){
     box.innerHTML = '<span class="hint">没有变更文件（当前过滤：只看变更）。取消勾选「只看变更」可查看全部文件。</span>';
     return;
   }
-  // 按顶级目录分组
+  // 按顶级目录分组（组头带全选框；重渲染前记住已勾选路径，渲染后恢复，勾选不丢）
+  const prevChecked = new Set(collectSelectedPaths());
   const groups = {};
   for(const it of visible){
     const top = it.path.includes("/") ? it.path.split("/")[0] : "（根目录）";
@@ -1225,7 +1369,7 @@ function renderScanItems(){
   }
   let html = "";
   for(const g of Object.keys(groups)){
-    html += `<div class="scan-group">📁 ${g}（${groups[g].length}）</div>`;
+    html += `<label class="scan-group"><input type="checkbox" class="scan-group-cb" data-group="${escapeHtml(g)}"> 📁 ${escapeHtml(g)}（${groups[g].length}）</label>`;
     for(const it of groups[g]){
       const st = it.change_status || "unchanged";
       const stTxt = st==="added"?"新增":st==="modified"?"修改":"未变";
@@ -1244,15 +1388,40 @@ function renderScanItems(){
         if((it.functions||[]).length) syms.push("ƒ " + it.functions.slice(0,10).join("、"));
         if(syms.length) info = `<span class="desc sym">🔧 内部：${escapeHtml(syms.join("　"))}</span>`;
       }
+      const checked = prevChecked.has(it.path) ? " checked" : "";
       html += `<div class="scan-item" data-path="${it.path}" data-status="${st}">`+
-        `<input type="checkbox" class="scan-cb" data-path="${it.path}" data-status="${st}">`+
+        `<input type="checkbox" class="scan-cb" data-path="${it.path}" data-status="${st}" data-group="${escapeHtml(g)}"${checked}>`+
         `<span class="p">${label}${info}</span>`+
         `<span class="meta">${fc?("ƒ"+fc):""}${cc?("𝒸"+cc):""}</span>`+
         `<span class="badge st-${st}">${stTxt}</span></div>`;
     }
   }
   box.innerHTML = html;
+  refreshGroupChecks();
 }
+
+/* 组头全选：组头勾选 → 整组同步；单项勾选变化 → 组头回显 全选/半选/未选 */
+function setGroupChecked(group, on){
+  document.querySelectorAll(`.scan-cb[data-group="${CSS.escape(group)}"]`).forEach(cb => cb.checked = on);
+}
+function refreshGroupChecks(){
+  document.querySelectorAll(".scan-group-cb").forEach(h=>{
+    const cbs = document.querySelectorAll(`.scan-cb[data-group="${CSS.escape(h.dataset.group)}"]`);
+    if(!cbs.length) return;
+    const n = [...cbs].filter(cb=>cb.checked).length;
+    h.checked = n === cbs.length;
+    h.indeterminate = n > 0 && n < cbs.length;
+  });
+}
+document.addEventListener("change", (e)=>{
+  const t = e.target;
+  if(!t || !t.classList) return;
+  if(t.classList.contains("scan-group-cb")){
+    setGroupChecked(t.dataset.group, t.checked);
+  }else if(t.classList.contains("scan-cb")){
+    refreshGroupChecks();
+  }
+});
 
 function collectSelectedPaths(){
   const cbs = document.querySelectorAll(".scan-cb:checked");
@@ -1261,9 +1430,11 @@ function collectSelectedPaths(){
 
 function selectAll(on){
   document.querySelectorAll(".scan-cb").forEach(cb => cb.checked = on);
+  refreshGroupChecks();
 }
 function selectOnlyChanged(){
   document.querySelectorAll(".scan-cb").forEach(cb => cb.checked = (cb.dataset.status==="added" || cb.dataset.status==="modified"));
+  refreshGroupChecks();
 }
 function onViewFilterChange(){ renderScanItems(); }
 function _isIncrementalMode(){
@@ -1324,12 +1495,15 @@ async function doScanAndTest(){
   }
   body.execute = true;
   $("btn_onetwo").disabled = true;
+  setBusy(true);
   try{
     log("⚡ 一键闭环：生成 → 执行 → 报告（含执行验证，耗时较久）…");
     const r = await api("/api/v1/execute", {method:"POST", body:JSON.stringify(body)});
     $("task_id").textContent = r.task_id;
     setBadge("task_state","running");
     log("已接受，任务 "+r.task_id);
+    saveLastTask(r.task_id, "execute");
+    try{ localStorage.setItem(LS_LAST_BODY, JSON.stringify(body)); }catch(e){}
     poll(r.task_id, (res)=>{
       if(res.state==="success" && res.project_id){
         curPid = res.project_id; $("pid").textContent = curPid;
@@ -1344,8 +1518,7 @@ async function doScanAndTest(){
   }catch(e){
     log("❌ "+e.message);
     setBadge("task_state","failed");
-  }finally{
-    $("btn_onetwo").disabled = false;
+    setBusy(false);
   }
 }
 
