@@ -1,0 +1,11 @@
+# 脚本换行策略
+#
+# 本机 core.autocrlf=true，若不显式声明，*.sh 检出到 Windows 会带 CRLF，
+# 在 Linux/CI 与部分 Git Bash 环境下执行会报 `$'\r': command not found`。
+# Windows 原生脚本则相反，必须是 CRLF。
+.gitattributes text eol=lf
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf

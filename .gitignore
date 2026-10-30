@@ -30,6 +30,8 @@ logs/*/*
 static_files/img/
 # 备份文件统一忽略（此前只写了 `.bak`，它只匹配名为 .bak 的条目，不匹配 *.bak）
 *.bak
+# Redis/Memurai 落盘快照（运行时产物，可重建，不入库）
+*.rdb
 # 忽略所有 app/*/migrations/ 目录下的所有内容 (包括文件和子目录)
 apps/*/migrations/*
 # 使用否定模式，例外地跟踪 __init__.py 文件
