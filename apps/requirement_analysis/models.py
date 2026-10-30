@@ -1,12 +1,15 @@
+import asyncio
+import json
+import logging
+from typing import Any, AsyncIterator, Dict, List
+
+import httpx
 from django.db import models
 from django.utils import timezone
-from apps.users.models import User
+
 from apps.projects.models import Project
-import json
-import httpx
-import asyncio
-from typing import Dict, Any, List, AsyncIterator
-import logging
+from apps.requirement_analysis import llm_budget
+from apps.users.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -375,6 +378,25 @@ class TestCaseGenerationTask(models.Model):
         verbose_name='关联项目'
     )
 
+    # 任务来源（表结构已存在该列，模型此前缺失导致创建任务时 500）
+    SOURCE_TYPE_CHOICES = [
+        ('manual', '手动输入'),
+        ('document', '需求文档'),
+        ('testgen', '代码生成(testgen)'),
+    ]
+    source_type = models.CharField(
+        max_length=20,
+        choices=SOURCE_TYPE_CHOICES,
+        default='manual',
+        verbose_name='来源类型'
+    )
+    source_ref = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        verbose_name='来源引用'
+    )
+
     # 配置参数
     writer_model_config = models.ForeignKey(
         AIModelConfig, on_delete=models.SET_NULL, null=True,
@@ -420,6 +442,54 @@ class TestCaseGenerationTask(models.Model):
 
 class AIModelService:
     """AI模型服务类"""
+
+    @staticmethod
+    def model_chain(model_name: str) -> List[str]:
+        """把配置里的 `a,b,c` 解析成**按书写顺序降级**的模型链；单模型返回单元素。
+
+        这样「已确认开了用完即停」的多个模型（含不同快照日期）可以填在同一行里，
+        前一个额度用尽会自动切下一个，不用改代码。
+        """
+        return [m.strip() for m in (model_name or '').split(',') if m.strip()]
+
+    @staticmethod
+    def _is_model_unavailable(status: int, text: str) -> bool:
+        """该模型是否「暂时用不了、值得换下一个」——额度耗尽 / 限流 / 模型下线。
+
+        403/404/429 直接判定；再按文本兜底（百炼免费额度用尽会返回
+        `AllocationQuota.FreeTierOnly`）。**401 不在此列**：同一 key 对所有模型都失败，
+        换模型没有意义。
+        """
+        if status in (403, 404, 429):
+            return True
+        low = (text or '').lower()
+        return any(k in low for k in ('quota', 'freetieronly', 'rate limit', 'insufficient'))
+
+    @staticmethod
+    def _record_usage(
+            model: str,
+            messages: List[Dict[str, str]],
+            body: Dict[str, Any],
+            budget_cfg: llm_budget.BudgetSettings,
+    ) -> None:
+        """把本次真实用量记入护栏（优先上游 usage，缺失则本地估算）。记账失败不影响返回。"""
+        try:
+            usage = body.get('usage') or {}
+            prompt_tokens = int(usage.get('prompt_tokens') or 0)
+            completion_tokens = int(usage.get('completion_tokens') or 0)
+            if not prompt_tokens:
+                prompt_tokens = llm_budget.estimate_messages_tokens(messages)
+            if not completion_tokens:
+                choices = body.get('choices') or []
+                content = ''
+                if choices:
+                    content = ((choices[0] or {}).get('message') or {}).get('content') or ''
+                completion_tokens = llm_budget.estimate_tokens(str(content))
+            llm_budget.record_usage(
+                model, prompt_tokens, completion_tokens, channel='django', cfg=budget_cfg
+            )
+        except Exception as exc:  # noqa: BLE001 - 记账失败不能影响业务返回
+            logger.warning(f"LLM 用量记账失败（不影响本次返回）：{exc}")
 
     @staticmethod
     def get_openai_compatible_headers(api_key: str) -> Dict[str, str]:
@@ -470,67 +540,100 @@ class AIModelService:
         headers = AIModelService.get_openai_compatible_headers(config.api_key)
 
         # 使用传入的max_tokens或默认使用config.max_tokens
-        actual_max_tokens = max_tokens if max_tokens is not None else config.max_tokens
-
-        data = {
-            'model': config.model_name,
-            'messages': messages,
-            'max_tokens': actual_max_tokens,
-            'temperature': config.temperature,
-            'top_p': config.top_p,
-            'stream': False
-        }
+        requested_max_tokens = max_tokens if max_tokens is not None else config.max_tokens
 
         url = AIModelService.build_openai_compatible_url(config.base_url, '/chat/completions')
+
+        # 成本护栏：免费额度耗尽后百炼会静默转按量计费，付费档单价 12~36 元/百万 token。
+        # 输出单价通常是输入的 3 倍，未配或配得过大时统一压到护栏上限。
+        budget_cfg = llm_budget.load_settings()
+        actual_max_tokens = requested_max_tokens
+        if budget_cfg.enforce and (
+                not actual_max_tokens or actual_max_tokens > budget_cfg.max_output_tokens):
+            actual_max_tokens = budget_cfg.max_output_tokens
+
+        # 模型链：model_name 支持 `a,b,c`，按书写顺序降级（前一个额度用尽自动切下一个）
+        chain = AIModelService.model_chain(config.model_name)
+        if not chain:
+            raise Exception('未配置模型名（model_name 为空）')
 
         logger.info(f"=== API调用详情 ===")
         logger.info(f"原始base_url: {config.base_url}")
         logger.info(f"最终请求URL: {url}")
-        logger.info(f"模型名称: {config.model_name}")
+        logger.info(f"模型链（按序降级）: {chain}")
         logger.info(f"请求参数: max_tokens={actual_max_tokens}, temperature={config.temperature}, top_p={config.top_p}")
 
-        try:
-            # 增加HTTP超时时间到900秒（15分钟），支持大文档生成
-            # 禁用HTTP/2，使用HTTP/1.1以提高兼容性
-            # 显式设置所有超时参数，避免默认的连接超时导致请求失败
-            timeout_config = httpx.Timeout(
-                connect=60.0,  # 连接超时：60秒
-                read=900.0,  # 读取超时：900秒（15分钟）
-                write=60.0,  # 写入超时：60秒
-                pool=60.0  # 连接池超时：60秒
-            )
-            async with httpx.AsyncClient(timeout=timeout_config, http2=False) as client:
-                logger.info(f"发送POST请求到: {url}")
-                response = await client.post(
-                    url,
-                    headers=headers,
-                    json=data
+        blocked: List[str] = []
+        last_error = ''
+        for model in chain:
+            if budget_cfg.enforce:
+                decision = llm_budget.check_call(model, messages, cfg=budget_cfg)
+                if not decision.allowed:
+                    if decision.scope == 'global':
+                        # 输入过大 / 日预算到顶：换模型一样超，整链停止（继续试就是在花钱买必然失败）
+                        logger.error(f"LLM 成本护栏拦截整链调用：{decision.reason}")
+                        raise llm_budget.BudgetExceeded(decision.reason)
+                    logger.warning(f"模型 {model} 被成本护栏跳过：{decision.reason}")
+                    blocked.append(decision.reason)
+                    continue
+
+            data = {
+                'model': model,
+                'messages': messages,
+                'max_tokens': actual_max_tokens,
+                'temperature': config.temperature,
+                'top_p': config.top_p,
+                'stream': False
+            }
+
+            try:
+                # 增加HTTP超时时间到900秒（15分钟），支持大文档生成
+                # 禁用HTTP/2，使用HTTP/1.1以提高兼容性
+                # 显式设置所有超时参数，避免默认的连接超时导致请求失败
+                timeout_config = httpx.Timeout(
+                    connect=60.0,  # 连接超时：60秒
+                    read=900.0,  # 读取超时：900秒（15分钟）
+                    write=60.0,  # 写入超时：60秒
+                    pool=60.0  # 连接池超时：60秒
                 )
+                async with httpx.AsyncClient(timeout=timeout_config, http2=False) as client:
+                    logger.info(f"发送POST请求到: {url}（模型 {model}）")
+                    response = await client.post(
+                        url,
+                        headers=headers,
+                        json=data
+                    )
 
-                logger.info(f"收到响应: status_code={response.status_code}")
+                    logger.info(f"收到响应: status_code={response.status_code}")
 
-                if response.status_code != 200:
-                    error_detail = response.text
-                    logger.error(f"API调用返回错误: Status={response.status_code}, Body={error_detail}")
+                    if response.status_code != 200:
+                        error_detail = response.text
+                        logger.error(
+                            f"API调用返回错误: model={model}, Status={response.status_code}, "
+                            f"Body={error_detail[:500]}")
 
-                response.raise_for_status()
-                result = response.json()
-                logger.info(f"API调用成功，响应内容: {str(result)[:200]}...")
-                return result
-        except httpx.HTTPStatusError as e:
-            provider_name = config.get_model_type_display()
-            error_msg = f"{provider_name} API返回错误 {e.response.status_code}: {e.response.text}"
-            logger.error(error_msg)
-            raise Exception(error_msg)
-        except httpx.TimeoutException as e:
-            provider_name = config.get_model_type_display()
-            logger.error(f"{provider_name} API请求超时: {repr(e)}")
-            raise Exception(f"{provider_name} API请求超时，请稍后再试或检查网络连接")
-        except Exception as e:
-            provider_name = config.get_model_type_display()
-            # Use repr(e) to capture the full exception type and message, especially if str(e) is empty
-            logger.error(f"{provider_name} API调用失败: {repr(e)}")
-            raise Exception(f"{provider_name} API调用失败: {str(e) or repr(e)}")
+                    response.raise_for_status()
+                    result = response.json()
+                    AIModelService._record_usage(model, messages, result, budget_cfg)
+                    logger.info(f"API调用成功（模型 {model}），响应内容: {str(result)[:200]}...")
+                    return result
+            except httpx.HTTPStatusError as e:
+                provider_name = config.get_model_type_display()
+                error_msg = f"{provider_name} API返回错误 {e.response.status_code}: {e.response.text[:300]}"
+                logger.error(error_msg)
+                if AIModelService._is_model_unavailable(e.response.status_code, e.response.text):
+                    last_error = error_msg
+                    logger.warning(f"模型 {model} 暂不可用（额度/限流/下线），按链切下一个")
+                    continue
+                raise Exception(error_msg)
+            except httpx.TimeoutException as e:
+                provider_name = config.get_model_type_display()
+                logger.error(f"{provider_name} API请求超时: {repr(e)}")
+                raise Exception(f"{provider_name} API请求超时，请稍后再试或检查网络连接")
+
+        provider_name = config.get_model_type_display()
+        reason = last_error or ('；'.join(blocked) if blocked else '未知原因')
+        raise Exception(f"{provider_name} 全部模型均不可用（链：{','.join(chain)}）：{reason}")
 
     @staticmethod
     async def list_available_models(config: AIModelConfig) -> List[str]:

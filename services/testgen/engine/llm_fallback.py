@@ -27,6 +27,14 @@ from typing import Any
 import httpx
 
 from core.errors import LLMError
+from core.llm_budget import (
+    BudgetExceeded,
+    check_call,
+    estimate_messages_tokens,
+    estimate_tokens,
+    load_settings,
+    record_usage,
+)
 from core.log import get_logger
 
 
@@ -178,6 +186,38 @@ def _load_db_providers() -> list[dict[str, Any]]:
     return specs
 
 
+def _record_resp_usage(
+    resp: Any,
+    model: str,
+    channel: str,
+    cfg: Any,
+    messages: list[dict[str, Any]],
+) -> None:
+    """把本次真实用量记入成本护栏。
+
+    优先用上游返回的 `usage.prompt_tokens / completion_tokens`（真实计费口径）；
+    端点不返回 usage 时退化为本地估算——**宁可高估，也不会漏记**。
+    记账失败只告警，绝不阻塞本次调用返回。
+    """
+    try:
+        usage = getattr(resp, "usage", None)
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+        if not prompt_tokens:
+            prompt_tokens = estimate_messages_tokens(messages)
+        if not completion_tokens:
+            content = ""
+            try:
+                content = resp.choices[0].message.content or ""
+            except (AttributeError, IndexError, TypeError):
+                content = ""
+            completion_tokens = estimate_tokens(str(content)) if content else 0
+        record_usage(model, prompt_tokens, completion_tokens, channel=channel, cfg=cfg)
+    except (AttributeError, KeyError, TypeError, ValueError, OSError) as exc:
+        # 记账失败不影响业务返回：用量统计不该成为 LLM 调用的失败原因
+        log.warning("LLM 用量记账失败（不影响本次返回）：%s", exc)
+
+
 def chat_with_fallback(  # noqa: C901, PLR0912, PLR0915
     *,
     channel: str,
@@ -234,6 +274,8 @@ def chat_with_fallback(  # noqa: C901, PLR0912, PLR0915
         raise LLMError("未安装 openai 依赖，无法调用 LLM") from exc
 
     last_err: Exception | None = None
+    budget_cfg = load_settings()
+    last_block_reason = ""
     for p_idx in order_p:
         prov = plist[p_idx]
         # 本机端点绕过透明代理直连；远程端点走代理出网。max_retries=0：瞬时重试交由引擎自身循环处理。
@@ -254,6 +296,18 @@ def chat_with_fallback(  # noqa: C901, PLR0912, PLR0915
         order_m = list(range(start_m, len(models))) + list(range(0, start_m))
         for m_idx in order_m:
             m = models[m_idx]
+            # 成本护栏（核心防线）：付费模型 / 输入过大 / 当日预算到顶 → 拒绝。
+            # scope=model 仅跳过该模型（链上可能还有免费档），scope=global 必须整链停止
+            # ——换模型同样会超预算，继续试就是在花钱买「一定会失败」的调用。
+            if budget_cfg.enforce:
+                decision = check_call(m, messages, cfg=budget_cfg)
+                if not decision.allowed:
+                    last_block_reason = decision.reason
+                    if decision.scope == "global":
+                        log.error("LLM 成本护栏拦截整链调用：%s", decision.reason)
+                        raise BudgetExceeded(decision.reason)
+                    log.warning("模型 %s 被成本护栏跳过：%s", m, decision.reason)
+                    continue
             # 同一模型最多尝试 (1 + _MAX_TRANSIENT_RETRY) 次：
             # - 额度/限流不可用（403/404/429 + 关键字）→ 直接跳下一模型（不重试，换模型才有效）；
             # - 瞬时网络错误（超时/连接中断）→ 先退避重试，耗尽再跳下一模型；
@@ -265,6 +319,13 @@ def chat_with_fallback(  # noqa: C901, PLR0912, PLR0915
                         model=m,
                         messages=_strip_images(messages, m),
                         temperature=temperature,
+                        # 护栏开启时限制输出长度：不加 max_tokens 时模型按自身上限生成，
+                        # 长输出的单价是输入的数倍（36 元/百万 vs 12 元/百万）。
+                        **(
+                            {"max_tokens": budget_cfg.max_output_tokens}
+                            if budget_cfg.enforce
+                            else {}
+                        ),
                     )
                 except Exception as exc:  # 区分「可降级/可重试」与「真实错误」
                     if _is_auth_error(exc):
@@ -298,6 +359,7 @@ def chat_with_fallback(  # noqa: C901, PLR0912, PLR0915
                     raise LLMError(f"模型 {m} 调用失败：{type(exc).__name__}") from exc
                 # 成功：更新最优 (provider,model) 缓存并返回
                 _best_index[cache_key] = (p_idx, m_idx)
+                _record_resp_usage(resp, m, channel, budget_cfg, messages)
                 log.info(
                     "模型 %s（provider %s）调用成功（channel=%s）",
                     m,
@@ -309,10 +371,10 @@ def chat_with_fallback(  # noqa: C901, PLR0912, PLR0915
             continue
         # 该 provider 所有模型失败 → 下一 provider
 
-    raise LLMError(
-        f"all models in chain failed（共 {len(plist)} 个 provider）："
-        f"{type(last_err).__name__ if last_err else 'unknown'}"
-    )
+    detail = f"{type(last_err).__name__}" if last_err else "unknown"
+    if last_block_reason:
+        detail += f"；护栏拦截：{last_block_reason}"
+    raise LLMError(f"all models in chain failed（共 {len(plist)} 个 provider）：{detail}")
 
 
 def reset_fallback_cache() -> None:

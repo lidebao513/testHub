@@ -29,6 +29,11 @@ os.environ["DB_PATH"] = os.path.join(_TMP, "data", "testgen.db")
 os.environ["LOG_FORMAT"] = "text"
 os.environ.pop("AUTH_TOKEN", None)
 os.environ["LLM_ENHANCE"] = "off"
+# 成本护栏：测试默认关闭（既有用例测的是降级链逻辑，不该被付费关键字/日预算拦），
+# 护栏专项用例（test_llm_budget.py）自行 monkeypatch 开启。用量文件也指向临时目录，
+# 避免跑测试把真实 data/llm_usage.json 的日累计额度吃掉。
+os.environ["LLM_BUDGET_ENFORCE"] = "0"
+os.environ["LLM_USAGE_PATH"] = os.path.join(_TMP, "data", "llm_usage.json")
 
 import pytest
 

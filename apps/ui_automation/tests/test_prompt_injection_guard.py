@@ -74,6 +74,22 @@ class TestActionGuardDefaults:
         guard = ai_base._ActionGuard.for_task("打开 http://localhost:3900")
         assert guard.check('evaluate', {}) is None
 
+    @pytest.mark.parametrize(
+        'alias',
+        ['execute_js', 'run_js', 'evaluate_js', 'Execute-JS', 'execute_javascript', 'run_javascript'],
+    )
+    def test_js_aliases_blocked_by_semantic_guard(self, alias, monkeypatch):
+        """真机验证时 qwen 输出的动作名是 execute_js 而非 evaluate，只写精确名会漏拦。"""
+        monkeypatch.delenv('UI_BLOCKED_ACTIONS', raising=False)
+        guard = ai_base._ActionGuard.for_task("打开 http://localhost:3900")
+        assert guard.check(alias, {'code': '1'}) is not None
+
+    def test_semantic_guard_off_when_blocklist_is_explicit(self, monkeypatch):
+        """显式配置即完全接管，不再做语义兜底（否则用户无法放开某个动作）。"""
+        monkeypatch.setenv('UI_BLOCKED_ACTIONS', 'upload_file')
+        guard = ai_base._ActionGuard.for_task("打开 http://localhost:3900")
+        assert guard.check('execute_js', {'code': '1'}) is None
+
     def test_allowed_domains_merge_task_and_env(self, monkeypatch):
         monkeypatch.setenv('UI_ALLOWED_DOMAINS', 'api.example.com, .corp.local')
         guard = ai_base._ActionGuard.for_task("打开 http://localhost:3900")

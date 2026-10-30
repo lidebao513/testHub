@@ -218,16 +218,27 @@ def _contains_auth_failure_signal(text):
 # ③ 默认 warn 观察一段时间再切 strict。
 # ============================================================================
 
-# 高危动作：正常 UI 自动化用不到，是注入后「外发数据 / 落地后门」的主要手段
+# 高危动作：正常 UI 自动化用不到，是注入后「外发数据 / 落地后门」的主要手段。
+# 同时列了别名：模型/不同版本 browser-use 会把「执行 JS」写成 execute_js / run_js 等，
+# 只写 evaluate 会漏（真机验证时 qwen 就输出了 execute_js）。
 DEFAULT_BLOCKED_ACTIONS = frozenset(
     {
         'evaluate',  # 执行任意 JS → 可 fetch 把数据外发
+        'evaluate_js',
+        'execute_js',
+        'run_js',
+        'eval',
         'upload_file',  # 读本地文件并上传 → 数据外泄
         'read_file',  # 读本地文件
         'write_file',  # 写本地文件
         'replace_file',  # 改写本地文件
+        'edit_file',
     }
 )
+
+# 语义族兜底：不依赖精确名字，命中这些词根一律视为高危 JS 执行。
+# 仅在 UI_BLOCKED_ACTIONS 未显式配置时生效（显式配置即完全接管）。
+_BLOCKED_SEMANTIC_HINTS = ('evaluate', 'execute_js', 'run_js', 'javascript', 'eval_')
 
 # 仅匹配「显式 URL」里的域名，不猜裸域名（避免把普通单词当域名）
 _URL_HOST_RE = re.compile(r'https?://([^/\s:?#\'"]+)', re.IGNORECASE)
@@ -294,10 +305,12 @@ class _ActionGuard:
     - domain_mode：off / warn（默认，只记日志）/ strict（不在白名单的 URL 一律拒绝）
     """
 
-    def __init__(self, allowed_domains=None, blocked_actions=None, domain_mode='warn'):
+    def __init__(self, allowed_domains=None, blocked_actions=None, domain_mode='warn', semantic_guard=False):
         self.allowed_domains = set(allowed_domains or ())
         self.blocked_actions = set(blocked_actions or ())
         self.domain_mode = domain_mode if domain_mode in {'off', 'warn', 'strict'} else 'warn'
+        # 语义族兜底：UI_BLOCKED_ACTIONS 未显式配置时开启，防止动作改名后漏拦
+        self.semantic_guard = semantic_guard
         self._warned_hosts = set()
 
     @classmethod
@@ -316,12 +329,19 @@ class _ActionGuard:
         raw_blocked = os.getenv('UI_BLOCKED_ACTIONS')
         if raw_blocked is None:
             blocked = set(DEFAULT_BLOCKED_ACTIONS)
+            semantic_guard = True
         else:
-            # 显式配置即完全接管（空串表示不拦任何动作）
+            # 显式配置即完全接管（空串表示不拦任何动作，语义兜底也一并关闭）
             blocked = {name.strip().lower() for name in raw_blocked.split(',') if name.strip()}
+            semantic_guard = False
 
         mode = str(os.getenv('UI_DOMAIN_GUARD', 'warn')).strip().lower() or 'warn'
-        guard = cls(allowed_domains=allowed, blocked_actions=blocked, domain_mode=mode)
+        guard = cls(
+            allowed_domains=allowed,
+            blocked_actions=blocked,
+            domain_mode=mode,
+            semantic_guard=semantic_guard,
+        )
         logger.info(
             "🛡️ ActionGuard active: domain_mode=%s, allowed_domains=%s, blocked_actions=%s",
             guard.domain_mode,
@@ -330,10 +350,21 @@ class _ActionGuard:
         )
         return guard
 
+    def is_blocked_action(self, action_name):
+        """动作是否在黑名单内（含语义族兜底，防改名漏拦）。"""
+        name = str(action_name or '').strip().lower().replace('-', '_')
+        if not name:
+            return False
+        if name in self.blocked_actions:
+            return True
+        if self.semantic_guard and any(hint in name for hint in _BLOCKED_SEMANTIC_HINTS):
+            return True
+        return False
+
     def check(self, action_name, params):
         """返回拒绝原因字符串；None 表示放行。"""
-        name = str(action_name or '').strip().lower()
-        if name in self.blocked_actions:
+        name = str(action_name or '').strip().lower().replace('-', '_')
+        if self.is_blocked_action(action_name):
             return f"action '{name}' is disabled by security policy (UI_BLOCKED_ACTIONS)"
 
         if self.domain_mode == 'off':
@@ -361,6 +392,30 @@ class _ActionGuard:
                     sorted(self.allowed_domains) or 'none',
                 )
         return None
+
+
+def _assert_cost_allowed(model_name: str) -> None:
+    """成本护栏：付费档模型 / 当日预算到顶 → 抛 ValueError 拒跑。
+
+    为什么在 AI 用例这里格外重要：browser-use 每一步都把**完整 DOM** 重新塞进输入，
+    一条 20 步的用例轻松几十万 input token。而百炼免费额度耗尽后会自动转按量计费
+    （不报错、不中断），一次「顺手跑一条用例」就可能是十几元。
+
+    抽成独立函数而不是写在 `__init__` 里，是为了能脱离 agent 构造直接单测。
+    """
+    from apps.requirement_analysis import llm_budget
+
+    cfg = llm_budget.load_settings()
+    if not cfg.enforce:
+        return
+    reason = llm_budget.check_model_allowed(model_name or '', cfg)
+    if not reason:
+        used = int(llm_budget.day_usage(cfg.usage_path).get('total') or 0)
+        if used >= cfg.daily_token_budget:
+            reason = f'当日已用 {used} token 已达上限 {cfg.daily_token_budget}'
+    if reason:
+        logger.warning(f"🛡️ AI 用例被成本护栏拒绝：{reason}")
+        raise ValueError(f"[cost-guard] {reason}")
 
 
 def _security_boundary_prompt():
@@ -1172,6 +1227,11 @@ class BaseBrowserAgent:
 
         if not self.api_key:
             raise ValueError(f"No API Key found for mode: {execution_mode}")
+
+        # 成本护栏（M-cost）：AI 用例是**单价最高**的用法——browser-use 每一步都把完整 DOM
+        # 作为输入重发，一条用例轻松几十万 token。付费档模型在免费额度耗尽后会被静默转按量计费，
+        # 所以这里在创建 agent 之前就拦，失败即拒跑，不进入执行。
+        _assert_cost_allowed(self.model_name or '')
 
         # 智能temperature处理：特殊模型强制使用特定temperature值
         # 格式: {'模型名称关键字': temperature值}
