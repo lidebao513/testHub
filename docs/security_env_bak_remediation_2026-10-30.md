@@ -17,9 +17,12 @@
 
 ## 2. 已完成（仓库侧，`ae91bce`）
 
+> 本文档与清理脚本本身已入库：`7aecc07`（docs）；`.gitattributes` 换行策略（`*.sh` 固定 LF）随 `74f3c50` 落地，避免 clone 后脚本带 CRLF 无法执行。
+
 1. `.gitignore`：新增 `.env.bak` / `.env.*.bak` / `.env.local` / `.env.*.local`，并把失效的 `.bak` 改为 `*.bak`；
 2. `git rm --cached .env.bak`：从索引移除（**本地文件保留**，服务不受影响）；
 3. 验证：`git check-ignore -v .env.bak` → 命中 `.gitignore:32:*.bak`；`git status` 里不再出现该文件。
+4. 顺带清理（`74f3c50`）：`media/judge_kb/financial_kb.json.bak` 停止跟踪（运行时备份、全仓无代码引用、原文件 `financial_kb.json` 仍在库中，本地文件保留）；`.gitignore` 新增 `*.rdb`（Memurai/Redis 落盘快照）。
 
 顺带审计结论（**无需处理**，仅登记避免重复排查）：
 
@@ -54,9 +57,9 @@
 
 | 项 | 数值/说明 |
 |---|---|
-| 提交总数 | 255（含本次处置提交 `ae91bce`） |
+| 提交总数 | 257（随提交增长；**执行前以脚本输出为准**） |
 | 涉及 `.env.bak` 的提交 | 2（`19a0f7d` 添加、`ae91bce` 删除） |
-| 会被重写 hash 的提交 | 首次引入 `19a0f7d` 之后的 **47 个**（含当前 HEAD） |
+| 会被重写 hash 的提交 | 首次引入 `19a0f7d` 之后的 **49 个**（含当前 HEAD；同上，以脚本输出为准） |
 | 远端 | `origin/main` 需 `--force-with-lease` 推送 |
 | 协作者 | 必须删除本地仓重新 clone，**禁止 pull/merge** 旧历史 |
 | 备份 | 脚本自动 `git clone --mirror` 到仓库父目录，备份包内含真实凭据，处置完应删除或离线保存 |
