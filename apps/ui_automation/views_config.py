@@ -196,6 +196,7 @@ class EnvironmentConfigViewSet(viewsets.ViewSet):
 
 
 import requests
+from apps.requirement_analysis import llm_budget
 from apps.requirement_analysis.models import AIModelConfig
 
 class AIIntelligentModeConfigViewSet(viewsets.ViewSet):
@@ -238,6 +239,15 @@ class AIIntelligentModeConfigViewSet(viewsets.ViewSet):
                     {'error': f'{field} is required'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+
+        # 写入前经新护栏校验：登记在册的模型必须开启/文本类/未过期（第三方模型放行）。
+        # 放在「禁用其他配置」之前，避免校验失败却已经把别的配置禁用掉。
+        reason = llm_budget.assert_text_model(data.get('model_name', ''))
+        if reason:
+            return Response(
+                {'error': f'模型校验未通过：{reason}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # 如果创建时启用，先禁用其他所有配置
         if data.get('is_active', True):

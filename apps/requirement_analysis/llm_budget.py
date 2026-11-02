@@ -703,6 +703,32 @@ def _registry_reject_reason(model: str, entry: dict[str, Any]) -> str:
     )
 
 
+def assert_text_model(model: str) -> str:
+    """配置落库前的强校验：模型若在 `LLM_MODEL_REGISTRY` 登记在册，必须「开启 + 文本类 + 未过期」。
+
+    与运行时节点的 `check_model_registry` 分工（刻意不同）：
+    - `check_model_registry` 对**不在册**的模型放行——它是调用前的增强校验，不能因为某人配了个
+      没登记的第三方模型就把调用打死；
+    - 本函数是**配置写入 AIModelConfig 前**的闸门：登记册一旦启用，凡是登记在册的模型就必须满足
+      开启/类型/到期三要素，否则不允许存库。否则页面上能存下音频模型 / 已过期模型 / 已关闭模型，
+      看起来保存成功，直到真正调用时才被拦——把错误推迟到最坏时机，排查成本最高。
+
+    返回拒绝原因；空串表示通过。
+    """
+    name = (model or "").strip()
+    if not name:
+        return "模型名为空"
+    raw = _env("LLM_MODEL_REGISTRY")
+    if not raw:
+        # 登记册未启用：不阻断（保持未接入登记册时的旧行为，允许任意第三方模型）
+        return ""
+    entry = _parse_registry(raw).get(name.lower())
+    if not entry:
+        # 不在册：放行（第三方/自建模型无需登记）
+        return ""
+    return _registry_reject_reason(model, entry)
+
+
 def _remaining_text(minutes_left: int | None, days_left: int | None) -> str:
     """剩余时间提示（未触发禁用闸时的友好说明）；无需提示返回空串。"""
     if days_left is not None and days_left <= 0 and minutes_left is not None:

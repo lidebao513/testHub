@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from apps.requirement_analysis import llm_budget
 from .models import (
     RequirementDocument, RequirementAnalysis, BusinessRequirement,
     GeneratedTestCase, AnalysisTask, AIModelConfig, PromptConfig, TestCaseGenerationTask,
@@ -182,7 +183,17 @@ class AIModelConfigSerializer(serializers.ModelSerializer):
             else:
                 return '*' * len(obj.api_key)
         return ''
-    
+
+    def validate_model_name(self, value):
+        """写入前经新护栏校验：登记在册的模型必须开启/文本类/未过期。
+
+        不在册的第三方模型放行（与运行时节点的 check_model_registry 一致）。
+        """
+        reason = llm_budget.assert_text_model(value)
+        if reason:
+            raise serializers.ValidationError(reason)
+        return value
+
     def create(self, validated_data):
         # 自动设置创建者
         user = self.context['request'].user

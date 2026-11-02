@@ -122,6 +122,42 @@ class TestModelGate:
         assert d.allowed is False
         assert d.scope == "global"
 
+    # --- 写入闸门 assert_text_model：配置落库前的强校验 ---
+
+    def test_assert_text_model_disabled_registry_passes(self, usage_tmp, monkeypatch):
+        """登记册未启用（空串）：不阻断，保持旧行为允许第三方模型；但空名仍报错。"""
+        monkeypatch.setenv("LLM_MODEL_REGISTRY", "")
+        assert llm_budget.assert_text_model("my-private-gpt") == ""
+        assert llm_budget.assert_text_model("") == "模型名为空"
+
+    def test_assert_text_model_unregistered_passes(self, usage_tmp, monkeypatch):
+        """不在册的第三方模型放行（不强制登记）。"""
+        monkeypatch.setenv("LLM_MODEL_REGISTRY", "deepseek-v4-pro-0813|llm|2099-12-31|on")
+        assert llm_budget.assert_text_model("my-private-gpt") == ""
+
+    def test_assert_text_model_registered_ok_passes(self, usage_tmp, monkeypatch):
+        """在册 + 开启 + 文本类 + 未过期：通过。"""
+        monkeypatch.setenv("LLM_MODEL_REGISTRY", "deepseek-v4-pro-0813|llm|2099-12-31|on")
+        assert llm_budget.assert_text_model("deepseek-v4-pro-0813") == ""
+
+    def test_assert_text_model_registered_off_rejected(self, usage_tmp, monkeypatch):
+        """在册但开关=off：拒绝。"""
+        monkeypatch.setenv("LLM_MODEL_REGISTRY", "glm-5.3|llm|2099-12-31|off")
+        reason = llm_budget.assert_text_model("glm-5.3")
+        assert reason and "已关闭" in reason
+
+    def test_assert_text_model_audio_rejected(self, usage_tmp, monkeypatch):
+        """在册但类型=audio（语音合成/识别）：拒绝，不能进文本链路。"""
+        monkeypatch.setenv("LLM_MODEL_REGISTRY", "sambert-zh-v1|audio|2099-12-31|on")
+        reason = llm_budget.assert_text_model("sambert-zh-v1")
+        assert reason and "非文本对话" in reason
+
+    def test_assert_text_model_expired_rejected(self, usage_tmp, monkeypatch):
+        """在册但已过期：拒绝。"""
+        monkeypatch.setenv("LLM_MODEL_REGISTRY", "qwen-old|llm|2020-01-01|on")
+        reason = llm_budget.assert_text_model("qwen-old")
+        assert reason and "到期" in reason
+
 
 class TestCallChain:
     def test_model_chain_parsing(self):
