@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -143,6 +144,15 @@ class GenerationTask:
 class TaskStore:
     """`gen_tasks` 表读写；每操作独立连接，线程安全。"""
 
+    #: 已取消任务的内存标志上限（超出按插入顺序淘汰最旧，防长期运行内存增长）
+    _CANCEL_FLAG_LIMIT = 1000
+
+    def __init__(self) -> None:
+        # M19：已取消任务的进程内快路径缓存。只缓存「已取消」这一确定态——
+        # 未取消的任务仍回查 DB，保证多进程 / 重启后取消语义依旧正确。
+        self._cancelled: dict[str, bool] = {}
+        self._cancel_lock = threading.Lock()
+
     def create(
         self,
         *,
@@ -235,12 +245,59 @@ class TaskStore:
         ):
             return False
         self.update(task_id, state=TaskState.CANCELLED.value, finished_at=_now())
+        self._mark_cancelled(task_id)
         return True
+
+    def try_start(self, task_id: str) -> bool:
+        """`pending → running` 的原子迁移，返回是否抢到执行权（M12）。
+
+        用单条 `UPDATE ... WHERE state='pending'` 做 compare-and-set：排队期间被
+        `cancel()` 置为 `cancelled` 的任务 rowcount 为 0，**绝不会被覆盖回 `running`**。
+        两段式「先 is_cancelled() 再 update」仍留 TOCTOU 窗口，故不采用。
+        """
+        conn = connect()
+        try:
+            cur = conn.execute(
+                "UPDATE gen_tasks SET state = ?, started_at = ?, updated_at = ? "
+                "WHERE task_id = ? AND state = ?",
+                (
+                    TaskState.RUNNING.value,
+                    _now(),
+                    _now(),
+                    task_id,
+                    TaskState.PENDING.value,
+                ),
+            )
+            conn.commit()
+            return cur.rowcount == 1
+        finally:
+            conn.close()
 
     def is_cancelled(self, task_id: str) -> bool:
         """运行中作业通过此标志做协作式取消检查（cancel 已置 cancelled 即返回 True）。"""
-        task = self.get(task_id)
-        return task is not None and task.state == TaskState.CANCELLED.value
+        with self._cancel_lock:
+            if self._cancelled.get(task_id):
+                return True  # 快路径：O(1)、零 IO（取消后的进度回调最密集）
+        task = self.get(task_id)  # 慢路径：跨进程 / 重启后仍读 DB 真值
+        if task is not None and task.state == TaskState.CANCELLED.value:
+            self._mark_cancelled(task_id)
+            return True
+        return False
+
+    def forget(self, task_id: str) -> None:
+        """任务进入终态后清理内存标志（由执行器调用，防长期运行内存增长）。"""
+        with self._cancel_lock:
+            self._cancelled.pop(task_id, None)
+
+    def _mark_cancelled(self, task_id: str) -> None:
+        with self._cancel_lock:
+            self._cancelled[task_id] = True
+            if len(self._cancelled) > self._CANCEL_FLAG_LIMIT:
+                # dict 保序：丢弃最早的若干条（其任务早已终态，回退 DB 仍能读到 cancelled）
+                for stale in list(self._cancelled)[
+                    : len(self._cancelled) - self._CANCEL_FLAG_LIMIT
+                ]:
+                    self._cancelled.pop(stale, None)
 
     def list_recent(self, limit: int = 10) -> list[GenerationTask]:
         conn = connect()
@@ -309,8 +366,16 @@ class BackgroundExecutor:
 
         def _run() -> None:
             try:
+                # M12：pending→running 用条件更新原子抢占；排队期间已被取消则不执行作业，
+                # 也不会把 cancelled 覆盖回 running。
                 # 首个写操作也纳入兜底：写库失败时（如库只读）以 FAILED 终态落库而非线程崩溃
-                self._store.update(task_id, state=TaskState.RUNNING.value, started_at=_now())
+                if not self._store.try_start(task_id):
+                    log.info(
+                        "任务在启动前已取消或已终态，跳过执行",
+                        extra=log_extra(task_id=task_id),
+                    )
+                    self._store.forget(task_id)
+                    return
                 result = job()
                 # 运行期间被取消：以 cancelled 终态覆盖 success（取消优先于完成）
                 if self._store.is_cancelled(task_id):
@@ -319,6 +384,7 @@ class BackgroundExecutor:
                         state=TaskState.CANCELLED.value,
                         finished_at=_now(),
                     )
+                    self._store.forget(task_id)
                     return
                 self._store.update(
                     task_id,
@@ -328,6 +394,7 @@ class BackgroundExecutor:
                     stage="done",
                     finished_at=_now(),
                 )
+                self._store.forget(task_id)
             except TaskCancelledError:
                 # 进度回调检出取消标志主动中断：置 cancelled，error 记为用户取消
                 self._store.update(
@@ -336,6 +403,7 @@ class BackgroundExecutor:
                     error="任务已被用户取消",
                     finished_at=_now(),
                 )
+                self._store.forget(task_id)
             except Exception as exc:  # 任务失败须兜住并如实落库，绝不冒泡到 worker
                 log.error(
                     "生成任务失败",
@@ -348,6 +416,7 @@ class BackgroundExecutor:
                     error=str(exc)[:500],
                     finished_at=_now(),
                 )
+                self._store.forget(task_id)
 
         self._pool.submit(_run)
 

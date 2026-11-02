@@ -237,11 +237,11 @@
           </div>
           <div class="detail-item">
             <label>{{ $t('generatedTestCases.testSteps') }}</label>
-            <p class="test-steps" v-html="selectedTestCaseDetail.test_steps"></p>
+            <p class="test-steps" v-html="sanitizeHtml(selectedTestCaseDetail.test_steps)"></p>
           </div>
           <div class="detail-item">
             <label>{{ $t('generatedTestCases.expectedResult') }}</label>
-            <p v-html="selectedTestCaseDetail.expected_result"></p>
+            <p v-html="sanitizeHtml(selectedTestCaseDetail.expected_result)"></p>
           </div>
           <div class="detail-item" v-if="selectedTestCaseDetail.review_comments">
             <label>{{ $t('generatedTestCases.reviewComments') }}</label>
@@ -381,6 +381,7 @@
 
 <script>
 import api from '@/utils/api'
+import { sanitizeHtml } from '@/utils/sanitize'
 import { ElMessage } from 'element-plus'
 
 export default {

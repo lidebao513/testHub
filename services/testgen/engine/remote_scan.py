@@ -19,7 +19,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from engine import diff_tag, scan as _scan
+from engine import diff_tag
+from engine import scan as _scan
 from engine.codeup_client import CodeupClient, CodeupError, parse_repo_to_repo_id
 
 

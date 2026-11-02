@@ -1,17 +1,20 @@
-# -*- coding: utf-8 -*-
 """UI 层端到端测试：扫描树组头全选框 + 测试点可读性（标题/验证内容/预期）。
 
 真实用户路径：打开 :8900/testgen/ → 扫描 → 操作组头全选框（全选/半选/全不选）→
 只保留少量文件 → 生成 → 终态后断言测试点行内出现「💬 验证内容」与「✔ 预期」。
 """
+
 import sys
 import time
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+
 CONSOLE_URL = "http://127.0.0.1:8900/testgen/"
-REPO_PATH = r"C:\Users\EDY\WorkBuddy\testhub_platform\services\testgen\data\workspaces\research-agent"
+REPO_PATH = (
+    r"C:\Users\EDY\WorkBuddy\testhub_platform\services\testgen\data\workspaces\research-agent"
+)
 BASE_REF = "oa-20260909"
 TARGET_REF = "master"
 KEEP = 3  # 生成时只保留前 3 个文件，压缩耗时
@@ -25,9 +28,7 @@ def badge_state(page) -> str:
 
 def main() -> int:
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True, channel="msedge", args=["--no-proxy-server"]
-        )
+        browser = p.chromium.launch(headless=True, channel="msedge", args=["--no-proxy-server"])
         page = browser.new_page(viewport={"width": 1600, "height": 1000})
         page.goto(CONSOLE_URL, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_selector("#btn_scan", timeout=15000)
@@ -88,12 +89,12 @@ def main() -> int:
         head = page.locator(".scan-group-cb").first
         group_name = head.get_attribute("data-group")
         head.uncheck()
-        n_chk, n_all, hc, ind = wait_stats("none")
+        n_chk, n_all, _hc, ind = wait_stats("none")
         assert n_all > 0 and n_chk == 0, f"组头取消未清空整组 ({n_chk}/{n_all})"
         print(f"[3] 组头取消 → 整组清空 OK（{group_name}: 0/{n_all}）")
 
         head.check()
-        n_chk, n_all, hc, ind = wait_stats("all")
+        n_chk, n_all, _hc, ind = wait_stats("all")
         assert n_chk == n_all, f"组头勾选未同步整组 ({n_chk}/{n_all})"
         print(f"[4] 组头勾选 → 整组全选 OK（{n_chk}/{n_all}）")
 
@@ -105,7 +106,7 @@ def main() -> int:
         # 半选态（checked=false + indeterminate）：真实用户点击 = 全选；Playwright uncheck 会
         # 因 checked=false 跳过点击，故先 check()（半选→全选，等效真实点击），再 uncheck 清空
         head.check()
-        n_chk, n_all, hc, _ = wait_stats("all")
+        n_chk, n_all, _hc, _ = wait_stats("all")
         assert n_chk == n_all, f"半选态点击未变为全选 ({n_chk}/{n_all})"
         print(f"[6] 半选态点击 → 全选 OK（{n_chk}/{n_all}）")
 
@@ -158,7 +159,7 @@ def main() -> int:
                 .slice(1, 4).map(r => r.cells[1].textContent.trim().slice(0, 120))
             })"""
         )
-        print("[8] 测试点表格：行=%(rows)s 验证内容=%(sem)s 预期=%(exp)s" % stats)
+        print(f"[8] 测试点表格：行={stats['rows']} 验证内容={stats['sem']} 预期={stats['exp']}")
         for s in stats["sample"]:
             print("    •", s.replace("\n", " ⏎ "))
         page.screenshot(path=str(SHOTS / "12_tp_readable.png"), full_page=True)

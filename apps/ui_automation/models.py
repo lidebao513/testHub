@@ -592,6 +592,8 @@ class TestCase(models.Model):
     project = models.ForeignKey(UiProject, on_delete=models.CASCADE, related_name='test_cases', verbose_name='所属项目')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft', verbose_name='状态')
     priority = models.CharField(max_length=10, choices=PRIORITY_CHOICES, default='medium', verbose_name='优先级')
+    # 迁移 0003_testcase_tags 已建该列，模型此前漏字段导致漂移（与 apirequest.tags 同类）
+    tags = models.JSONField(blank=True, default=list, verbose_name='标签')
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='created_test_cases', verbose_name='创建人')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
@@ -1048,6 +1050,10 @@ class AIExecutionRecord(models.Model):
     executed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, verbose_name='执行人')
     gif_path = models.CharField(max_length=500, null=True, blank=True, verbose_name='GIF录制路径')
     screenshots_sequence = models.JSONField(default=list, verbose_name='截图序列')
+    # 表结构已存在该列，模型此前缺失（AI 用例由生成任务衍生时的溯源标记）
+    source_generation_task = models.CharField(
+        max_length=64, null=True, blank=True, verbose_name='来源生成任务ID'
+    )
 
     class Meta:
         db_table = 'ui_ai_execution_records'

@@ -11,6 +11,7 @@
 target 提供 url/method/host/port（通用字段），config 为解密后的 check_config（特异性配置）。
 """
 import base64
+import os
 import re
 import socket
 import time
@@ -23,7 +24,15 @@ import requests
 from jsonpath_ng import parse as jsonpath_parse
 from jsonpath_ng.exceptions import JsonPathParserError
 
+from .sql_safe import is_safe_sql_identifier, is_safe_where_clause
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+# H10 修复：TLS 证书校验默认开启（verify=True）。仅对确需自签证书的受信内网端点，
+# 设置环境变量 PROBE_TLS_VERIFY=0 才放宽；严禁在调用处写死关闭校验。
+def _tls_verify() -> bool:
+    return os.environ.get("PROBE_TLS_VERIFY", "1") != "0"
 
 
 # SL651 默认测试报文（与原脚本一致，已验证可收发）
@@ -349,7 +358,7 @@ def _login(login_cfg, target_method=None, target_host=None, target_port=None, ta
 
     t0 = time.monotonic()
     try:
-        resp = requests.request(method, login_url, json=body, timeout=timeout, verify=False)
+        resp = requests.request(method, login_url, json=body, timeout=timeout, verify=_tls_verify())
         ms = int((time.monotonic() - t0) * 1000)
         data = _safe_json_dict(resp)
 
@@ -471,7 +480,7 @@ def probe_http(target, cfg):
     t0 = time.monotonic()
     try:
         resp = requests.request(method, url, headers=headers, params=params,
-                                timeout=timeout, verify=False, **req_kw)
+                                timeout=timeout, verify=_tls_verify(), **req_kw)
         ms = int((time.monotonic() - t0) * 1000)
         if check_type == "json_code":
             expect = int(cfg.get("expect_code", 200))
@@ -544,7 +553,7 @@ def probe_online(target, cfg):
     t0 = time.monotonic()
     try:
         resp = requests.request(method, url, json=payload, headers=headers,
-                                timeout=timeout, verify=False)
+                                timeout=timeout, verify=_tls_verify())
         ms = int((time.monotonic() - t0) * 1000)
         if resp.status_code != 200:
             return ProbeResult(False, f"HTTP {resp.status_code}", ms, resp.status_code,
@@ -586,7 +595,7 @@ def probe_docker(target, cfg):
 
     t0 = time.monotonic()
     try:
-        resp = requests.get(url, timeout=timeout, verify=False)
+        resp = requests.get(url, timeout=timeout, verify=_tls_verify())
         ms = int((time.monotonic() - t0) * 1000)
         if resp.status_code != 200:
             return ProbeResult(False, f"Docker API HTTP {resp.status_code}", ms, resp.status_code,
@@ -634,6 +643,17 @@ def _sl651_db_check(db):
         import pymysql
     except ImportError:
         return False, "pymysql 未安装", {}
+    # H9 修复：先校验表名/字段名/WHERE 条件合法性，再建连与拼 SQL，
+    # 避免无效/恶意输入（如 table='x; DROP TABLE y'）触发数据库连接与危险语句拼接。
+    table = db.get("table")
+    time_field = db.get("time_field")
+    if not is_safe_sql_identifier(table):
+        return False, f"非法的表名标识符：{table!r}", {}
+    if not is_safe_sql_identifier(time_field):
+        return False, f"非法的字段标识符：{time_field!r}", {}
+    where = db.get("where_clause")
+    if where and not is_safe_where_clause(where):
+        return False, "非法的 WHERE 条件（含危险字符或关键字）", {}
     try:
         conn = pymysql.connect(
             host=db["host"], port=int(db["port"]), user=db["user"],
@@ -641,10 +661,8 @@ def _sl651_db_check(db):
             connect_timeout=int(db.get("connect_timeout", 10)), charset="utf8mb4",
         )
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            where = db.get("where_clause")
             where_sql = f"WHERE {where}" if where else ""
-            time_field = db["time_field"]
-            sql = f"SELECT * FROM {db['table']} {where_sql} ORDER BY {time_field} DESC LIMIT 1"
+            sql = f"SELECT * FROM {table} {where_sql} ORDER BY {time_field} DESC LIMIT 1"
             cursor.execute(sql)
             row = cursor.fetchone()
         conn.close()

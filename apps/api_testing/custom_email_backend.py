@@ -1,5 +1,6 @@
 from django.core.mail.backends.smtp import EmailBackend
 from django.conf import settings
+import os
 import ssl
 import smtplib
 
@@ -9,9 +10,13 @@ class CustomEmailBackend(EmailBackend):
         """打开SMTP连接，使用自定义SSL上下文"""
         if self.connection:
             return False
-        
-        # 创建SSL上下文，禁用证书验证
-        ssl_context = ssl._create_unverified_context()
+
+        # H10 修复：默认使用受信 CA 校验证书；仅对确需自签证书的内部 SMTP，
+        # 设置环境变量 EMAIL_TLS_VERIFY=0 才放宽校验。严禁默认关闭校验。
+        if os.environ.get("EMAIL_TLS_VERIFY", "1") == "0":
+            ssl_context = ssl._create_unverified_context()
+        else:
+            ssl_context = ssl.create_default_context()
         
         try:
             if self.use_ssl:

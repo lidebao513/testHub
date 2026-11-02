@@ -26,15 +26,19 @@ from apps.testcases.models import TestCase
 from . import flow
 from .client import (
     cancel_task,
+    classify_sidecar_error,
     describe,
     generate,
     get_cases,
+    is_sidecar_available,
     list_branches,
     list_commits,
     quality_summary,
     scan,
     task_cases,
+    verdict,
 )
+from .defects import create_security_defect_orm
 from .mapping import TESTGEN_ID_TAG_PREFIX
 
 # 用 testhub 约定解析请求体（标题/步骤最大长度等由模型约束兜底）
@@ -69,10 +73,8 @@ class TestgenGenerateView(APIView):
             )
         except ValueError as exc:  # 红线守卫
             return Response({"ok": False, "error": str(exc)}, status=400)
-        except Exception as exc:  # noqa: BLE001 - 网络/服务异常统一转 502
-            return Response(
-                {"ok": False, "error": f"调用 testgen 失败：{exc}"}, status=502
-            )
+        except Exception as exc:  # noqa: BLE001 - 网络/服务异常：不可达 503、其它 502
+            return _sidecar_error_response(exc)
         return Response(
             {
                 "ok": True,
@@ -102,10 +104,8 @@ class TestgenSyncView(APIView):
 
         try:
             cases = get_cases(int(testgen_project_id))
-        except Exception as exc:  # noqa: BLE001
-            return Response(
-                {"ok": False, "error": f"获取 testgen 用例失败：{exc}"}, status=502
-            )
+        except Exception as exc:  # noqa: BLE001 - 不可达 503、其它 502
+            return _sidecar_error_response(exc)
 
         author_id = request.user.id
 
@@ -137,8 +137,51 @@ class TestgenSyncView(APIView):
 
 
 def _sidecar_error_response(exc: Exception) -> Response:
-    """testgen sidecar 不可达/超时/非 2xx → 统一 502 友好提示（G2/G7）。"""
-    return Response({"ok": False, "error": f"调用 testgen 失败：{exc}"}, status=502)
+    """testgen sidecar 异常 → 统一友好提示。
+
+    状态码区分（G2）：
+      - sidecar 不可达/超时 → 503（服务未启动，运维动作明确）
+      - sidecar 返回错误/响应异常 → 502（上游错误）
+    """
+    status_code = classify_sidecar_error(exc)
+    if status_code == 503:
+        message = f"testgen sidecar 不可达，请确认服务已启动：{exc}"
+    else:
+        message = f"调用 testgen 失败：{exc}"
+    return Response({"ok": False, "error": message}, status=status_code)
+
+
+def execute_security_verdict(body: dict[str, Any], *, user_id: int) -> tuple[dict[str, Any], int]:
+    """对一批用例观测执行安全裁决，应拒却放通时自动建缺陷（G3/G4/G5 编排）。
+
+    返回 ``(payload, http_status)``，便于端点与执行钩子复用同一套编排：
+      - observations 缺失/非数组 → 400
+      - sidecar 不可达 → 503（先探活，避免无谓的批量失败）
+      - 正常 → 200，{ok, total, security_cases, unsafe, defects_created, skipped, details}
+    """
+    observations = body.get("observations")
+    if not isinstance(observations, list) or not observations:
+        return {"ok": False, "error": "observations 必填且需为非空数组"}, 400
+
+    available, detail = is_sidecar_available()
+    if not available:
+        # 探活失败统一按「不可达」上报，文案含关键词便于前端/运维识别
+        message = detail if "不可达" in detail else f"testgen sidecar 不可达：{detail}"
+        return {"ok": False, "error": message}, 503
+
+    default_project_id = body.get("project_id")
+    if default_project_id:
+        for obs in observations:
+            if isinstance(obs, dict) and not obs.get("project_id"):
+                obs["project_id"] = default_project_id
+
+    result = flow.run_security_verdict(
+        observations,
+        verdict_fn=verdict,
+        create_defect=create_security_defect_orm,
+        reporter_id=user_id,
+    )
+    return {"ok": True, **result}, 200
 
 
 class TestgenBranchesView(APIView):

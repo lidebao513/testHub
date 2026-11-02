@@ -26,6 +26,10 @@ os.environ["DATA_DIR"] = os.path.join(_TMP, "data")
 os.environ["OUTPUT_DIR"] = os.path.join(_TMP, "outputs")
 os.environ["WORKSPACE_ROOT"] = os.path.join(_TMP, "workspaces")
 os.environ["DB_PATH"] = os.path.join(_TMP, "data", "testgen.db")
+# 关掉 WAL：WAL 的 `-wal`/`-shm` 会在事务提交时被 SQLite 删除/截断，本机 safe-delete 拦截后
+# fail-closed 会把库瞬时置为只读——表现为「attempt to write a readonly database」的跨用例颤动
+# （典型受害者：test_api_execute 的后台线程在写 success 终态）。DELETE 模式不产生这两个文件。
+os.environ["DB_JOURNAL_MODE"] = "DELETE"
 os.environ["LOG_FORMAT"] = "text"
 os.environ.pop("AUTH_TOKEN", None)
 os.environ["LLM_ENHANCE"] = "off"
@@ -34,6 +38,10 @@ os.environ["LLM_ENHANCE"] = "off"
 # 避免跑测试把真实 data/llm_usage.json 的日累计额度吃掉。
 os.environ["LLM_BUDGET_ENFORCE"] = "0"
 os.environ["LLM_USAGE_PATH"] = os.path.join(_TMP, "data", "llm_usage.json")
+# 免费额度耗尽标记同样指到临时目录：否则测试里构造的 403 会把假模型名
+# （如 m0/m1）写进真实 data/llm_quota_state.json，污染后续运行。
+os.environ["LLM_QUOTA_STATE_PATH"] = os.path.join(_TMP, "data", "llm_quota_state.json")
+os.environ["LLM_REGISTRY_BASELINE_PATH"] = os.path.join(_TMP, "data", "llm_registry_baseline.json")
 
 import pytest
 

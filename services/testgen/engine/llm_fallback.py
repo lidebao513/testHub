@@ -32,8 +32,11 @@ from core.llm_budget import (
     check_call,
     estimate_messages_tokens,
     estimate_tokens,
+    is_free_tier_exhausted,
     load_settings,
+    mark_quota_exhausted,
     record_usage,
+    sort_chain_by_expiry,
 )
 from core.log import get_logger
 
@@ -246,10 +249,15 @@ def chat_with_fallback(  # noqa: C901, PLR0912, PLR0915
       若已是最后一个 provider，则按旧行为**直接判死**（与单 provider 测试一致）；
     - 全链失败 → 抛 LLMError("all models in chain failed")。
     """
+    budget_cfg = load_settings()
     if providers:
         plist = [p for p in providers if p.get("api_key") and p.get("base_url")]
     else:
         chain = [m for m in (model_chain or []) if m] or ([model] if model else [])
+        # 用完即停：护栏开启时按**到期时刻升序**重排，优先消耗快到期的模型（免得没用完就作废）。
+        # 护栏关闭（测试/特殊场景）时保持调用方书写顺序，避免改变既有行为。
+        if chain and budget_cfg.enforce:
+            chain = sort_chain_by_expiry(chain)
         plist = []
         if api_key and base_url:
             plist.append(
@@ -274,7 +282,6 @@ def chat_with_fallback(  # noqa: C901, PLR0912, PLR0915
         raise LLMError("未安装 openai 依赖，无法调用 LLM") from exc
 
     last_err: Exception | None = None
-    budget_cfg = load_settings()
     last_block_reason = ""
     for p_idx in order_p:
         prov = plist[p_idx]
@@ -292,7 +299,10 @@ def chat_with_fallback(  # noqa: C901, PLR0912, PLR0915
             if p_idx < len(plist) - 1:
                 continue
             raise LLMError(f"厂商 {prov.get('label', '?')} 未配置可用模型")
-        start_m = best[1] if p_idx == best[0] else 0
+        # 护栏开启时**始终从链头开始**：链已按到期时刻升序排好，链头就是最该优先消耗的。
+        # 若沿用「上次成功的模型下标」会跳过链头，导致快到期的模型没用完就作废。
+        # 不可用模型已被 check_call 本地零成本拦下，不需要靠缓存来规避。
+        start_m = best[1] if (p_idx == best[0] and not budget_cfg.enforce) else 0
         order_m = list(range(start_m, len(models))) + list(range(0, start_m))
         for m_idx in order_m:
             m = models[m_idx]
@@ -337,7 +347,15 @@ def chat_with_fallback(  # noqa: C901, PLR0912, PLR0915
                         raise LLMError(f"模型 {m} 调用失败：{type(exc).__name__}") from exc
                     if _is_quota_unavailable(exc):
                         last_err = exc
-                        log.warning("模型 %s 额度/限流不可用，降级到下一个", m)
+                        # 免费额度耗尽（FreeTierOnly）是一等信号：落盘标记后，后续调用在
+                        # check_call 里本地直接跳过，不必每次都撞 403 才知道。
+                        if is_free_tier_exhausted(exc):
+                            mark_quota_exhausted(
+                                m,
+                                message=str(getattr(exc, "message", "") or "")[:300],
+                            )
+                        else:
+                            log.warning("模型 %s 额度/限流不可用，降级到下一个", m)
                         break
                     if _is_transient_error(exc):
                         last_err = exc

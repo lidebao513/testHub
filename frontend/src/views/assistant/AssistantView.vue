@@ -156,6 +156,7 @@ import { useUserStore } from '@/stores/user'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Delete, ChatDotRound, User, Cpu, Promotion, Loading, UserFilled, ArrowDown } from '@element-plus/icons-vue'
 import api from '@/utils/api'
+import { sanitizeHtml } from '@/utils/sanitize'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -216,11 +217,12 @@ const formatDate = (dateString) => {
 
 const formatMessageContent = (content) => {
   if (!content) return ''
-  // 简单的 markdown 处理，实际项目中建议使用 markdown-it
-  return content
+  // 简单的 markdown 处理，实际项目中建议使用 markdown-it；结果必须经 DOMPurify 净化防 XSS
+  const raw = content
     .replace(/\n/g, '<br>')
     .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
+  return sanitizeHtml(raw)
 }
 
 const scrollToBottom = () => {

@@ -68,5 +68,35 @@ class TestHealthAndPull(unittest.TestCase):
         self.assertTrue(post.call_args[0][0].endswith("/api/v1/pull"))
 
 
+class TestQualitySummary(unittest.TestCase):
+    """M13/M14：quality_summary 需真正并发（as_completed），且顶层 ok 以「是否抛异常」为准。"""
+
+    def test_all_ok_true_when_all_succeed(self):
+        """四项均返回业务数据（无 ok 键）时 ok 必须为 True——旧逻辑取 s['ok'] 会恒为 False。"""
+        with patch.object(client, "quality_trend", lambda pid: {"points": [1]}), \
+                patch.object(client, "quality_flaky", lambda pid: {"cases": []}), \
+                patch.object(client, "quality_filter_options", lambda pid: {"dims": []}), \
+                patch.object(client, "quality_change_logs", lambda pid: {"changes": []}):
+            summary = client.quality_summary(1)
+        self.assertTrue(summary["ok"])
+        self.assertEqual(summary["trend"], {"points": [1]})
+        self.assertEqual(summary["flaky"], {"cases": []})
+
+    def test_all_ok_false_when_one_raises(self):
+        """任一项抛异常 → 顶层 ok=False，失败项带 error，其余项正常返回。"""
+        def boom(pid):
+            raise RuntimeError("sidecar down")
+
+        with patch.object(client, "quality_trend", lambda pid: {"points": []}), \
+                patch.object(client, "quality_flaky", boom), \
+                patch.object(client, "quality_filter_options", lambda pid: {"dims": []}), \
+                patch.object(client, "quality_change_logs", lambda pid: {"changes": []}):
+            summary = client.quality_summary(1)
+        self.assertFalse(summary["ok"])
+        self.assertFalse(summary["flaky"]["ok"])
+        self.assertIn("sidecar down", summary["flaky"]["error"])
+        self.assertEqual(summary["trend"], {"points": []})
+
+
 if __name__ == "__main__":
     unittest.main()

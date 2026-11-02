@@ -19,6 +19,8 @@ import json
 import logging
 import uuid
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 from .models import (
@@ -40,16 +42,67 @@ from .serializers import (
 
 logger = logging.getLogger(__name__)
 
-from .utils import execute_assertions
+
+
+from .utils import (
+    apply_auth,
+    execute_assertions,
+    read_response_body,
+    read_response_json,
+)
 from .operation_logger import log_operation
 from .variable_resolver import VariableResolver
+from .ssrf_guard import SsrfBlocked, mask_webhook_url, safe_request
 from .serializers import (
-    ApiProjectSerializer, ApiCollectionSerializer, ApiRequestSerializer,
-    EnvironmentSerializer, RequestHistorySerializer, TestSuiteSerializer,
-    TestSuiteRequestSerializer, TestExecutionSerializer, UserSerializer,
-    ScheduledTaskSerializer, ScheduledTaskSerializer,
     AIServiceConfigSerializer
 )
+
+# ---------------------------------------------------------------------------
+# L8：定时任务派发（Celery 优先，兜底为**有界**线程池）
+#
+# 改造前：`run_now` 每个请求都 `threading.Thread(daemon=True).start()`，线程数
+# 无上限（放大 H4 SSRF）；改造后：主路径进 Celery（并发度由 worker 决定），
+# broker 不可用时退回固定大小的线程池，池满直接拒绝（429）而不是无限堆积。
+# ---------------------------------------------------------------------------
+_FALLBACK_MAX_WORKERS = max(1, int(getattr(settings, 'SCHEDULED_TASK_MAX_WORKERS', 4) or 4))
+_FALLBACK_POOL = ThreadPoolExecutor(max_workers=_FALLBACK_MAX_WORKERS)
+_FALLBACK_SEM = threading.BoundedSemaphore(_FALLBACK_MAX_WORKERS)
+
+
+class TaskQueueFull(Exception):
+    """后台执行队列已满：兜底池所有槽位被占用。"""
+
+
+def _dispatch_scheduled_task(task, execution_log, user_id=None):
+    """提交定时任务执行，返回 `(dispatch_mode, celery_task_id)`。
+
+    `dispatch_mode` 取值：`celery`（已入队）/ `thread`（兜底池）。
+    broker 不可用且池已满时抛 `TaskQueueFull`，由视图转成 429。
+    """
+    try:
+        from .tasks import execute_scheduled_task
+
+        async_result = execute_scheduled_task.delay(task.id, execution_log.id, user_id)
+        return 'celery', getattr(async_result, 'id', None)
+    except Exception as exc:  # noqa: BLE001 - broker 不可用须降级而非 500
+        logger.warning(
+            "Celery 派发失败，退回有界线程池：task=%s err=%s", task.id, type(exc).__name__
+        )
+
+    if not _FALLBACK_SEM.acquire(blocking=False):
+        raise TaskQueueFull('后台执行队列已满，请稍后重试')
+
+    def _wrapped():
+        try:
+            ScheduledTaskViewSet()._run_task_sync(task.id, execution_log.id)
+        except Exception:  # 兜底线程内异常必须吞掉，避免静默丢日志
+            logger.exception("兜底线程执行定时任务失败：task=%s", task.id)
+        finally:
+            _FALLBACK_SEM.release()
+
+    _FALLBACK_POOL.submit(_wrapped)
+    return 'thread', None
+
 
 User = get_user_model()
 
@@ -425,34 +478,47 @@ class ApiRequestViewSet(viewsets.ModelViewSet):
                 else:
                     body_data = body_content
             
+            # M15：注入认证信息（ApiRequest.auth 此前定义却从未附加到出站请求）
+            headers, params, request_auth = apply_auth(
+                headers, params, request.data.get('auth', api_request.auth)
+            )
+
             # 执行请求
             start_time = time.time()
 
             # 根据请求体类型决定使用 data 还是 json 参数
             if body_type == 'raw':
                 # raw 类型使用 data 参数，发送原始字符串
-                response = requests.request(
-                    method=request_method,
-                    url=url,
+                response = safe_request(
+                    request_method,
+                    url,
                     headers=headers,
                     params=params,
                     data=body_data,
+                    auth=request_auth,
+                    stream=True,  # M15：按块读取，配合 read_response_body 限制落库体积
                     timeout=30
                 )
             else:
                 # json 类型使用 json 参数，自动序列化
-                response = requests.request(
-                    method=request_method,
-                    url=url,
+                response = safe_request(
+                    request_method,
+                    url,
                     headers=headers,
                     params=params,
                     json=body_data,
+                    auth=request_auth,
+                    stream=True,
                     timeout=30
                 )
             end_time = time.time()
-            
+
             response_time = (end_time - start_time) * 1000  # 转换为毫秒
-            
+
+            # M15：受控读取响应体（超限截断并标记 truncated）
+            response_text, body_truncated = read_response_body(response)
+
+
             # 执行断言验证
             assertions = request.data.get('assertions', api_request.assertions) or []
             for assertion in assertions:
@@ -473,14 +539,15 @@ class ApiRequestViewSet(viewsets.ModelViewSet):
                 },
                 response_data={
                     'headers': dict(response.headers),
-                    'body': response.text,
-                    'json': response.json() if response.headers.get('content-type', '').startswith('application/json') else None
+                    'body': response_text,
+                    'json': read_response_json(response_text, response.headers),
+                    'truncated': body_truncated,
                 },
                 status_code=response.status_code,
                 response_time=response_time,
                 executed_by=request.user
             )
-            
+
             # 记录执行操作
             log_operation(
                 operation_type='execute',
@@ -752,19 +819,30 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
                             body_data = self._replace_variables_in_dict(body_data, variables)
                             body_data = self._resolve_variables_in_dict(body_data, resolver)
 
+                    # M15：注入认证信息（auth 字段此前从未生效）
+                    headers, params, request_auth = apply_auth(
+                        headers, params, api_request.auth
+                    )
+
                     # 执行请求
                     start_time = time.time()
-                    response = requests.request(
-                        method=api_request.method,
-                        url=url,
+                    response = safe_request(
+                        api_request.method,
+                        url,
                         headers=headers,
                         params=params,
                         json=body_data,
+                        auth=request_auth,
+                        stream=True,  # M15：受控读取
                         timeout=30
                     )
                     end_time = time.time()
                     response_time = (end_time - start_time) * 1000
-                    
+
+                    # M15：受控读取响应体（超限截断并标记 truncated）
+                    response_text, body_truncated = read_response_body(response)
+
+
                     # 执行断言验证
                     assertions = api_request.assertions or []
                     # 添加响应时间到断言中
@@ -826,8 +904,9 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
                         },
                         response_data={
                             'headers': dict(response.headers),
-                            'body': response.text,
-                            'json': response.json() if response.headers.get('content-type', '').startswith('application/json') else None
+                            'body': response_text,
+                            'json': read_response_json(response_text, response.headers),
+                            'truncated': body_truncated,
                         },
                         status_code=response.status_code,
                         response_time=response_time,
@@ -1608,13 +1687,31 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
             logger.info(f"创建执行日志: {execution_log.id}")
             
             # 异步执行任务
-            logger.info("调用 _execute_task_async 方法")
-            self._execute_task_async(task, execution_log)
+            logger.info("派发任务执行")
+            dispatch_mode, celery_task_id = self._execute_task_async(
+                task, execution_log, request.user
+            )
             
-            logger.info("任务开始执行")
+            logger.info("任务已开始执行（mode=%s）", dispatch_mode)
             return Response(
-                {'message': '任务已开始执行', 'execution_id': execution_log.id},
+                {
+                    'message': '任务已开始执行',
+                    'execution_id': execution_log.id,
+                    'dispatch_mode': dispatch_mode,
+                    'celery_task_id': celery_task_id,
+                },
                 status=status.HTTP_200_OK
+            )
+
+        except TaskQueueFull as e:
+            # L8：兜底池已满 → 明确拒绝，且把失败原因落到执行日志（不静默丢弃）
+            execution_log.status = 'FAILED'
+            execution_log.end_time = timezone.now()
+            execution_log.error_message = str(e)
+            execution_log.save(update_fields=['status', 'end_time', 'error_message'])
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
             )
             
         except Exception as e:
@@ -1685,16 +1782,24 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
         serializer = TaskExecutionLogSerializer(logs, many=True)
         return Response(serializer.data)
     
-    def _execute_task_async(self, task, execution_log):
-        """异步执行任务"""
-        import threading
-        from datetime import datetime
-        
-        # 添加测试日志
+    def _execute_task_async(self, task, execution_log, user=None):
+        """提交一次定时任务执行（L8）：Celery 优先，broker 不可用退回有界线程池。
+
+        返回 `(dispatch_mode, celery_task_id)`；不再「每请求一条裸线程」。
+        """
+        return _dispatch_scheduled_task(task, execution_log, getattr(user, 'id', None))
+
+    def _execute_and_record(self, task, execution_log):
+        """真正执行任务并回写状态（Celery worker 与兜底线程池共用同一份逻辑）。
+
+        入参保持 ORM 对象：worker 侧由 `_run_task_sync` 按主键重新取对象，
+        避免跨进程传递陈旧实例。
+        """
         import logging
+
         logger = logging.getLogger(__name__)
-        logger.info("=== _execute_task_async 方法被调用 ===")
-        
+        logger.info("=== 开始执行定时任务 ID=%s ===", task.id)
+
         def execute():
             try:
                 # 更新执行状态
@@ -1793,11 +1898,20 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
                     logger.info("通知设置未启用或不存在，跳过失败通知")
                 logger.info("=== 结束检查发送失败通知 ===")
         
-        # 在新线程中执行
-        thread = threading.Thread(target=execute)
-        thread.daemon = True
-        thread.start()
+        return execute()
     
+    def _run_task_sync(self, task_id, execution_log_id):
+        """按主键重新取对象并执行（Celery worker 入口；连接失效时自动重连）。"""
+        from django.db import close_old_connections
+
+        close_old_connections()
+        try:
+            task = ScheduledTask.objects.get(id=task_id)
+            execution_log = TaskExecutionLog.objects.get(id=execution_log_id)
+            return self._execute_and_record(task, execution_log)
+        finally:
+            close_old_connections()
+
     def _execute_test_suite(self, task):
         """执行测试套件"""
         from .utils import execute_test_suite
@@ -2159,10 +2273,11 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
                         else:
                             webhook_url += f'?timestamp={timestamp}&sign={sign}'
 
-                        logger.info(f"钉钉机器人签名验证 - 时间戳: {timestamp}")
-                        logger.info(f"签名字符串: {string_to_sign}")
-                        logger.info(f"生成的签名: {sign}")
-                        logger.info(f"最终URL: {webhook_url}")
+                        # M16：不再打印 string_to_sign / sign / 带令牌的完整 URL
+                        logger.info(
+                            "钉钉机器人签名已生成（时间戳 %s，目标 %s）",
+                            timestamp, mask_webhook_url(webhook_url),
+                        )
                     else:
                         logger.info("钉钉机器人未配置签名密钥，使用无签名模式")
                 else:  # 通用格式
@@ -2170,9 +2285,10 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
                         "text": f"定时任务执行{status_text}\n任务名称: {task.name}\n执行状态: {status_text}\n执行时间: {execution_log.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n任务类型: {'测试套件执行' if task.task_type == 'TEST_SUITE' else 'API请求执行'}"
                     }
 
-                # 发送webhook请求
+                # 发送webhook请求（M16：webhook 目标同样受 SSRF 校验约束）
                 try:
-                    response = requests.post(
+                    response = safe_request(
+                        'POST',
                         webhook_url,
                         json=message_data,
                         headers={'Content-Type': 'application/json'},
@@ -2194,7 +2310,7 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
                         webhook_bot_info={
                             'bot_type': bot_type,
                             'bot_name': bot.get('name', 'Unknown'),
-                            'webhook_url': webhook_url[:50] + '...' if len(webhook_url) > 50 else webhook_url
+                            'webhook_url': mask_webhook_url(webhook_url)
                         },
                         notification_content=json.dumps(message_data, ensure_ascii=False),
                         status='success',
@@ -2205,6 +2321,8 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
                         }
                     )
 
+                except SsrfBlocked as e:
+                    logger.error(f"Webhook 目标未通过 SSRF 校验，已跳过 - {bot_type}: {e}")
                 except requests.exceptions.RequestException as e:
                     logger.error(f"Webhook通知发送失败 - {bot_type}: {str(e)}")
 
@@ -2222,7 +2340,7 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
                             webhook_bot_info={
                                 'bot_type': bot_type,
                                 'bot_name': bot.get('name', 'Unknown'),
-                                'webhook_url': webhook_url[:50] + '...' if len(webhook_url) > 50 else webhook_url
+                                'webhook_url': mask_webhook_url(webhook_url)
                             },
                             notification_content=json.dumps(message_data, ensure_ascii=False),
                             status='failed',
@@ -2420,7 +2538,7 @@ class AIServiceConfigViewSet(viewsets.ModelViewSet):
 
         try:
             headers = {
-                'Authorization': f'Bearer {config.api_key}',
+                'Authorization': f'Bearer {config.get_api_key()}',  # H5：解密后使用
                 'Content-Type': 'application/json'
             }
 
@@ -2430,7 +2548,8 @@ class AIServiceConfigViewSet(viewsets.ModelViewSet):
                 'max_tokens': 10
             }
 
-            response = requests.post(
+            response = safe_request(
+                'POST',
                 f"{config.base_url}/chat/completions",
                 headers=headers,
                 json=test_data,
@@ -2442,9 +2561,12 @@ class AIServiceConfigViewSet(viewsets.ModelViewSet):
             else:
                 return Response({
                     'error': f'连接测试失败: {response.status_code}',
-                    'details': response.text
+                    'details': (response.text or '')[:2000]
                 }, status=status.HTTP_400_BAD_REQUEST)
 
+        except SsrfBlocked as e:
+            # H4：目标被 SSRF 守卫拦截属「用户输入非法」，返回 400 而非 500
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except requests.exceptions.Timeout:
             return Response({'error': '连接超时'}, status=status.HTTP_408_REQUEST_TIMEOUT)
         except requests.exceptions.RequestException as e:
@@ -2474,7 +2596,7 @@ class AIServiceConfigViewSet(viewsets.ModelViewSet):
                 return Response({'error': '未找到可用的参数描述补全AI配置'}, status=status.HTTP_400_BAD_REQUEST)
 
             headers = {
-                'Authorization': f'Bearer {config.api_key}',
+                'Authorization': f'Bearer {config.get_api_key()}',  # H5：解密后使用
                 'Content-Type': 'application/json'
             }
 
@@ -2531,7 +2653,8 @@ URL参数:
                 'temperature': config.temperature
             }
 
-            response = requests.post(
+            response = safe_request(
+                'POST',
                 f"{config.base_url}/chat/completions",
                 headers=headers,
                 json=ai_data,
@@ -2549,7 +2672,7 @@ URL参数:
             else:
                 return Response({
                     'error': f'AI服务调用失败: {response.status_code}',
-                    'details': response.text
+                    'details': (response.text or '')[:2000]
                 }, status=status.HTTP_400_BAD_REQUEST)
 
         except requests.exceptions.Timeout:
@@ -2577,7 +2700,7 @@ URL参数:
                 return Response({'error': '未找到可用的模拟数据生成AI配置'}, status=status.HTTP_400_BAD_REQUEST)
 
             headers = {
-                'Authorization': f'Bearer {config.api_key}',
+                'Authorization': f'Bearer {config.get_api_key()}',  # H5：解密后使用
                 'Content-Type': 'application/json'
             }
 
@@ -2603,7 +2726,8 @@ URL参数:
                 'temperature': config.temperature
             }
 
-            response = requests.post(
+            response = safe_request(
+                'POST',
                 f"{config.base_url}/chat/completions",
                 headers=headers,
                 json=ai_data,
@@ -2621,7 +2745,7 @@ URL参数:
             else:
                 return Response({
                     'error': f'AI服务调用失败: {response.status_code}',
-                    'details': response.text
+                    'details': (response.text or '')[:2000]
                 }, status=status.HTTP_400_BAD_REQUEST)
 
         except requests.exceptions.Timeout:
@@ -2648,7 +2772,7 @@ URL参数:
                 return Response({'error': '未找到可用的参数命名规范化AI配置'}, status=status.HTTP_400_BAD_REQUEST)
 
             headers = {
-                'Authorization': f'Bearer {config.api_key}',
+                'Authorization': f'Bearer {config.get_api_key()}',  # H5：解密后使用
                 'Content-Type': 'application/json'
             }
 
@@ -2679,7 +2803,8 @@ URL参数:
                 'temperature': config.temperature
             }
 
-            response = requests.post(
+            response = safe_request(
+                'POST',
                 f"{config.base_url}/chat/completions",
                 headers=headers,
                 json=ai_data,
@@ -2697,7 +2822,7 @@ URL参数:
             else:
                 return Response({
                     'error': f'AI服务调用失败: {response.status_code}',
-                    'details': response.text
+                    'details': (response.text or '')[:2000]
                 }, status=status.HTTP_400_BAD_REQUEST)
 
         except requests.exceptions.Timeout:
@@ -2738,7 +2863,7 @@ URL参数:
             }
 
             headers = {
-                'Authorization': f'Bearer {config.api_key}',
+                'Authorization': f'Bearer {config.get_api_key()}',  # H5：解密后使用
                 'Content-Type': 'application/json'
             }
 
@@ -2766,7 +2891,8 @@ URL参数: {json.dumps(request_data['params'], ensure_ascii=False)}
                 'temperature': config.temperature
             }
 
-            response = requests.post(
+            response = safe_request(
+                'POST',
                 f"{config.base_url}/chat/completions",
                 headers=headers,
                 json=ai_data,
@@ -2780,7 +2906,7 @@ URL参数: {json.dumps(request_data['params'], ensure_ascii=False)}
             else:
                 return Response({
                     'error': f'AI服务调用失败: {response.status_code}',
-                    'details': response.text
+                    'details': (response.text or '')[:2000]
                 }, status=status.HTTP_400_BAD_REQUEST)
 
         except requests.exceptions.Timeout:

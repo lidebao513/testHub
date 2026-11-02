@@ -21,6 +21,7 @@ import os
 import re
 from typing import Optional
 
+from . import cost_guard
 from .models import RuleFinding
 from .config import get_config
 
@@ -50,6 +51,10 @@ _SUSPICIOUS_DISCLAIMER_ABSENT = re.compile(
 
 def _call_llm(prompt: str, system: str) -> Optional[dict]:
     """调用 LLM 返回 JSON。失败返回 None。"""
+    # 成本护栏：过期 / 额度耗尽的模型直接降级为纯规则判定（返回 None 即走正则兜底），
+    # 不发请求也就不会产生「跨过到期时刻后悄悄按量计费」的账单。
+    if cost_guard.reject_reason(_FALLBACK_MODEL):
+        return None
     try:
         from openai import OpenAI
         api_key = get_config().openai_api_key

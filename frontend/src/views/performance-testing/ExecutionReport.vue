@@ -372,7 +372,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Refresh, Link, Download, Share, DocumentCopy, CircleCheck, CircleClose, MagicStick, Loading } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
-import { marked } from 'marked'
+import { renderMarkdown, sanitizeHtml } from '@/utils/sanitize'
 
 import MetricCards from './components/MetricCards.vue'
 import { statusTagType, slaTagType, formatTime, formatDuration, apiError } from './shared'
@@ -409,8 +409,9 @@ const aiAnalysis = reactive({
 const aiAbortCtrl = ref(null)
 let aiIdleTimer = null
 
-// AI 分析输出为 markdown（marked 默认转义原始 HTML，防 XSS）；
-// 流式输出时对未闭合语法标记做临时清理，避免打字机过程中出现裸符号
+// AI 分析输出为 markdown，经 renderMarkdown（marked + DOMPurify 净化）转 HTML 防 XSS；
+// 注意：marked 本身不转义原始 HTML，必须依赖 DOMPurify 净化，绝不能假设"默认安全"。
+// 流式输出时对未闭合语法标记做临时清理，避免打字机过程中出现裸符号。
 const aiRenderedHtml = computed(() => {
   const text = aiAnalysis.text || ''
   if (!text) return ''
@@ -420,9 +421,10 @@ const aiRenderedHtml = computed(() => {
     if (boldCount % 2 === 1) src += '**'
     if ((src.match(/^>/gm) || []).length && !/\n\s*$/.test(src)) src += '\n'
   }
-  let html = marked.parse(src)
+  let html = renderMarkdown(src)
   if (aiAnalysis.loading) {
-    html += '<span class="ai-streaming-cursor"></span>'
+    // 打字机光标为受控静态标签，仍整体再过一遍 sanitize 保持防御一致性
+    html = sanitizeHtml(html + '<span class="ai-streaming-cursor"></span>')
   }
   return html
 })

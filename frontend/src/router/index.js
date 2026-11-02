@@ -87,7 +87,7 @@ const routes = [
         children: [
             {
                 path: '',
-                redirect: 'requirement-analysis'
+                redirect: '/ai-generation/requirement-analysis',
             },
             {
                 path: 'requirement-analysis',
@@ -208,7 +208,7 @@ const routes = [
         children: [
             {
                 path: '',
-                redirect: 'dashboard'
+                redirect: '/api-testing/dashboard',
             },
             {
                 path: 'dashboard',
@@ -269,7 +269,7 @@ const routes = [
         children: [
             {
                 path: '',
-                redirect: 'dashboard'
+                redirect: '/ui-automation/dashboard',
             },
             {
                 path: 'dashboard',
@@ -340,7 +340,7 @@ const routes = [
         children: [
             {
                 path: '',
-                redirect: 'testing'
+                redirect: '/ai-intelligent-mode/testing',
             },
             {
                 path: 'testing',
@@ -366,7 +366,7 @@ const routes = [
         children: [
             {
                 path: '',
-                redirect: 'dashboard'
+                redirect: '/defects/dashboard',
             },
             {
                 path: 'dashboard',
@@ -417,7 +417,7 @@ const routes = [
                 children: [
                     {
                         path: '',
-                        redirect: 'ai-model'
+                        redirect: '/configuration/ai-model',
                     },
                     {
                         path: 'ai-model',
@@ -471,7 +471,7 @@ const routes = [
         children: [
             {
                 path: '',
-                redirect: 'dashboard'
+                redirect: '/llm-judge/dashboard',
             },
             {
                 path: 'dashboard',
@@ -514,7 +514,7 @@ const routes = [
         children: [
             {
                 path: '',
-                redirect: 'dashboard'
+                redirect: '/app-automation/dashboard',
             },
             {
                 path: 'dashboard',
@@ -586,7 +586,7 @@ const routes = [
         children: [
             {
                 path: '',
-                redirect: 'dashboard'
+                redirect: '/monitor/dashboard',
             },
             {
                 path: 'dashboard',
@@ -622,7 +622,7 @@ const routes = [
         children: [
             {
                 path: '',
-                redirect: 'dashboard'
+                redirect: '/performance-testing/dashboard',
             },
             {
                 path: 'dashboard',
@@ -683,7 +683,7 @@ const routes = [
         children: [
             {
                 path: '',
-                redirect: 'console'
+                redirect: '/mcp/console',
             },
             {
                 path: 'console',
@@ -724,12 +724,9 @@ router.beforeEach(async (to, _from, next) => {
                 code: code,
             })
             const expiresAt = Date.now() + 30 * 60 * 1000
-            localStorage.setItem('access_token', response.data.access)
-            localStorage.setItem('refresh_token', response.data.refresh)
-            localStorage.setItem('token_expires_at', expiresAt.toString())
+            // M8：access 仅内存态；refresh 由后端种入 HttpOnly Cookie，前端不持有
             localStorage.setItem('user', JSON.stringify(response.data.user))
             userStore.accessToken = response.data.access
-            userStore.refreshToken = response.data.refresh
             userStore.tokenExpiresAt = expiresAt
             userStore.user = response.data.user
 

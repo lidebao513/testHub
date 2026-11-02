@@ -20,7 +20,6 @@ from .models import (
     TestSuiteScript, TestExecution, Screenshot,
     ElementGroup, PageObject, PageObjectElement, ScriptStep, ScriptElementUsage,
     TestCase, TestCaseStep, TestCaseExecution, OperationRecord,
-    TestCase, TestCaseStep, TestCaseExecution, OperationRecord,
     UiScheduledTask, UiNotificationLog, UiTaskNotificationSetting,
     AICase, AIExecutionRecord
 )
@@ -909,13 +908,6 @@ class TestCaseViewSet(viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'updated_at', 'name', 'priority', 'status']
     ordering = ['-created_at']
     filterset_fields = ['project', 'status', 'priority', 'created_by']
-
-    def get_queryset(self):
-        # 只显示用户有权限访问的项目的测试用例
-        user = self.request.user
-        accessible_projects = UiProject.objects.filter(
-            models.Q(owner=user) | models.Q(members=user)
-        ).distinct()
 
     def get_queryset(self):
         # 只显示用户有权限访问的项目的测试用例

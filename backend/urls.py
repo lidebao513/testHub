@@ -3,7 +3,7 @@ from django.urls import path, include, re_path
 from django.conf import settings
 from django.conf.urls.static import static
 from django.views.decorators.csrf import csrf_exempt
-from django.views.static import serve
+from apps.app_automation.static_views import protected_serve as serve
 from apps.testgen_integration.proxy import (
     testgen_web_proxy,
     testgen_api_proxy,
@@ -43,9 +43,16 @@ urlpatterns = [
     # MCP 管理端 REST（日志/待确认）；协议端点 /api/mcp/ 在 ASGI 层分流
     path('api/mcp/', include('apps.mcp.urls')),
     path('api/testgen/', include('apps.testgen_integration.urls')),  # testgen 代码生成 sidecar 集成
-    # testgen 控制台反向代理（同源嵌入：页面走 /testgen/，API 走 /api/v1/，均转发到 sidecar :8910）
+    # testgen 控制台反向代理（同源嵌入）
+    #   页面：/testgen/              → sidecar 根（转发时注入 X-Testhub-Api-Prefix）
+    #   API ：/testgen-api/v1/       → sidecar /api/v1/（专属命名空间，不与平台 /api/* 冲突）
+    # 旧 /api/v1/ 保留兼容：靠归属判定挡住平台路径，观察期后下线。
+    # 方案见 docs/testgen_api_prefix_plan_2026-10-30.md
     re_path(r'^testgen/(?P<rest>.*)$', testgen_web_proxy),
     re_path(r'^testgen$', testgen_web_proxy),
+    re_path(
+        r'^testgen-api/v1/(?P<rest>.*)$', testgen_api_proxy, {'dedicated': True}
+    ),
     re_path(r'^api/v1/(?P<rest>.*)$', testgen_api_proxy),
 ]
 
@@ -57,6 +64,8 @@ if settings.DEBUG:
     urlpatterns += static(settings.STATIC_FILES_URL, document_root=settings.STATIC_FILES_ROOT)
 
 # APP自动化 Template 目录静态访问
+# M3：原为裸 django.views.static.serve（无鉴权），现统一走 protected_serve：
+# 必须已登录 + 路径穿越拒绝 + 扩展名白名单 + nosniff。
 import os
 urlpatterns += [
     path('app-automation-templates/<path:path>', 
@@ -64,7 +73,7 @@ urlpatterns += [
          {'document_root': os.path.join(settings.BASE_DIR, 'apps', 'app_automation', 'Template')}),
 ]
 
-# APP自动化 Allure 报告访问
+# APP自动化 Allure 报告访问（同上，受保护）
 urlpatterns += [
     path('app-automation-reports/<path:path>', 
          serve, 

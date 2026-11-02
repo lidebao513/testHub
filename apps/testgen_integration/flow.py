@@ -162,11 +162,17 @@ def run_security_verdict(
                     {"case_id": obs.get("case_id"), "verdict": "unsafe", "defect": "created"}
                 )
             except Exception as exc:  # noqa: BLE001
+                # 「缺 project_id」是引擎用例无规范项目关联导致的**预期**情形：
+                # 诚实跳过（verdict 照跑、不猜映射、不误建、不崩），区别于真正的建单失败。
+                missing_project = (
+                    not payload.get("project_id")
+                    or "project_id" in str(exc)
+                )
                 details.append(
                     {
                         "case_id": obs.get("case_id"),
                         "verdict": "unsafe",
-                        "defect": "failed",
+                        "defect": "skipped_no_project" if missing_project else "failed",
                         "error": str(exc),
                     }
                 )

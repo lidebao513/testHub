@@ -508,45 +508,6 @@ class PlaywrightTestEngine:
                         # locator.evaluate() 会等待元素可见，但下拉框选项可能是隐藏的
                         # 所以我们使用 page.evaluate() 并传递定位器表达式
                         
-                        # 根据定位策略构造 JavaScript 选择器
-                        if locator_strategy.lower() == 'xpath':
-                            js_selector_code = f"""
-                                const xpath = {repr(locator_value)};
-                                const result = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-                                let element = null;
-                                for (let i = 0; i < result.snapshotLength; i++) {{
-                                    const node = result.snapshotItem(i);
-                                    // 检查可见性: offsetParent 不为 null (且不是 fixed 定位) 或者 getComputedStyle display != none
-                                    if (node.offsetParent !== null || window.getComputedStyle(node).display !== 'none') {{
-                                        element = node;
-                                        break;
-                                    }}
-                                }}
-                            """
-                        elif locator_strategy.lower() == 'css selector':
-                            js_selector_code = f"""
-                                const elements = document.querySelectorAll({repr(locator_value)});
-                                let element = null;
-                                for (const el of elements) {{
-                                    if (el.offsetParent !== null || window.getComputedStyle(el).display !== 'none') {{
-                                        element = el;
-                                        break;
-                                    }}
-                                }}
-                            """
-                        else:
-                            # 其他策略：尝试作为 CSS 选择器
-                            js_selector_code = f"""
-                                const elements = document.querySelectorAll({repr(locator_value)});
-                                let element = null;
-                                for (const el of elements) {{
-                                    if (el.offsetParent !== null || window.getComputedStyle(el).display !== 'none') {{
-                                        element = el;
-                                        break;
-                                    }}
-                                }}
-                            """
-                        
                         # 构造基础定位器（不带 visible=true，因为我们要手动遍历）
                         base_locator_value = locator_value.replace(' >> visible=true', '')
                         
@@ -608,34 +569,6 @@ class PlaywrightTestEngine:
                         log += f"  - 执行时间: {execution_time}秒"
                         return True, log, None
                         
-                        logger.info(f"JS执行结果: {js_result}")
-                        
-                        # 等待 Vue 响应式更新完成
-                        await asyncio.sleep(0.8)
-                        
-                        # 检查并关闭多选下拉框
-                        try:
-                            dropdown = self.page.locator('.el-select-dropdown').first
-                            if await dropdown.is_visible():
-                                logger.info(f"多选下拉框未自动关闭，点击空白处关闭...")
-                                await self.page.click('body', position={'x': 10, 'y': 10}, timeout=3000)
-                                await asyncio.sleep(0.5)
-                                auto_close_msg = " + 自动关闭"
-                            else:
-                                auto_close_msg = ""
-                        except:
-                            auto_close_msg = ""
-                        
-                        execution_time = round(time.time() - start_time, 2)
-                        method_desc = js_result.get('method', 'unknown') if isinstance(js_result, dict) else 'unknown'
-                        log = f"✓ 点击下拉框选项 '{element_name}' 成功（{method_desc})\n"
-                        log += f"  - 定位器: {locator_strategy}={locator_value}\n"
-                        log += f"  - 超时设置: {timeout_ms/1000}秒\n"
-                        log += f"  - 更新方法: {method_desc}{auto_close_msg}\n"
-                        if isinstance(js_result, dict) and 'allValues' in js_result:
-                            log += f"  - 当前选中值: {js_result['allValues']}\n"
-                        log += f"  - 执行时间: {execution_time}秒"
-                        return True, log, None
                     except Exception as e:
                         logger.error(f"下拉框选项点击失败: {e}")
                         execution_time = round(time.time() - start_time, 2)

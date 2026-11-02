@@ -263,13 +263,28 @@ def db_path() -> Path:
     return get_settings().db_path
 
 
+_JOURNAL_MODES = {"WAL", "DELETE", "TRUNCATE", "PERSIST", "MEMORY"}
+
+
+def _journal_mode() -> str:
+    """日志模式：默认 WAL；测试可用 `DB_JOURNAL_MODE` 降级为 DELETE。
+
+    为什么要这个开关：WAL 依赖 `-wal`/`-shm` 辅助文件在提交时被删除或截断，
+    本机 `safe-delete` 会拦截这类删除并 fail-closed，把库瞬间置成只读，
+    于是并发写线程偶发 `attempt to write a readonly database`（跨用例颤动）。
+    测试环境改用 DELETE 模式即可彻底不产生这两个文件；生产默认仍走 WAL。
+    """
+    mode = (os.environ.get("DB_JOURNAL_MODE") or "WAL").strip().upper()
+    return mode if mode in _JOURNAL_MODES else "WAL"
+
+
 def connect(path: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
     """建立连接（WAL + 外键），行工厂为 sqlite3.Row。"""
     target = Path(path) if path is not None else db_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(target), timeout=30.0)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(f"PRAGMA journal_mode={_journal_mode()}")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 

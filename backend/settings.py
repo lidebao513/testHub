@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from decouple import config
+from django.core.exceptions import ImproperlyConfigured
 import os
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -10,9 +11,25 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 def parse_csv(value):
     return [item.strip() for item in value.split(',') if item.strip()]
 
-SECRET_KEY = config('SECRET_KEY', default='django-insecure-your-secret-key-here')
+# H3 修复：DEBUG 默认关闭（原为 True，误部署到生产会暴露调试页/堆栈）。
+DEBUG = config('DEBUG', default=False, cast=bool)
 
-DEBUG = config('DEBUG', default=True, cast=bool)
+# H2 修复：SECRET_KEY 缺失时 fail-fast。生产（DEBUG=False）必须显式配置环境变量，
+# 否则拒绝启动（杜绝使用公开弱默认值）；开发（DEBUG=True）允许一次性开发占位值并告警。
+SECRET_KEY = config('SECRET_KEY', default=None)
+if SECRET_KEY is None:
+    if DEBUG:
+        import warnings
+        warnings.warn(
+            "SECRET_KEY 未设置，已使用开发占位值（仅限本地 DEBUG 模式）；"
+            "生产环境必须设置 SECRET_KEY 环境变量。",
+            stacklevel=2,
+        )
+        SECRET_KEY = "django-insecure-dev-placeholder-change-me"
+    else:
+        raise ImproperlyConfigured(
+            "生产环境必须设置 SECRET_KEY 环境变量（请勿使用默认值）"
+        )
 
 # 根据DEBUG模式设置ALLOWED_HOSTS，生产环境不应使用通配符
 if DEBUG:
@@ -109,7 +126,6 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'backend.middleware.DisableCSRFMiddleware',  # 添加CSRF禁用中间件
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
@@ -289,15 +305,11 @@ if DEBUG:
         'cache-control',  # 添加 SSE 需要的头部
     ]
 else:
-    # 生产环境 CORS 配置
-    if parsed_cors_origins:
-        # 如果配置了 CORS_ALLOWED_ORIGINS，使用配置的值
-        CORS_ALLOWED_ORIGINS = parsed_cors_origins
-    else:
-        # 如果未配置，允许所有来源（可根据需求调整）
-        CORS_ALLOW_ALL_ORIGINS = True
+    # 生产环境：必须显式配置 CORS_ALLOWED_ORIGINS 白名单；未配置则不允许任何跨域。
+    # 严禁 CORS_ALLOW_ALL_ORIGINS=True（会与 CORS_ALLOW_CREDENTIALS=True 形成任意站点账号接管）。
+    CORS_ALLOWED_ORIGINS = parsed_cors_origins  # 未配置即为空列表 → 不允许任何跨域
+    CORS_ALLOW_CREDENTIALS = bool(parsed_cors_origins)  # 仅在有明确白名单时才允许带凭证
 
-    CORS_ALLOW_CREDENTIALS = True
     CORS_ALLOW_HEADERS = [
         'accept',
         'accept-encoding',
@@ -329,12 +341,29 @@ SPECTACULAR_SETTINGS = {
 }
 
 # Redis URL (used across celery, channels, and SMS verification)
-REDIS_URL = config('REDIS_URL', default='redis://:1234@127.0.0.1:6379/0')
+#
+# 原默认值为 `redis://:1234@127.0.0.1:6379/0`：① 与 `.env.example` 不一致（那是无密码版）；
+# ② 本机 Redis / Memurai 默认不开密码，该连接串会让 AUTH 直接失败 —— 表现为 Celery worker
+#    无限重试且任务永挂 PENDING、短信验证码与 Channels 同样连不上。且 `1234` 是公开弱口令，
+#    拿它当默认值连生产实例本身就是隐患。
+# 现改为：DEBUG 缺省连本地无密码实例（与 .env.example 一致），生产必须显式配置（fail-fast）。
+REDIS_URL = config('REDIS_URL', default=None)
+if not REDIS_URL:
+    if DEBUG:
+        REDIS_URL = 'redis://127.0.0.1:6379/0'
+    else:
+        raise ImproperlyConfigured(
+            '生产环境必须设置 REDIS_URL 环境变量（如 redis://:密码@host:6379/0），'
+            '不使用内置默认值以免凭据错配'
+        )
 
 # Celery Configuration
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+
+# L8：定时任务兜底线程池的并发上限（broker 不可用时的硬上限，防止无界线程）
+SCHEDULED_TASK_MAX_WORKERS = config('SCHEDULED_TASK_MAX_WORKERS', default=4, cast=int)
 
 # Channels Configuration
 CHANNEL_LAYERS = {

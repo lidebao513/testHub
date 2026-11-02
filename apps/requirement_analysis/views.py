@@ -42,7 +42,7 @@ from .serializers import (
     AnalysisTaskSerializer, DocumentUploadSerializer,
     TestCaseGenerationRequestSerializer, TestCaseReviewRequestSerializer,
     AIModelConfigSerializer, PromptConfigSerializer, TestCaseGenerationTaskSerializer,
-    GenerationConfigSerializer
+    GenerateTaskRequestSerializer, GenerationConfigSerializer
 )
 from .services import RequirementAnalysisService, DocumentProcessor
 
@@ -571,9 +571,7 @@ class AnalysisTaskViewSet(viewsets.ReadOnlyModelViewSet):
         })
 
 
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
-from django.views.decorators.csrf import csrf_exempt
+from rest_framework.decorators import api_view
 
 
 @csrf_exempt
@@ -667,100 +665,6 @@ def upload_and_analyze(request):
 
     except Exception as e:
         logger.error(f"上传并分析失败: {e}")
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@csrf_exempt
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def analyze_text(request):
-    """直接分析文本内容"""
-    try:
-        title = request.data.get('title', '')
-        description = request.data.get('description', '')
-        project_id = request.data.get('project')
-
-        if not title or not description:
-            return Response({'error': '标题和描述不能为空'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # 创建一个虚拟的需求文档记录
-        document = RequirementDocument.objects.create(
-            title=title,
-            document_type='txt',
-            status='analyzing',
-            uploaded_by_id=1,  # 使用默认用户ID，或者从request.user获取
-            project_id=project_id if project_id else None,
-            extracted_text=description
-        )
-
-        def run_analysis():
-            try:
-                # 创建模拟分析结果
-                analysis_result = {
-                    'analysis_report': f'对需求"{title}"的分析已完成。\n\n需求描述：{description[:200]}...\n\n识别到若干功能性需求。',
-                    'requirements_count': 2,
-                    'requirements': [
-                        {
-                            'requirement_id': 'REQ001',
-                            'requirement_name': '基础功能需求',
-                            'requirement_type': 'functional',
-                            'module': '核心模块',
-                            'requirement_level': 'high',
-                            'estimated_hours': 8,
-                            'description': f'基于需求描述识别的功能需求：{description[:100]}...',
-                            'acceptance_criteria': '功能正常运行，满足用户需求'
-                        },
-                        {
-                            'requirement_id': 'REQ002',
-                            'requirement_name': '用户交互需求',
-                            'requirement_type': 'usability',
-                            'module': '前端模块',
-                            'requirement_level': 'medium',
-                            'estimated_hours': 6,
-                            'description': '用户界面和交互相关需求',
-                            'acceptance_criteria': '界面友好，操作简单'
-                        }
-                    ]
-                }
-
-                # 创建分析记录
-                analysis = RequirementAnalysis.objects.create(
-                    document=document,
-                    analysis_report=analysis_result['analysis_report'],
-                    requirements_count=analysis_result['requirements_count'],
-                    analysis_time=1.5
-                )
-
-                # 保存需求数据
-                for req_data in analysis_result['requirements']:
-                    BusinessRequirement.objects.create(
-                        analysis=analysis,
-                        **req_data
-                    )
-
-                # 更新文档状态
-                document.status = 'analyzed'
-                document.save()
-
-                return analysis
-
-            except Exception as e:
-                logger.error(f"分析失败: {e}")
-                document.status = 'failed'
-                document.save()
-                raise e
-
-        analysis = run_analysis()
-
-        return Response({
-            'message': '文本分析完成',
-            'document_id': document.id,
-            'analysis_id': analysis.id,
-            'requirements_count': analysis.requirements_count
-        })
-
-    except Exception as e:
-        logger.error(f"文本分析失败: {e}")
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -1467,7 +1371,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
     def generate(self, request):
         """创建新的测试用例生成任务"""
         try:
-            serializer = TestCaseGenerationRequestSerializer(data=request.data)
+            serializer = GenerateTaskRequestSerializer(data=request.data)
             if not serializer.is_valid():
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1522,6 +1426,13 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 'writer_prompt_config': writer_prompt.id if writer_prompt else None,
                 'reviewer_prompt_config': reviewer_prompt.id if reviewer_prompt else None,
             }
+
+            # 任务来源标记（source_type 列在库中非空无默认值，必须显式赋值）
+            source_type = request.data.get('source_type') or 'manual'
+            if source_type not in ('manual', 'document', 'testgen'):
+                source_type = 'manual'
+            task_data['source_type'] = source_type
+            task_data['source_ref'] = str(request.data.get('source_ref') or '')[:255]
 
             # 如果请求中包含项目ID，添加到任务数据中
             if 'project' in validated_data and validated_data['project']:

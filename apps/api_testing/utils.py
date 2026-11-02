@@ -3,6 +3,124 @@ import time
 from django.utils import timezone
 from .models import RequestHistory
 from .variable_resolver import VariableResolver
+from .ssrf_guard import safe_request  # H4：出站请求统一走 SSRF 校验
+
+# M15：响应体落库上限（默认 2MB）。超限截断并标记 truncated，避免大响应撑爆内存与 DB。
+DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+_CHUNK_SIZE = 64 * 1024
+
+
+def read_response_body(response, max_bytes=None):
+    """受控读取响应体，返回 ``(text, truncated)``。
+
+    - 请求侧应传 ``stream=True``，本函数按块读取，累计超过上限即停（内存占用 ≈ 上限 + 一块）；
+    - 非 stream（响应已整体缓存）时退化为对 ``response.content`` 截断；
+    - 读取结果回填 ``response._content``，使后续 ``response.text`` / ``response.json()``
+      与断言函数仍可用（基于已读部分），不会抛 "content already consumed"。
+    """
+    limit = DEFAULT_MAX_RESPONSE_BYTES if max_bytes is None else max(0, int(max_bytes))
+    truncated = False
+
+    cached = getattr(response, "_content", False)
+    if cached is not False:
+        data = cached or b""
+        if len(data) > limit:
+            data = data[:limit]
+            truncated = True
+    else:
+        buffer = bytearray()
+        for chunk in response.iter_content(chunk_size=_CHUNK_SIZE):
+            if not chunk:
+                continue
+            buffer.extend(chunk)
+            if len(buffer) > limit:
+                del buffer[limit:]
+                truncated = True
+                break
+        data = bytes(buffer)
+        if truncated:
+            # 未读完即截断：主动释放连接，避免连接池被大响应长期占用
+            try:
+                response.close()
+            except Exception:  # noqa: BLE001 - 关闭失败不影响已读数据
+                pass
+
+    response._content = data
+    response._content_consumed = True
+    encoding = getattr(response, "encoding", None) or "utf-8"
+    try:
+        text = data.decode(encoding, errors="replace")
+    except (LookupError, TypeError):
+        text = data.decode("utf-8", errors="replace")
+    return text, truncated
+
+
+def read_response_json(text, headers):
+    """从已截断文本解析 JSON；非 JSON Content-Type 或解析失败返回 None。"""
+    content_type = ""
+    try:
+        content_type = (headers.get("content-type") or "").lower()
+    except AttributeError:
+        content_type = ""
+    if "application/json" not in content_type:
+        return None
+    try:
+        return json.loads(text)
+    except (ValueError, TypeError):
+        return None
+
+
+def apply_auth(headers, params, auth):
+    """把 ``ApiRequest.auth`` 注入出站请求（M15：该字段此前定义却从未生效）。
+
+    支持结构（大小写/别名兼容）::
+
+        {"type": "none"}
+        {"type": "bearer",  "token": "..."}
+        {"type": "basic",   "username": "...", "password": "..."}
+        {"type": "api_key", "key": "X-API-Key", "value": "...", "in": "header" | "query"}
+
+    返回 ``(headers, params, requests_auth)``：``requests_auth`` 为 ``(user, pwd)`` 元组供
+    ``requests`` 生成 Basic 头，其余类型返回 None。用户已显式设置的 Authorization 头优先，
+    不被覆盖（避免“我以为设了 header 却被 auth 配置顶掉”）。
+    """
+    headers = dict(headers or {})
+    params = dict(params or {})
+    if not isinstance(auth, dict) or not auth:
+        return headers, params, None
+
+    auth_type = str(
+        auth.get("type") or auth.get("authType") or auth.get("kind") or ""
+    ).strip().lower()
+    requests_auth = None
+
+    if auth_type in ("bearer", "bearer_token", "token"):
+        token = auth.get("token") or auth.get("access_token") or auth.get("value") or ""
+        if token and not _has_header(headers, "authorization"):
+            headers["Authorization"] = f"Bearer {token}"
+
+    elif auth_type in ("basic", "basic_auth"):
+        username = auth.get("username") or auth.get("user") or ""
+        password = auth.get("password") or auth.get("pass") or ""
+        if (username or password) and not _has_header(headers, "authorization"):
+            requests_auth = (str(username), str(password))
+
+    elif auth_type in ("api_key", "apikey", "key"):
+        key = auth.get("key") or auth.get("name") or ""
+        value = auth.get("value") or auth.get("api_key") or ""
+        target = str(auth.get("in") or auth.get("addTo") or "header").lower()
+        if key:
+            if target in ("query", "params", "url"):
+                params[key] = value
+            else:
+                headers[key] = value
+
+    return headers, params, requests_auth
+
+
+def _has_header(headers, name):
+    """大小写无关地判断 header 是否已存在且非空。"""
+    return any(k.lower() == name and str(v).strip() for k, v in headers.items())
 
 
 def execute_assertions(response, assertions):
@@ -108,8 +226,6 @@ def execute_assertions(response, assertions):
 def execute_test_suite(test_suite, environment, executed_by):
     """执行测试套件并返回结果"""
     from .models import TestExecution, RequestHistory
-    import requests
-    import time
     
     try:
         # 创建变量解析器
@@ -176,19 +292,30 @@ def execute_test_suite(test_suite, environment, executed_by):
                         body_data = _replace_variables_in_dict(body_data, variables)
                         body_data = _resolve_variables_in_dict(body_data, resolver)
                 
+                # M15：注入认证信息（auth 字段此前从未生效）
+                headers, params, request_auth = apply_auth(
+                    headers, params, api_request.auth
+                )
+
                 # 执行请求
                 start_time = time.time()
-                response = requests.request(
-                    method=api_request.method,
-                    url=url,
+                response = safe_request(
+                    api_request.method,
+                    url,
                     headers=headers,
                     params=params,
                     json=body_data,
+                    auth=request_auth,
+                    stream=True,  # M15：受控读取
                     timeout=30
                 )
                 end_time = time.time()
                 response_time = (end_time - start_time) * 1000
-                
+
+                # M15：受控读取响应体（超限截断并标记 truncated）
+                response_text, body_truncated = read_response_body(response)
+
+
                 # 执行断言验证
                 assertions = api_request.assertions or []
                 for assertion in assertions:
@@ -247,8 +374,9 @@ def execute_test_suite(test_suite, environment, executed_by):
                     },
                     response_data={
                         'headers': dict(response.headers),
-                        'body': response.text,
-                        'json': response.json() if response.headers.get('content-type', '').startswith('application/json') else None
+                        'body': response_text,
+                        'json': read_response_json(response_text, response.headers),
+                        'truncated': body_truncated,
                     },
                     status_code=response.status_code,
                     response_time=response_time,
@@ -292,8 +420,6 @@ def execute_test_suite(test_suite, environment, executed_by):
 
 def execute_api_request(api_request, environment, executed_by):
     """执行单个API请求并返回结果"""
-    import requests
-    import time
     
     try:
         # 创建变量解析器
@@ -337,19 +463,30 @@ def execute_api_request(api_request, environment, executed_by):
                 body_data = _replace_variables_in_dict(body_data, variables)
                 body_data = _resolve_variables_in_dict(body_data, resolver)
         
+        # M15：注入认证信息（auth 字段此前从未生效）
+        headers, params, request_auth = apply_auth(
+            headers, params, api_request.auth
+        )
+
         # 执行请求
         start_time = time.time()
-        response = requests.request(
-            method=api_request.method,
-            url=url,
+        response = safe_request(
+            api_request.method,
+            url,
             headers=headers,
             params=params,
             json=body_data,
+            auth=request_auth,
+            stream=True,  # M15：受控读取
             timeout=30
         )
         end_time = time.time()
         response_time = (end_time - start_time) * 1000
-        
+
+        # M15：受控读取响应体（超限截断并标记 truncated）
+        response_text, body_truncated = read_response_body(response)
+
+
         # 执行断言验证
         assertions = api_request.assertions or []
         for assertion in assertions:
@@ -371,8 +508,9 @@ def execute_api_request(api_request, environment, executed_by):
             },
             response_data={
                 'headers': dict(response.headers),
-                'body': response.text,
-                'json': response.json() if response.headers.get('content-type', '').startswith('application/json') else None
+                'body': response_text,
+                'json': read_response_json(response_text, response.headers),
+                'truncated': body_truncated,
             },
             status_code=response.status_code,
             response_time=response_time,
@@ -388,8 +526,9 @@ def execute_api_request(api_request, environment, executed_by):
             'assertions_results': assertions_results,
             'response_data': {
                 'headers': dict(response.headers),
-                'body': response.text,
-                'json': response.json() if response.headers.get('content-type', '').startswith('application/json') else None
+                'body': response_text,
+                'json': read_response_json(response_text, response.headers),
+                'truncated': body_truncated,
             }
         }
         

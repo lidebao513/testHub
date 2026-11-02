@@ -9,15 +9,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import statistics
 from typing import Optional
 
+from . import cost_guard
 from .models import DimensionScore, JudgeVerdict, ScoreRequest
 from .rubric import Rubric
 from .config import get_config
 
 LABELS = ["excellent", "acceptable", "needs_improvement", "critical_failure"]
+
+logger = logging.getLogger(__name__)
 
 
 class JudgeEngine:
@@ -131,8 +135,17 @@ class JudgeEngine:
         # 缓存由 JudgeService 层统一管理（build_cache_key + get_cached/set_cached），
         # 此方法只负责 LLM 调用 + 多次运行聚合
         messages = self.build_prompt(req, rubric, findings)
+        # 成本护栏：裁判是 n_runs × judge_models 的放大用法，过期/额度耗尽的模型
+        # 会不报错地转按量计费，所以必须在真正发请求之前就逐模型拦掉。
+        blocked = {m: r for m in self.judge_models if (r := cost_guard.reject_reason(m))}
+        models = [m for m in self.judge_models if m not in blocked]
+        if not models:
+            detail = "；".join(f"{m}（{r}）" for m, r in blocked.items())
+            raise ValueError(f"[cost-guard] 裁判模型全部不可用：{detail}")
+        for model, why in blocked.items():
+            logger.warning(f"🛡️ 裁判模型 {model} 被成本护栏跳过：{why}")
         verdicts = []
-        for model in self.judge_models:
+        for model in models:
             for _ in range(self.n_runs):
                 try:
                     verdicts.append(self._parse(self._call(messages, model), model))

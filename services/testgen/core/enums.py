@@ -413,3 +413,17 @@ def is_http_method(method: str) -> bool:
     """method 是否为 HTTP 动词。"""
     m = (method or "").strip().upper().split()[0] if method else ""
     return m in _HTTP_VERB_SET
+
+
+# ============================ 免费额度状态（quota） ============================
+class QuotaState(Enum):
+    """模型免费额度的本地判定三态。
+
+    由「403 FreeTierOnly 落盘标记」与「用量账本成功记录」推导：
+    EXHAUSTED 有标记 / OK 调通过且无标记 / UNKNOWN 从未调用。
+    注意 OK **不是平台余额证明**——百炼不提供余额查询接口。
+    """
+
+    OK = "ok"
+    EXHAUSTED = "exhausted"
+    UNKNOWN = "unknown"

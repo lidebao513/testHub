@@ -25,6 +25,9 @@ def usage_tmp(tmp_path, monkeypatch):
     """用量文件指向临时目录 + 默认开启护栏。"""
     path = tmp_path / "llm_usage.json"
     monkeypatch.setenv("LLM_USAGE_PATH", str(path))
+    # 额度耗尽标记同样隔离：403 降级用例会落盘标记，不隔离会污染真实
+    # data/llm_quota_state.json，导致下次运行直接跳过该模型（假失败）。
+    monkeypatch.setenv("LLM_QUOTA_STATE_PATH", str(tmp_path / "llm_quota_state.json"))
     monkeypatch.setenv("LLM_BUDGET_ENFORCE", "1")
     monkeypatch.delenv("LLM_MODEL_ALLOWLIST", raising=False)
     monkeypatch.delenv("LLM_ALLOW_PAID_MODEL", raising=False)

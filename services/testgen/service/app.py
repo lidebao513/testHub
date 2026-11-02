@@ -13,14 +13,18 @@
 from __future__ import annotations
 
 import json
+import re
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -75,6 +79,12 @@ from workspace.manager import WorkspaceManager
 
 log = get_logger(__name__)
 settings = get_settings()
+
+# M18：/describe 分批与并发参数（单组 5 条，组间最多 4 路并发）
+_DESCRIBE_CHUNK_SIZE = 5
+_DESCRIBE_MAX_WORKERS = 4
+# 描述缓存写入锁：LLM 调用并发，DB 写串行（SQLite 多读单写）
+_DESCRIBE_DB_LOCK = threading.Lock()
 
 # P5 服务化：进程内后台执行器（生成任务异步化）。生产升级路径为 broker + 多 consumer。
 task_store = TaskStore()
@@ -161,10 +171,18 @@ async def unhandled_handler(_: Request, exc: Exception) -> JSONResponse:
 def require_auth(
     x_auth_token: Annotated[str | None, Header(alias="X-Auth-Token")] = None,
 ) -> None:
-    if not settings.auth_token:
+    # H8 修复：默认 fail-closed。
+    # - 配置了 AUTH_TOKEN：必须携带且匹配，否则拒绝；
+    # - 未配置 AUTH_TOKEN：仅当显式 AUTH_DISABLED=1（开发/内网逃生口）才放行，
+    #   否则一律拒绝，避免「忘记配令牌」导致服务裸奔。
+    if settings.auth_token:
+        if x_auth_token != settings.auth_token:
+            raise UnauthorizedError("缺少或无效的 X-Auth-Token")
         return
-    if x_auth_token != settings.auth_token:
-        raise UnauthorizedError("缺少或无效的 X-Auth-Token")
+    if not settings.auth_disabled:
+        raise UnauthorizedError(
+            "服务未配置 AUTH_TOKEN 且未显式设置 AUTH_DISABLED=1，已拒绝请求（fail-closed）"
+        )
 
 
 AuthDep = Annotated[None, Depends(require_auth)]
@@ -223,6 +241,13 @@ class PipelineRequest(BaseModel):
     allow_write: bool = Field(False, description="放行写操作；默认只跑只读请求")
     ui_click: bool = Field(False, description="UI 层执行真实点击（F13）；默认只做只读断言")
     exec_url: str = Field("", description="执行器被测服务地址（只跑接口层时可单独指定）")
+    async_mode: bool = Field(
+        False,
+        description=(
+            "M18：true 时本端点不再同步等待，立即返回 202 + task_id/poll_url"
+            "（任务模型与 /generate 一致）；默认 false 保持同步语义。"
+        ),
+    )
 
 
 class ParseInputRequest(BaseModel):
@@ -392,7 +417,8 @@ def ready() -> dict[str, Any]:
         conn.close()
     except Exception as exc:  # noqa: BLE001 - 就绪检查需兜住一切异常并如实上报
         return {"status": "not_ready", "detail": type(exc).__name__}
-    return {"status": "ready", "config": settings.public_dict()}
+    # M20：就绪探针只返回最小状态，绝不回显 db_path/output_dir/workspace_root 等内部路径
+    return {"status": "ready"}
 
 
 # ============================================================================
@@ -461,13 +487,36 @@ def build_opts_from_request(req: PipelineRequest) -> pipeline.PipelineOptions:
 
 
 @app.post("/api/v1/pipeline", dependencies=[Depends(require_auth)])
-def run_pipeline(req: PipelineRequest) -> dict[str, Any]:
-    """一站式同步生成（兼容旧调用方）。
+def run_pipeline(req: PipelineRequest) -> Any:
+    """一站式生成：默认同步执行，`async_mode=true` 时转后台任务（M18）。
 
-    注：服务化主入口已迁移到 `POST /api/v1/generate`（异步、可轮询、可幂等）。
-    本端点仍同步执行完整生成链路，便于一次性脚本 / 本地调试。
+    注：服务化主入口是 `POST /api/v1/generate`（异步、可轮询、可幂等）。
+    本端点保留同步语义供一次性脚本 / 本地调试使用；大仓同步跑会长时间挂住 HTTP
+    连接，调用方应改传 `async_mode=true` 拿 `task_id` 轮询。
     """
     opts = build_opts_from_request(req)
+    if req.async_mode:
+        # 复用 /generate 的任务模型（同一状态机、同一幂等键空间、同一 poll_url），不另起一套机制
+        idem = _idem_key_for_generate(req)
+        existing = task_store.find_by_idempotency(idem)
+        if existing and existing.state != TaskState.CANCELLED.value:
+            return _task_accepted(existing, status_code=202)
+        task = task_store.create(
+            kind="pipeline",
+            idempotency_key=idem,
+            request=_redacted_request(req),
+        )
+        executor.submit(
+            task.task_id,
+            partial(
+                _run_generation_job,
+                task.task_id,
+                opts,
+                force_execute=bool(opts.target_req.execute),
+            ),
+        )
+        return _task_accepted(task, 202)
+
     result = pipeline.run_pipeline(opts)
 
     payload: dict[str, Any] = {"result": result.to_dict()}
@@ -504,6 +553,8 @@ def _redacted_request(req: PipelineRequest) -> str:
 
 
 def _idem_key_for_generate(req: PipelineRequest) -> str:
+    # M11 修复：补充 selected_paths，否则「同一仓库 + 不同勾选子集」会命中旧的幂等任务，
+    # 返回与本次请求范围不符的历史产物。
     return "gen:" + "|".join(
         [
             req.local_path,
@@ -513,6 +564,7 @@ def _idem_key_for_generate(req: PipelineRequest) -> str:
             req.target or "",
             ",".join(sorted(req.scopes)),
             ",".join(sorted(req.changed_files)),
+            ",".join(sorted(req.selected_paths)),
             req.project_name,
         ]
     )
@@ -1302,13 +1354,30 @@ def _describe_build_prompt(need: list[Any]) -> str:
 
 
 def _describe_persist(repo_url: str, need: list[Any], new_desc: dict[str, str]) -> None:
-    """把 LLM 新生成的描述写回缓存（按 (repo_url, path) 作唯一键，repo_url 为空时亦缓存）。"""
-    for it in need:
-        key = _describe_item_key(it)
-        if key in new_desc:
-            store.upsert_file_description(
-                repo_url, key, _describe_symbols_sig(it), new_desc[key], settings.llm_model or ""
-            )
+    """把 LLM 新生成的描述写回缓存（按 (repo_url, path) 作唯一键，repo_url 为空时亦缓存）。
+
+    M18：各组并发调用 LLM，但**写库必须串行**——SQLite（WAL）支持多读单写，
+    多线程同时写会互相抢锁（本机 safe-delete 拦截 WAL 辅助文件时还会退化为
+    readonly）。写操作很短，串行不损并发收益；写失败也只降级为「本次不缓存」，
+    绝不影响已经拿到的描述返回给调用方。
+    """
+    try:
+        with _DESCRIBE_DB_LOCK:
+            for it in need:
+                key = _describe_item_key(it)
+                if key in new_desc:
+                    store.upsert_file_description(
+                        repo_url,
+                        key,
+                        _describe_symbols_sig(it),
+                        new_desc[key],
+                        settings.llm_model or "",
+                    )
+    except Exception as exc:  # noqa: BLE001 - 缓存写失败不影响本次响应（下次再补）
+        log.warning(
+            "describe 缓存写入失败（本次不缓存）",
+            extra=log_extra(err=type(exc).__name__),
+        )
 
 
 def _describe_parse(parsed: Any) -> dict[str, str]:
@@ -1346,6 +1415,61 @@ def _describe_merge(
             cached_map[key] = False
             unresolved += 1
     return unresolved
+
+
+def _describe_run_chunks(repo_url: str, chunks: list[list[Any]]) -> dict[str, str]:
+    """并发跑各分组 LLM（M18），带总预算兜底；返回已拿到的描述。
+
+    - 组间并发上限 `_DESCRIBE_MAX_WORKERS`：LLM 是 IO 等待型，4 路足以把
+      「6 组 × 60s」压到「2 轮 × 60s」量级，且不给上游模型造成突发压力。
+    - 总预算 `describe_budget_seconds`：超预算后不再等待剩余组，未完成组由
+      `_describe_merge` 计入 `unresolved`（前端回退展示符号名），**不假装成功**。
+    - 单组异常只影响该组（沿用原降级语义）。
+    """
+    if not chunks:
+        return {}
+    budget = float(getattr(settings, "describe_budget_seconds", 90) or 90)
+    pool = ThreadPoolExecutor(max_workers=min(_DESCRIBE_MAX_WORKERS, len(chunks)))
+    merged: dict[str, str] = {}
+    try:
+        futures = {pool.submit(_describe_one_chunk, repo_url, c): c for c in chunks}
+        try:
+            for fut in as_completed(futures, timeout=budget):
+                merged.update(fut.result() or {})
+        except TimeoutError:
+            pending = sum(1 for f in futures if not f.done())
+            log.warning(
+                "describe 超出总预算，未完成组回退原名",
+                extra=log_extra(budget=budget, chunks=len(chunks), pending=pending),
+            )
+    finally:
+        # 超预算时不能 wait=True（会把响应再挂满一个 llm_timeout）；运行中的线程
+        # 会在自身 timeout 到达后自然结束，不影响返回结果。
+        pool.shutdown(wait=False, cancel_futures=True)
+    return merged
+
+
+def _describe_one_chunk(repo_url: str, chunk: list[Any]) -> dict[str, str]:
+    """单组（≤5 条）调一次 LLM 并写缓存；失败返回空字典（该组回退展示原名）。"""
+    prompt = _describe_build_prompt(chunk)
+    try:
+        resp = chat_with_fallback(
+            channel="describe",
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+            model=settings.llm_model,
+            timeout=float(settings.llm_timeout or 60),
+            model_chain=settings.llm_model_chain or None,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        content = resp.choices[0].message.content or ""
+        chunk_desc = _describe_parse(_extract_json_block(content))
+    except Exception as exc:  # noqa: BLE001 - 诚实降级：该组 LLM 失败不阻塞其他组
+        log.warning("describe LLM 失败，该组回退原名", extra=log_extra(err=type(exc).__name__))
+        return {}
+    if chunk_desc:
+        _describe_persist(repo_url, chunk, chunk_desc)
+    return chunk_desc
 
 
 @app.post("/api/v1/describe", dependencies=[Depends(require_auth)])
@@ -1386,32 +1510,10 @@ def describe_features(req: DescribeRequest) -> dict[str, Any]:
             "error": "未配置 LLM（llm_api_key / llm_base_url / llm_model 不全）——未命中缓存的文件将回退展示类/函数名",
         }
 
-    new_desc: dict[str, str] = {}
-    unresolved = 0
-    # 单批量过大（如 30 条一次调 LLM）易超时被整批丢弃；改为每 5 条一组分别调用，
-    # 单组失败只回退该组，不拖累整批。
-    chunk_size = 5
-    for i in range(0, len(need), chunk_size):
-        chunk = need[i : i + chunk_size]
-        prompt = _describe_build_prompt(chunk)
-        try:
-            resp = chat_with_fallback(
-                channel="describe",
-                api_key=settings.llm_api_key,
-                base_url=settings.llm_base_url,
-                model=settings.llm_model,
-                timeout=float(settings.llm_timeout or 60),
-                model_chain=settings.llm_model_chain or None,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            content = resp.choices[0].message.content or ""
-            parsed = _extract_json_block(content)
-            chunk_desc = _describe_parse(parsed)
-            if chunk_desc:
-                new_desc.update(chunk_desc)
-                _describe_persist(repo_url, chunk, chunk_desc)
-        except Exception as exc:  # noqa: BLE001 - 诚实降级：该组 LLM 失败不阻塞其他组
-            log.warning("describe LLM 失败，该组回退原名", extra=log_extra(err=type(exc).__name__))
+    # M18：单批量过大（如 30 条一次调 LLM）易超时被整批丢弃；改为每 5 条一组，
+    # **组间并发**（原为串行 for 循环，6 组最坏 6×llm_timeout）。单组失败只回退该组。
+    chunks = [need[i : i + _DESCRIBE_CHUNK_SIZE] for i in range(0, len(need), _DESCRIBE_CHUNK_SIZE)]
+    new_desc = _describe_run_chunks(repo_url, chunks)
     unresolved = _describe_merge(need, new_desc, descriptions, cached_map)
     return {
         "ok": True,
@@ -1764,11 +1866,40 @@ def test_llm_config(pid: int) -> dict[str, Any]:
 # ============================================================================
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
+# 控制台 API 前缀：默认值与改造前写死的值一致，保证直连 8910 的旧用法行为不变。
+_API_PREFIX_DEFAULT = "/api/v1"
+# 白名单：仅允许「/ 开头 + 路径安全字符」，杜绝把引号/尖括号注入 JS 字符串（XSS）。
+_API_PREFIX_RE = re.compile(r"^/[A-Za-z0-9._~\-/]{0,120}$")
+
+
+def _resolve_api_prefix(request: Request) -> str:
+    """解析控制台 API 前缀：请求头 > query > 默认；非法值一律回退默认。
+
+    平台代理以 `X-Testhub-Api-Prefix` 注入专属前缀（如 `/testgen-api/v1`），
+    使控制台不再占用主平台的 `/api/v1/` 命名空间；`?api_prefix=` 仅用于手工调试。
+    """
+    raw = (
+        request.headers.get("X-Testhub-Api-Prefix") or request.query_params.get("api_prefix") or ""
+    ).strip()
+    if not raw:
+        return _API_PREFIX_DEFAULT
+    if not _API_PREFIX_RE.fullmatch(raw) or ".." in raw:
+        log.warning("非法 api_prefix 已拒绝并回退默认", extra=log_extra(value=raw[:64]))
+        return _API_PREFIX_DEFAULT
+    return raw.rstrip("/") or _API_PREFIX_DEFAULT
+
 
 @app.get("/", include_in_schema=False)
-def console_home() -> FileResponse:
-    """平台控制台首页：返回 `service/web/index.html`（自包含 HTML/JS，调用本服务 API）。"""
-    return FileResponse(WEB_DIR / "index.html")
+def console_home(request: Request) -> HTMLResponse:
+    """平台控制台首页：返回 `service/web/index.html`，并注入本次请求的 API 前缀。
+
+    直接打开 :8910 时前缀为默认 `/api/v1`（与改造前一致）；被主平台以 iframe
+    嵌入时，由代理通过请求头注入专属前缀，前端 `apiUrl()` 据此改写全部请求。
+    """
+    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    html = html.replace("__TESTGEN_API_PREFIX__", _resolve_api_prefix(request))
+    # 前缀随请求变化，禁止缓存，避免切换代理后读到上一次注入的值
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 # 本地静态资源（Chart.js 等）：从 `service/web` 提供，免去外部 CDN 依赖。

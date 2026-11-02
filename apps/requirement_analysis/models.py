@@ -556,6 +556,9 @@ class AIModelService:
         chain = AIModelService.model_chain(config.model_name)
         if not chain:
             raise Exception('未配置模型名（model_name 为空）')
+        if budget_cfg.enforce:
+            # 用完即停：按**到期时刻升序**重排，优先消耗快到期的模型（免得没用完就作废）。
+            chain = llm_budget.sort_chain_by_expiry(chain)
 
         logger.info(f"=== API调用详情 ===")
         logger.info(f"原始base_url: {config.base_url}")
@@ -623,7 +626,12 @@ class AIModelService:
                 logger.error(error_msg)
                 if AIModelService._is_model_unavailable(e.response.status_code, e.response.text):
                     last_error = error_msg
-                    logger.warning(f"模型 {model} 暂不可用（额度/限流/下线），按链切下一个")
+                    # 免费额度耗尽（FreeTierOnly）是一等信号：落盘标记后，后续调用在
+                    # check_call 里本地直接跳过，不必每次都撞 403 才知道。
+                    if llm_budget.is_free_tier_exhausted(e):
+                        llm_budget.mark_quota_exhausted(model, message=e.response.text[:300])
+                    else:
+                        logger.warning(f"模型 {model} 暂不可用（额度/限流/下线），按链切下一个")
                     continue
                 raise Exception(error_msg)
             except httpx.TimeoutException as e:

@@ -111,7 +111,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
-import { marked } from 'marked'
+import { renderMarkdown } from '@/utils/sanitize'
 import {
   getPerfProjects,
   getPerfComparisonReports,
@@ -164,10 +164,6 @@ function formatMetric(key, val) {
 function deltaText(pct) {
   if (pct === null || pct === undefined) return '-'
   return `${pct > 0 ? '+' : ''}${pct}%`
-}
-
-function renderMarkdown(text) {
-  return marked.parse(text || '')
 }
 
 async function loadProjects() {

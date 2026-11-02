@@ -5,6 +5,8 @@ import { useUserStore } from '@/stores/user'
 const api = axios.create({
   baseURL: '/api',
   timeout: 30000,
+  // M8：同源（Vite 代理到后端）请求自动携带 HttpOnly refresh Cookie，用于静默续期
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -103,27 +105,31 @@ api.interceptors.response.use(
         console.error('Logout请求401，直接清除本地状态')
         userStore.$patch((state) => {
           state.accessToken = ''
-          state.refreshToken = ''
           state.user = null
           state.tokenExpiresAt = 0
         })
-        localStorage.removeItem('access_token')
-        localStorage.removeItem('refresh_token')
-        localStorage.removeItem('token_expires_at')
         localStorage.removeItem('user')
         window.location.href = '/login'
         return Promise.reject(error)
       }
 
-      // 如果是刷新token的请求失败
+      // 如果是刷新token的请求本身失败（401）：说明当前无有效 refresh cookie 或已过期。
+      // 注意：这里绝不能调用 userStore.logout()——logout 内部会 window.location.href='/login'
+      // 触发页面重载；若由 initAuth 的静默续期（未登录访问登录页时）触发，将形成
+      // 401 → 跳转登录 → 重载 → 再次静默续期 → 401 的死循环。
+      // 这里只清除内存态并 reject，由调用方（initAuth / 自动刷新）自行决定后续跳转。
       if (originalRequest.url === '/auth/token/refresh/') {
-        console.error('Refresh token失败，跳转登录页')
-        await userStore.logout()
+        console.error('Refresh token失败，清除登录态（不跳转，避免循环）')
+        userStore.$patch((state) => {
+          state.accessToken = ''
+          state.user = null
+          state.tokenExpiresAt = 0
+        })
         return Promise.reject(error)
       }
 
-      // 如果有refresh token，尝试刷新
-      if (userStore.refreshToken && !isRefreshing) {
+      // 如果此前持有 access token（说明已登录、access 过期），尝试用 refresh cookie 刷新
+      if (userStore.accessToken && !isRefreshing) {
         originalRequest._retry = true
         isRefreshing = true
 

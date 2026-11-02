@@ -39,10 +39,19 @@ def _load_dotenv() -> None:
     load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
+_TRUE_VALUES = ("1", "true", "yes", "on", "y", "t")
+_FALSE_VALUES = ("0", "off", "false", "no", "n", "f")
+
+
 def _as_bool(raw: str | None, default: bool) -> bool:
     if raw is None or raw == "":
         return default
-    return raw.strip().lower() in ("1", "true", "yes", "on", "y", "t")
+    val = raw.strip().lower()
+    if val in _TRUE_VALUES:
+        return True
+    if val in _FALSE_VALUES:
+        return False
+    return default
 
 
 def _as_int(raw: str | None, default: int, name: str) -> int:
@@ -102,6 +111,9 @@ class Settings:
     llm_model: str = ""
     llm_api_key: str = ""
     llm_timeout: int = 60
+    # M18：/describe 的总时间预算（秒）。组间并发后仍需整体兜底——超预算的未完成组
+    # 按「回退展示符号名」降级，绝不让单个请求把前端树加载挂死。
+    describe_budget_seconds: int = 90
     # 降级链：LLM 增强通道模型不可用（免费额度 AllocationQuota.FreeTierOnly.）时按顺序切换的备选模型。
     # 未设 LLM_MODEL_CHAIN 时回退复用专家链（同一 key）。
     llm_model_chain: list[str] = field(default_factory=list)
@@ -167,6 +179,9 @@ class Settings:
 
     # 鉴权：为空表示不校验（仅限内网/开发）
     auth_token: str = ""
+    # H8 修复：fail-closed 逃生口。当且仅当未配置 AUTH_TOKEN 且显式 AUTH_DISABLED=1 时
+    # 才放行未鉴权请求；否则「未配令牌也未显式关闭」一律拒绝（默认安全）。
+    auth_disabled: bool = False
 
     def public_dict(self) -> dict[str, object]:
         """可安全输出的配置摘要（**不含任何密钥/密码**）。"""
@@ -189,6 +204,7 @@ class Settings:
             "llm_model_chain": self.llm_model_chain,
             "llm_key_configured": bool(self.llm_api_key),
             "auth_enabled": bool(self.auth_token),
+            "auth_disabled": self.auth_disabled,
             "business_extract_mode": self.business_extract_mode,
             "business_include_dirs": self.business_include_dirs,
             "fp_semantic_merge": self.fp_semantic_merge,
@@ -280,6 +296,23 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         g("LLM_MODEL_CHAIN"),
         expert_model_chain if expert_model_chain else ([_llm_model] if _llm_model else []),
     )
+    # 未显式配置 LLM_MODEL_CHAIN 时，从 LLM_MODEL_REGISTRY 自动推导文本链路
+    # （文本可用 + 开启 + 未过期，按到期升序：用完即停，先消耗快过期的）。
+    if not llm_model_chain:
+        try:
+            from core.llm_budget import evaluate_registry
+
+            llm_model_chain = [v["model"] for v in evaluate_registry() if v["usable_for_text"]]
+        except (ImportError, KeyError, ValueError, OSError):  # 推导失败不阻塞启动，退回兜底
+            llm_model_chain = []
+    else:
+        # 显式配置的链同样按到期时刻重排：手写顺序不该压过「先消耗快到期的」原则。
+        try:
+            from core.llm_budget import sort_chain_by_expiry
+
+            llm_model_chain = sort_chain_by_expiry(llm_model_chain)
+        except (ImportError, KeyError, ValueError, OSError):  # 排序失败不阻塞启动，沿用书写顺序
+            pass
 
     prd_dir_env = g("PRD_DIR")
     # 令牌取值来源：先定环境变量名，再从该名下取真实令牌（令牌本身不入 public_dict）。
@@ -302,6 +335,9 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         llm_model=g("LLM_MODEL") or "",
         llm_api_key=g("LLM_API_KEY") or "",
         llm_timeout=_as_int(g("LLM_TIMEOUT"), 60, "LLM_TIMEOUT"),
+        describe_budget_seconds=_as_int(
+            g("DESCRIBE_BUDGET_SECONDS"), 90, "DESCRIBE_BUDGET_SECONDS"
+        ),
         llm_model_chain=llm_model_chain,
         prd_enabled=_as_bool(g("PRD_ENABLED"), False),
         prd_dir=(Path(prd_dir_env).expanduser().resolve() if prd_dir_env else PROJECT_ROOT / "prd"),
@@ -336,6 +372,7 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         expert_agent_mode=_as_bool(g("EXPERT_AGENT_MODE"), False),  # 预留：自主 Agent 开关
         expert_model_chain=expert_model_chain,
         auth_token=g("AUTH_TOKEN") or "",
+        auth_disabled=_as_bool(g("AUTH_DISABLED"), False),
         business_extract_mode=_as_choice(
             g("BUSINESS_EXTRACT_MODE"),
             BUSINESS_EXTRACT_STRICT,

@@ -8,11 +8,31 @@ import sys
 import json
 from datetime import datetime, timedelta
 
-# 设置标准输出编码为 UTF-8，避免 Windows 系统上的编码问题
-if sys.platform == 'win32':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+def _ensure_utf8_stdio():
+    """Windows 下把 stdio 编码纠正为 UTF-8。
+
+    历史实现直接 ``sys.stdout = io.TextIOWrapper(sys.stdout.buffer, ...)``，有两个问题：
+      1. **导入即替换全局 stdout**：被替换对象的底层 buffer 随旧 wrapper 回收而失效，
+         任何之后接管 stdout 的框架（pytest capture、日志重定向、WSGI 服务器）都会读到
+         已关闭的 fd，报 ``ValueError: I/O operation on closed file``；
+      2. 重复导入会层层包装。
+    改用 ``reconfigure``（原地改编码，不新建对象），失败则保持原样，绝不影响调用方。
+    """
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError, AttributeError):
+            # 流可能已被替换/关闭（如测试捕获、守护进程重定向），保持原样即可
+            pass
+
+
+_ensure_utf8_stdio()
 
 # 导入数据工厂的工具类
 from apps.data_factory.tools.random_tools import RandomTools

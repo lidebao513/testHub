@@ -1,17 +1,20 @@
-# -*- coding: utf-8 -*-
 """UI 层端到端测试：testgen 控制台「生成用例」短分支名（G8 修复回归）。
 
 真实用户路径：打开 Django 代理页 :8900/testgen/ → 填代码目录 + 基线/分支 ref →
 选增量 → 点「生成用例」→ 轮询任务徽章直到终态 → 断言成功并截图。
 """
+
 import sys
 import time
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+
 CONSOLE_URL = "http://127.0.0.1:8900/testgen/"
-REPO_PATH = r"C:\Users\EDY\WorkBuddy\testhub_platform\services\testgen\data\workspaces\research-agent"
+REPO_PATH = (
+    r"C:\Users\EDY\WorkBuddy\testhub_platform\services\testgen\data\workspaces\research-agent"
+)
 BASE_REF = "oa-20260909"  # 复现用户报错时的输入：基线=oa-20260909 / 分支=master
 TARGET_REF = "master"
 SHOTS = Path(__file__).parent / "ui_shots"
@@ -24,9 +27,7 @@ def badge_state(page) -> str:
 
 def main() -> int:
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True, channel="msedge", args=["--no-proxy-server"]
-        )
+        browser = p.chromium.launch(headless=True, channel="msedge", args=["--no-proxy-server"])
         page = browser.new_page(viewport={"width": 1600, "height": 1000})
         page.goto(CONSOLE_URL, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_selector("#btn_gen", timeout=15000)

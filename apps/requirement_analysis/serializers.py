@@ -247,6 +247,7 @@ class PromptConfigSerializer(serializers.ModelSerializer):
 class TestCaseGenerationTaskSerializer(serializers.ModelSerializer):
     """测试用例生成任务序列化器"""
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
     project_name = serializers.CharField(source='project.name', read_only=True)
     writer_model_name = serializers.CharField(source='writer_model_config.name', read_only=True)
@@ -261,6 +262,7 @@ class TestCaseGenerationTaskSerializer(serializers.ModelSerializer):
                  'reviewer_model_config', 'reviewer_model_name', 'writer_prompt_config', 'writer_prompt_name',
                  'reviewer_prompt_config', 'reviewer_prompt_name', 'generated_test_cases',
                  'review_feedback', 'final_test_cases', 'generation_log', 'error_message',
+                 'source_type', 'source_type_display', 'source_ref',
                  'created_by', 'created_by_name', 'created_at', 'updated_at', 'completed_at']
         read_only_fields = ['task_id', 'status', 'progress', 'generated_test_cases', 
                           'review_feedback', 'final_test_cases', 'generation_log', 
@@ -284,8 +286,8 @@ class TestCaseGenerationTaskSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class TestCaseGenerationRequestSerializer(serializers.Serializer):
-    """新的测试用例生成请求序列化器"""
+class GenerateTaskRequestSerializer(serializers.Serializer):
+    """测试用例生成任务请求序列化器（供 TestCaseGenerationTask.generate 使用）"""
     title = serializers.CharField(max_length=200, help_text="任务标题")
     requirement_text = serializers.CharField(help_text="需求描述")
     use_writer_model = serializers.BooleanField(default=True, help_text="是否使用编写模型")

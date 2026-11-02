@@ -74,6 +74,35 @@ def health() -> dict[str, Any]:
     return resp.json()
 
 
+def classify_sidecar_error(exc: Exception) -> int:
+    """sidecar 调用异常 → 应回给前端的 HTTP 状态码。
+
+    区分「sidecar 根本没起来」与「sidecar 起来了但返回错误」：
+      - ConnectionError / Timeout → **503**（服务不可达，运维该去启动 sidecar）
+      - 其余（HTTP 非 2xx、响应解析失败、业务异常）→ **502**（上游错误）
+    """
+    if isinstance(
+        exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
+    ):
+        return 503
+    return 502
+
+
+def is_sidecar_available() -> tuple[bool, str]:
+    """探测 sidecar 是否可用。返回 ``(ok, detail)``，detail 供前端/日志展示。"""
+    try:
+        resp = _session.get(f"{base_url()}/health", timeout=min(3, timeout()))
+        resp.raise_for_status()
+        return True, "ok"
+    except (
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+    ) as exc:
+        return False, f"testgen sidecar 不可达：{exc}"
+    except Exception as exc:  # noqa: BLE001 - 探针需兜住一切异常
+        return False, f"testgen sidecar 响应异常：{exc}"
+
+
 def _build_generate_payload(
     *,
     local_path: str = "",
@@ -333,28 +362,38 @@ def quality_change_logs(project_id: int, *, limit: int = 100) -> dict[str, Any]:
 def quality_summary(project_id: int) -> dict[str, Any]:
     """聚合 testgen 质量分析（趋势/flaky/维度分布/变更），供主平台 reports 入口一次性取。
 
-    - 四项并行调用（避免串行最坏 ~8 分钟阻塞）；
-    - 单项调用异常被 _safe 捕获为 ``{"ok": False, "error": ...}``，不影响其余项返回；
-    - 顶层 ``ok`` = 四项业务全部成功（子项 HTTP 200 但 ``ok=False`` 也计入失败）。
+    - 四项**真正并发**调用：先全部 submit，再 ``as_completed`` 收集（避免串行最坏 ~8 分钟阻塞）；
+    - 单项调用异常被 ``_safe`` 捕获为 ``{"ok": False, "error": ...}``，不影响其余项返回；
+    - 顶层 ``ok`` = 四项均未抛异常（以各 quality 函数内部 ``raise_for_status`` 为准），
+      而非判断返回体是否含 ``ok`` 键（业务数据本就不含，旧逻辑会恒为 False）。
     """
     def _safe(fn):
         try:
-            return fn(project_id)
+            return True, fn(project_id)
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": str(exc)[:200]}
+            return False, {"ok": False, "error": str(exc)[:200]}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-        trend = ex.submit(_safe, quality_trend).result()
-        flaky = ex.submit(_safe, quality_flaky).result()
-        filters = ex.submit(_safe, quality_filter_options).result()
-        changes = ex.submit(_safe, quality_change_logs).result()
-    all_ok = all(s.get("ok", False) for s in (trend, flaky, filters, changes))
+        future_map = {
+            ex.submit(_safe, quality_trend): "trend",
+            ex.submit(_safe, quality_flaky): "flaky",
+            ex.submit(_safe, quality_filter_options): "filter_options",
+            ex.submit(_safe, quality_change_logs): "change_logs",
+        }
+        results: dict[str, Any] = {}
+        oks: dict[str, bool] = {}
+        for fut in concurrent.futures.as_completed(future_map):
+            name = future_map[fut]
+            ok, data = fut.result()
+            oks[name] = ok
+            results[name] = data
+
     return {
-        "ok": all_ok,
-        "trend": trend,
-        "flaky": flaky,
-        "filter_options": filters,
-        "change_logs": changes,
+        "ok": all(oks.values()),
+        "trend": results["trend"],
+        "flaky": results["flaky"],
+        "filter_options": results["filter_options"],
+        "change_logs": results["change_logs"],
     }
 
 

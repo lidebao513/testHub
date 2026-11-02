@@ -976,6 +976,7 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'v
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Folder, Document, MagicStick, Search, Close, CopyDocument, Delete } from '@element-plus/icons-vue'
 import api from '@/utils/api'
+import { sanitizeHtml } from '@/utils/sanitize'
 import KeyValueEditor from './components/KeyValueEditor.vue'
 import DataFactorySelector from '@/components/DataFactorySelector.vue'
 import { RequestModelParser } from '@/utils/requestModel'
@@ -1713,14 +1714,15 @@ const highlightedResponseBody = computed(() => {
   if (!responseBody.value) return ''
 
   try {
-    // 简单的 JSON 语法高亮
-    return responseBody.value
+    // 简单的 JSON 语法高亮；结果必须经 DOMPurify 净化，避免响应体中夹带的 HTML/script 注入
+    const html = responseBody.value
       .replace(/"([^"]+)"\s*:/g, '<span style="color: #268bd2;">"$1"</span>:')
       .replace(/:\s*"([^"]+)"/g, ': <span style="color: #2aa198;">"$1"</span>')
       .replace(/:\s*(true|false|null)/g, ': <span style="color: #cb4b16;">$1</span>')
       .replace(/:\s*([0-9]+(\.[0-9]+)?)/g, ': <span style="color: #d33682;">$1</span>')
+    return sanitizeHtml(html)
   } catch (e) {
-    return responseBody.value
+    return sanitizeHtml(responseBody.value)
   }
 })
 

@@ -28,12 +28,22 @@ from engine import llm_fallback
 
 @pytest.fixture()
 def usage_tmp(tmp_path, monkeypatch):
-    """把用量文件指向临时目录，并默认开启护栏（conftest 全局是关闭的）。"""
+    """把用量文件指向临时目录，并默认开启护栏（conftest 全局是关闭的）。
+
+    注意：allowlist/registry/allow_paid 必须设为「存在但为空」，不能用 delenv。
+    因为测试内 get_settings() 会再次触发 load_dotenv(override=False)，若这些键被删成
+    缺失，dotenv 会从 .env 把生产值（截图里的免费模型清单）重新注入，污染本用例假定
+    的「空白名单走付费关键字逻辑」环境。
+    """
     path = tmp_path / "llm_usage.json"
     monkeypatch.setenv("LLM_USAGE_PATH", str(path))
+    # 额度耗尽标记也必须隔离到本用例目录：403 用例会落盘标记，
+    # 否则假模型名会写进真实 data/llm_quota_state.json 并影响后续运行。
+    monkeypatch.setenv("LLM_QUOTA_STATE_PATH", str(tmp_path / "llm_quota_state.json"))
     monkeypatch.setenv("LLM_BUDGET_ENFORCE", "1")
-    monkeypatch.delenv("LLM_MODEL_ALLOWLIST", raising=False)
-    monkeypatch.delenv("LLM_ALLOW_PAID_MODEL", raising=False)
+    monkeypatch.setenv("LLM_MODEL_ALLOWLIST", "")
+    monkeypatch.setenv("LLM_MODEL_REGISTRY", "")
+    monkeypatch.setenv("LLM_ALLOW_PAID_MODEL", "")
     monkeypatch.setenv("LLM_DAILY_TOKEN_BUDGET", "100000")
     monkeypatch.setenv("LLM_CALL_MAX_INPUT_TOKENS", "24000")
     llm_fallback.reset_fallback_cache()
@@ -178,6 +188,36 @@ def test_guard_skips_paid_model_uses_free_one(usage_tmp):
 
     snap = llm_budget.snapshot()
     assert snap["used_tokens"] == 15, "成功后必须记账（prompt 10 + completion 5）"
+
+
+def test_guard_skips_expired_model_uses_next(usage_tmp, monkeypatch):
+    """链头模型免费额度已过期：护栏应跳过，自动改用链尾仍有效的模型。
+
+    这是「有效期」的真实后果验证——2026-11-13 之后 deepseek-v4-pro 到期，
+    链路必须自动落到 glm-5.3，而不是报错中断。
+    """
+    expired = (date.today() - timedelta(days=1)).isoformat()
+    live = (date.today() + timedelta(days=30)).isoformat()
+    monkeypatch.setenv(
+        "LLM_MODEL_REGISTRY",
+        f"deepseek-v4-pro-0813|llm|{expired}|on,glm-5.3|llm|{live}|on",
+    )
+    seen: list[str] = []
+
+    def handler(model, messages, temperature, **kwargs):
+        seen.append(model)
+        return _resp()
+
+    with patch("openai.OpenAI", return_value=_client(handler)):
+        llm_fallback.chat_with_fallback(
+            channel="llm",
+            api_key="k",
+            base_url="https://x",
+            timeout=10,
+            model_chain=["deepseek-v4-pro-0813", "glm-5.3"],
+            messages=_msgs(),
+        )
+    assert seen == ["glm-5.3"], "过期模型必须在使用前被跳过，不能真的发请求"
 
 
 def test_guard_stops_chain_when_daily_budget_exhausted(usage_tmp, monkeypatch):

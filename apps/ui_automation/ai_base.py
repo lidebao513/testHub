@@ -395,11 +395,15 @@ class _ActionGuard:
 
 
 def _assert_cost_allowed(model_name: str) -> None:
-    """成本护栏：付费档模型 / 当日预算到顶 → 抛 ValueError 拒跑。
+    """成本护栏：付费档 / 过期 / 额度耗尽 / 当日预算到顶 → 抛 ValueError 拒跑。
 
     为什么在 AI 用例这里格外重要：browser-use 每一步都把**完整 DOM** 重新塞进输入，
     一条 20 步的用例轻松几十万 input token。而百炼免费额度耗尽后会自动转按量计费
     （不报错、不中断），一次「顺手跑一条用例」就可能是十几元。
+
+    这里**必须**走和 `llm_budget.check_call` 同一套判定（白名单 → 登记册四道闸
+    （开关/类型/到期/临近到期闸）→ 额度耗尽标记 → 日预算），不能只查白名单：
+    免费额度跨过到期时刻的那部分同样不报错、只悄悄进账单，而 AI 用例单价最高。
 
     抽成独立函数而不是写在 `__init__` 里，是为了能脱离 agent 构造直接单测。
     """
@@ -408,7 +412,12 @@ def _assert_cost_allowed(model_name: str) -> None:
     cfg = llm_budget.load_settings()
     if not cfg.enforce:
         return
-    reason = llm_budget.check_model_allowed(model_name or '', cfg)
+    name = model_name or ''
+    reason = (
+        llm_budget.check_model_allowed(name, cfg)
+        or llm_budget.check_model_registry(name, cfg)
+        or llm_budget.quota_reject_reason(name)
+    )
     if not reason:
         used = int(llm_budget.day_usage(cfg.usage_path).get('total') or 0)
         if used >= cfg.daily_token_budget:

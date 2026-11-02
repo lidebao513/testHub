@@ -255,6 +255,7 @@
 
 <script>
 import api from '@/utils/api'
+import { sanitizeHtml } from '@/utils/sanitize'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { DocumentCopy } from '@element-plus/icons-vue'
 import * as XLSX from 'xlsx'
@@ -503,7 +504,8 @@ export default {
       // 转换换行符为<br>
       formatted = formatted.replace(/\n/g, '<br>')
 
-      return formatted
+      // 整体过 DOMPurify 净化，阻断 XSS
+      return sanitizeHtml(formatted)
     },
 
     toggleSelectAll() {

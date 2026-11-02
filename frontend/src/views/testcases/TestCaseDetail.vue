@@ -34,13 +34,13 @@
         <el-descriptions-item :label="$t('testcase.createdAt')" :span="2">{{ formatDate(testcase.created_at) }}</el-descriptions-item>
         <el-descriptions-item :label="$t('testcase.caseDescription')" :span="2">{{ testcase.description || $t('testcase.noDescription') }}</el-descriptions-item>
         <el-descriptions-item :label="$t('testcase.preconditions')" :span="2">
-          <div v-html="testcase.preconditions || $t('testcase.none')"></div>
+          <div v-html="sanitizeHtml(testcase.preconditions || $t('testcase.none'))"></div>
         </el-descriptions-item>
         <el-descriptions-item :label="$t('testcase.steps')" :span="2">
-          <div class="steps-content" v-html="testcase.steps || $t('testcase.none')"></div>
+          <div class="steps-content" v-html="sanitizeHtml(testcase.steps || $t('testcase.none'))"></div>
         </el-descriptions-item>
         <el-descriptions-item :label="$t('testcase.expectedResult')" :span="2">
-          <div v-html="testcase.expected_result || $t('testcase.none')"></div>
+          <div v-html="sanitizeHtml(testcase.expected_result || $t('testcase.none'))"></div>
         </el-descriptions-item>
       </el-descriptions>
     </div>
@@ -53,6 +53,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
+import { sanitizeHtml } from '@/utils/sanitize'
 import dayjs from 'dayjs'
 
 const { t } = useI18n()

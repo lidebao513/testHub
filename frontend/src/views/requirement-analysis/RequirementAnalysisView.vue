@@ -343,6 +343,7 @@ import api from '@/utils/api'
 import { ElMessage } from 'element-plus'
 import * as XLSX from 'xlsx'
 import { useUserStore } from '@/stores/user'
+import { sanitizeHtml } from '@/utils/sanitize'
 
 export default {
   name: 'RequirementAnalysisView',
@@ -602,13 +603,13 @@ export default {
       const config = this.configStatus[configKey]
       if (config.enabled) {
         // 绿色对勾
-        return '<span style="color: #27ae60; font-size: 18px;">✓</span>'
+        return sanitizeHtml('<span style="color: #27ae60; font-size: 18px;">✓</span>')
       } else if (config.configured) {
         // 禁用图标
-        return '<span style="color: #95a5a6; font-size: 18px;">○</span>'
+        return sanitizeHtml('<span style="color: #95a5a6; font-size: 18px;">○</span>')
       } else {
         // 红色叉号
-        return '<span style="color: #e74c3c; font-size: 18px;">✗</span>'
+        return sanitizeHtml('<span style="color: #e74c3c; font-size: 18px;">✗</span>')
       }
     },
 
@@ -669,7 +670,8 @@ export default {
         this.manualInput.title,
         requirementText,
         this.manualInput.selectedProject,
-        this.globalOutputMode  // 使用全局输出模式
+        this.globalOutputMode,  // 使用全局输出模式
+        'manual'
       )
     },
 
@@ -710,7 +712,8 @@ export default {
           this.documentTitle,
           requirementText,
           this.selectedProject,
-          this.globalOutputMode  // 使用全局输出模式
+          this.globalOutputMode,  // 使用全局输出模式
+          'document'
         )
 
       } catch (error) {
@@ -719,11 +722,11 @@ export default {
       }
     },
 
-    async startGeneration(title, requirementText, projectId, outputMode = 'stream') {
+    async startGeneration(title, requirementText, projectId, outputMode = 'stream', sourceType = 'manual') {
       // 在开始生成前，主动刷新token确保生成过程中不会过期
       try {
         const userStore = useUserStore()
-        if (userStore.isTokenExpiringSoon && userStore.refreshToken) {
+        if (userStore.isTokenExpiringSoon && userStore.accessToken) {
           console.log('Refreshing token before generation...')
           await userStore.refreshAccessToken()
           console.log('Token refreshed successfully, safe to start generation')
@@ -752,7 +755,8 @@ export default {
           requirement_text: requirementText,
           use_writer_model: true,
           use_reviewer_model: true,
-          output_mode: outputMode  // 添加输出模式参数
+          output_mode: outputMode,  // 添加输出模式参数
+          source_type: sourceType  // 任务来源：manual=手动输入 / document=需求文档
         }
 
         // 如果选择了项目，添加到请求中
@@ -1249,7 +1253,8 @@ export default {
       // 换行符转换为<br>
       html = html.replace(/\n/g, '<br>');
 
-      return html;
+      // 最终整体过 DOMPurify 净化，阻断任何残留的 XSS 载荷
+      return sanitizeHtml(html);
     },
 
     // 将HTML的<br>标签转换为换行符（用于Excel导出）

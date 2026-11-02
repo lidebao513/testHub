@@ -3,6 +3,8 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from datetime import datetime
 
+from .ssrf_guard import SsrfBlocked, validate_url
+
 
 class NullableDateField(serializers.DateField):
     """允许空字符串的日期字段"""
@@ -724,6 +726,29 @@ class TaskNotificationSettingDetailSerializer(serializers.ModelSerializer):
         """获取通知类型显示"""
         return obj.get_notification_type_display()
 
+    def validate_custom_webhook_bots(self, value):
+        """M16：webhook 地址在写入口做静态 SSRF 预检（不做 DNS，避免误伤）。
+
+        真正出站前仍由 ssrf_guard.safe_request 做完整（含重定向）校验。
+        """
+        if not value:
+            return value
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('自定义机器人配置格式应为对象')
+        for bot_type, cfg in value.items():
+            if not isinstance(cfg, dict):
+                continue
+            url = cfg.get('webhook_url')
+            if not url:
+                continue
+            try:
+                validate_url(str(url), resolve=False)
+            except SsrfBlocked as exc:
+                raise serializers.ValidationError(
+                    f'{bot_type} 的 webhook 地址不可用：{exc}'
+                ) from exc
+        return value
+
     def get_notification_config_detail(self, obj):
         """获取通知配置详情"""
         config = obj.get_notification_config()
@@ -806,20 +831,41 @@ class OperationLogSerializer(serializers.ModelSerializer):
 
 
 class AIServiceConfigSerializer(serializers.ModelSerializer):
-    """AI服务配置序列化器"""
+    """AI服务配置序列化器
+
+    H5：`api_key` 只写不读，任何列表/详情响应都只返回 `api_key_masked`
+    （前 8 位 + 打码），杜绝「列出配置即拿到明文 Key」。
+    """
     service_type_display = serializers.CharField(source='get_service_type_display', read_only=True)
     role_display = serializers.CharField(source='get_role_display', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+    api_key = serializers.CharField(
+        write_only=True, required=False, allow_blank=True, max_length=500,
+        trim_whitespace=True,
+    )
+    api_key_masked = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = AIServiceConfig
         fields = [
             'id', 'name', 'service_type', 'service_type_display',
-            'role', 'role_display', 'api_key', 'base_url', 'model_name',
+            'role', 'role_display', 'api_key', 'api_key_masked', 'base_url', 'model_name',
             'max_tokens', 'temperature', 'is_active', 'created_by',
             'created_by_name', 'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at', 'created_by']
+
+    def get_api_key_masked(self, obj):
+        return obj.masked_api_key() if obj else ''
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if 'api_key' in attrs and not (attrs.get('api_key') or '').strip():
+            # 局部更新时留空 = 不修改，避免把已有 Key 抹成空串
+            attrs.pop('api_key')
+        if self.instance is None and not (attrs.get('api_key') or '').strip():
+            raise serializers.ValidationError({'api_key': '新建配置时必须提供 API Key'})
+        return attrs
 
     def create(self, validated_data):
         validated_data['created_by'] = self.context['request'].user

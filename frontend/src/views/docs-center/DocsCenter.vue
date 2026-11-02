@@ -41,7 +41,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
-import { marked } from 'marked'
+import { renderMarkdown } from '@/utils/sanitize'
 import api from '@/utils/api'
 
 const { t } = useI18n()
@@ -63,7 +63,7 @@ const filteredDocs = computed(() => {
 
 const renderedHtml = computed(() => {
   if (!currentContent.value) return ''
-  return marked.parse(currentContent.value)
+  return renderMarkdown(currentContent.value)
 })
 
 const fetchDocs = async () => {

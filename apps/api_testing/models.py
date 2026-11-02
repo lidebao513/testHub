@@ -3,6 +3,8 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 import json
 
+from apps.monitor.utils.crypto import decrypt, encrypt
+
 User = get_user_model()
 
 
@@ -95,6 +97,7 @@ class ApiRequest(models.Model):
     post_request_script = models.TextField(blank=True, verbose_name='请求后脚本')
     assertions = models.JSONField(default=list, verbose_name='断言规则')
     order = models.IntegerField(default=0, verbose_name='排序')
+    tags = models.JSONField(blank=True, default=list, verbose_name='标签')
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name='创建者')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
@@ -614,7 +617,8 @@ class AIServiceConfig(models.Model):
     name = models.CharField(max_length=200, verbose_name='配置名称')
     service_type = models.CharField(max_length=20, choices=SERVICE_TYPE_CHOICES, verbose_name='服务类型')
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, verbose_name='角色类型')
-    api_key = models.CharField(max_length=500, verbose_name='API Key')
+    # H5：密文存储（Fernet 令牌约为明文长度的 1.4 倍 + 57，留足 1024 上限）
+    api_key = models.CharField(max_length=1024, verbose_name='API Key')
     base_url = models.CharField(max_length=500, verbose_name='API Base URL')
     model_name = models.CharField(max_length=200, verbose_name='模型名称')
     max_tokens = models.IntegerField(default=4096, verbose_name='最大Token数')
@@ -623,6 +627,27 @@ class AIServiceConfig(models.Model):
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name='创建者')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    def save(self, *args, **kwargs):
+        # H5：幂等加密——先 decrypt（明文原样返回）再 encrypt，保证始终单层密文。
+        # 与 monitor 的 Target/Channel.save 保持同一套做法。
+        self.api_key = encrypt(decrypt(self.api_key or ''))
+        super().save(*args, **kwargs)
+
+    def get_api_key(self):
+        """返回明文 API Key，供出站调用组装 Authorization 头。
+
+        从未加密的历史数据（明文）会被 decrypt 原样返回，保证平滑兼容；
+        SECRET_KEY 变更导致的解密失败返回空串，避免把密文当 Key 发出去。
+        """
+        return decrypt(self.api_key or '') or ''
+
+    def masked_api_key(self):
+        """脱敏展示：只保留前 8 位，其余打码；无 Key 时返回空串。"""
+        plain = self.get_api_key()
+        if not plain:
+            return ''
+        return f'{plain[:8]}****' if len(plain) > 8 else '****'
 
     class Meta:
         db_table = 'api_ai_service_configs'
