@@ -186,6 +186,8 @@ class PipelineResult:
     runtime_options: Any = None  # 运行时 UI 选项
     has_code: bool = False  # 是否有代码目录入口
     runtime_enabled: bool = False  # 是否启用运行时 UI 发现
+    # G-4：执行后安全裁判报告（生成引擎收尾处由 hooks.post_execution_security_judge 填充）
+    security_judge: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -205,6 +207,7 @@ class PipelineResult:
             "merge_conflicts": self.merge_conflicts,
             "channel_summary": self.channel_summary,
             "expert": self.expert_summary,
+            "security_judge": self.security_judge,
             "errors": self.errors,
         }
 
@@ -1203,6 +1206,16 @@ def run_execution(
             "finished_at": _now_iso(),
         }
     )
+    # G-4：执行引擎成功路径收尾 → 执行后安全裁判（fail-closed、非阻断）
+    try:
+        from engine import hooks as _hooks
+
+        summary["security_judge"] = _hooks.post_execution_security_judge(cases=cases).to_dict()
+    except Exception:  # noqa: BLE001 钩子异常绝不阻断主链路（fail-closed）
+        summary["security_judge"] = {
+            "verdict": "inconclusive",
+            "error": "security judge hook failed",
+        }
     written = store.record_execution(
         project_id, summary, mode=opts.mode, source_kind="execute", conn=None
     )
@@ -1459,6 +1472,20 @@ def run_pipeline(
     # 需求1：把各通道独立记录落盘（仅非空通道写文件）；e2e 等场景可置 False 后用自定义 base 重写出
     if opts.write_channel_records and result.project_id:
         channel_writer.write_channel_records(result.project_id, result, get_settings().output_dir)
+
+    # G-4：生成引擎成功路径收尾 → 执行后安全裁判（fail-closed、非阻断）
+    try:
+        from engine import hooks as _hooks
+
+        result.security_judge = _hooks.post_execution_security_judge(
+            cases=result.cases,
+            texts=[str(result.channel_summary.get("source_kind", ""))],
+        ).to_dict()
+    except Exception:  # noqa: BLE001 钩子异常绝不阻断主链路（fail-closed）
+        result.security_judge = {
+            "verdict": "inconclusive",
+            "error": "security judge hook failed",
+        }
 
     _emit(progress, "done", **result.counts)
     return result

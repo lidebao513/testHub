@@ -73,6 +73,9 @@ lines-after-imports = 2
 # 统一 LLM 降级链：需「捕获所有异常后区分额度不可用（→降级）与真实错误（→失败）」，
 # 故放行 BLE001；函数参数为语义明确的 keyword-only 入参（8 个），放行 PLR0913。
 "engine/llm_fallback.py" = ["BLE001", "PLR0913"]
+# G-4 执行后安全裁判钩子：fail-closed 须「捕获所有异常→记 inconclusive 不静默通过」，
+# 故放行 BLE001；捕获点已注明理由（见 engine/hooks.py:post_execution_security_judge）。
+"engine/hooks.py" = ["BLE001"]
 
 [tool.ruff.format]
 quote-style = "double"
