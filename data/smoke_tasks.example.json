@@ -1,0 +1,7 @@
+[
+  {
+    "name": "待办应用冒烟",
+    "task": "打开 https://todomvc.dev/examples/react/dist/ ，在输入框输入\"检查巡检功能\"并回车添加待办，然后确认列表里出现了这条待办",
+    "enabled": false
+  }
+]
