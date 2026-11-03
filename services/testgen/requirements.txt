@@ -8,7 +8,9 @@
 fastapi==0.141.1
 uvicorn[standard]
 python-dotenv
-openai
+# openai 3.x 为残缺命名空间包（顶层无 OpenAI、依赖 httpx2），CI 无锁安装会拉到 3.x 导致 mypy/运行失败；
+# 标准 SDK 在 1.x 线，锁 <2（与 pyproject.toml 一致）。
+openai>=1.99,<2
 httpx
 requests
 PyYAML

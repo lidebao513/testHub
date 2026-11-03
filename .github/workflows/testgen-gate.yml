@@ -40,4 +40,7 @@ jobs:
         run: python scripts/check_secrets.py
 
       - name: Quality gate (8 rings + pytest cov>=60)
+        # testgen 未配置 AUTH_TOKEN 时 fail-closed 拒绝请求；CI 无 .env，显式开逃生口以复现本地测试环境
+        env:
+          AUTH_DISABLED: "1"
         run: python scripts/gate_all.py
