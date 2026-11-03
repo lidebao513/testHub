@@ -111,6 +111,10 @@ class StageStore:
         self._save(snap.repo, data)
         return snap
 
+    def list_all(self, repo: str) -> list[StageSnapshot]:
+        data = self._load(repo)
+        return [StageSnapshot.from_dict(s) for s in data["stages"]]
+
     def list_by_branch(self, repo: str, branch: str) -> list[StageSnapshot]:
         data = self._load(repo)
         return [StageSnapshot.from_dict(s) for s in data["stages"] if s.get("branch") == branch]

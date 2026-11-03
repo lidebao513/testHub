@@ -11,6 +11,9 @@ from .views import (
     TestgenGenerateView,
     TestgenQualityView,
     TestgenScanView,
+    TestgenStageAnalyzeView,
+    TestgenStageCompareView,
+    TestgenStageListView,
     TestgenSyncView,
     TestgenTaskCancelView,
     TestgenTaskCasesView,
@@ -34,4 +37,7 @@ urlpatterns = [
     path(
         "tasks/<str:task_id>/cases", TestgenTaskCasesView.as_view(), name="task_cases"
     ),
+    path("stages", TestgenStageListView.as_view(), name="stage_list"),
+    path("stage-analyze", TestgenStageAnalyzeView.as_view(), name="stage_analyze"),
+    path("stage-compare", TestgenStageCompareView.as_view(), name="stage_compare"),
 ]

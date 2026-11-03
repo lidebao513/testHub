@@ -434,3 +434,59 @@ def create_security_defect(payload: dict[str, Any]) -> dict[str, Any]:
     )
     resp.raise_for_status()
     return resp.json()
+
+
+# ---------------------------------------------------------------------------
+# 分支阶段快照与对比（C3/C4 → #121 前端阶段对比视图）
+# ---------------------------------------------------------------------------
+
+
+def stage_analyze(
+    *, local_path: str, branch: str = "master", commit: str = ""
+) -> dict[str, Any]:
+    """对本地仓库当前状态做一次分析并登记阶段快照。"""
+    payload = {
+        "local_path": local_path,
+        "branch": branch or "master",
+        "commit": commit or "",
+    }
+    resp = _session.post(
+        f"{base_url()}/api/v1/stage-analyze",
+        json=payload,
+        headers=_headers(),
+        timeout=timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def stage_compare(
+    *, repo: str, from_ref: str, to_ref: str, repo_path: str = ""
+) -> dict[str, Any]:
+    """两阶段产物对比（功能点新增/失效/保留 + 可选 diff 统计）。"""
+    payload = {
+        "repo": repo,
+        "from_ref": from_ref,
+        "to_ref": to_ref,
+        "repo_path": repo_path or "",
+    }
+    resp = _session.post(
+        f"{base_url()}/api/v1/stage-compare",
+        json=payload,
+        headers=_headers(),
+        timeout=timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def list_stages(*, repo: str, branch: str = "") -> dict[str, Any]:
+    """列某仓库（可选某分支）的全部阶段快照（前端 from/to 下拉数据源）。"""
+    resp = _session.get(
+        f"{base_url()}/api/v1/stages",
+        params={"repo": repo, "branch": branch or ""},
+        headers=_headers(),
+        timeout=timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
