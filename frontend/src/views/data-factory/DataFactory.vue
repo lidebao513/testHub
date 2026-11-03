@@ -679,7 +679,7 @@
                     node-key="key"
                     class="json-tree"
                   >
-                    <template #default="{ node, data }">
+                    <template #default="{ data }">
                       <span class="json-tree-node" :class="`json-type-${data.type}`">
                         <span class="json-node-label">{{ data.label }}</span>
                       </span>

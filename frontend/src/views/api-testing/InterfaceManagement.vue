@@ -889,7 +889,7 @@
               <el-table-column prop="syntax" :label="$t('apiTesting.interface.syntax')" min-width="200" show-overflow-tooltip />
               <el-table-column prop="example" :label="$t('apiTesting.interface.example')" min-width="200" show-overflow-tooltip />
               <el-table-column :label="$t('apiTesting.interface.operation')" width="80" fixed="right">
-                <template #default="{ row }">
+                <template #default>
                   <el-button link type="primary" size="small">{{ $t('apiTesting.interface.insert') }}</el-button>
                 </template>
               </el-table-column>

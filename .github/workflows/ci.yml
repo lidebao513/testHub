@@ -3,12 +3,12 @@
 #
 # 检查分两档：
 #   - 必需（main 分支保护要求的 status check）：通过 job 名引用。
-#       * pr-lint   —— PR 标题符合 CODE_STANDARDS §4.1 约定，零依赖、恒定可用。
-#       * gate      —— 来自 testgen-gate.yml（八环质量门禁），在 main 的每次 PR 上必现。
-#   - 建议（advisory，continue-on-error，不纳入必需检查，避免因存量技术债误锁合并）：
-#       * django-tests   —— sqlite test settings，跑已知绿范围（tests + ui_automation + llm_judge）。
-#       * frontend-lint  —— ESLint（历史配置缺失已补 .eslintrc.cjs；存量 11 处错误为技术债）。
-#     待各自在 CI 稳定出绿基线后，再在分支保护中提升为必需检查（见 docs/GOVERNANCE_P0.md）。
+#       * pr-lint        —— PR 标题符合 CODE_STANDARDS §4.1 约定，零依赖、恒定可用。
+#       * gate           —— 来自 testgen-gate.yml（八环质量门禁），在 main 的每次 PR 上必现。
+#       * django-tests   —— sqlite test settings，已知绿范围（tests + ui_automation + llm_judge），362 passed。
+#       * frontend-lint  —— ESLint，0 error 基线（prettier 已从 ESLint 规则通道移除，见 .eslintrc.cjs 注释）。
+#   - 建议（advisory，continue-on-error，不纳入必需检查）：
+#       * 暂无。存量 vue 模板风格 warn（attributes-order 等）不阻断，保留可见，见 docs/GOVERNANCE_P0.md。
 name: ci
 
 on:
@@ -39,7 +39,6 @@ jobs:
 
   # Django 测试（test_settings 用 sqlite / 内存 Channel / locmem，无需 MySQL/Redis）
   django-tests:
-    continue-on-error: true # 建议项：依赖较重（requirements 含 easyocr→torch、selenium 等），基线稳定后再提升为必需
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -64,9 +63,8 @@ jobs:
         # 不含仓库根，导致 `import apps.*` 全部 ModuleNotFoundError。
         run: python -m pytest tests apps/ui_automation/tests apps/llm_judge/tests -q
 
-  # 前端 ESLint（.eslintrc.cjs 由本轮补齐；存量 11 处错误为技术债，先作建议项）
+  # 前端 ESLint：只管正确性（0 error 基线）。格式检查走 Prettier，不占本 job。
   frontend-lint:
-    continue-on-error: true # 建议项：存量 11 处错误修复后再提升为必需
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -80,5 +78,6 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
+      # 用 npm run lint 而不是内联命令：保证本地与 CI 完全同一套参数（无 --fix）。
       - name: ESLint
-        run: npx eslint . --ext .vue,.js,.jsx,.cjs,.mjs --ignore-path .gitignore
+        run: npm run lint

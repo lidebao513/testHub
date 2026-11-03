@@ -180,7 +180,7 @@
     <!-- 元素详情对话框 -->
     <el-dialog v-model="showDetailDialog" :title="$t('uiAutomation.element.elementDetail')" width="600px">
       <div v-if="Object.keys(currentElementDetail).length > 0" class="element-detail">
-        <el-descriptions border column="2" :column="{ xs: 1, sm: 2 }">
+        <el-descriptions border :column="2">
           <el-descriptions-item :label="$t('uiAutomation.element.elementName')">{{ currentElementDetail.name }}</el-descriptions-item>
           <el-descriptions-item :label="$t('uiAutomation.element.page')">{{ currentElementDetail.page }}</el-descriptions-item>
           <el-descriptions-item :label="$t('uiAutomation.element.project')">{{ currentElementDetail.project?.name || '-' }}</el-descriptions-item>

@@ -456,7 +456,7 @@ const exposeToWindow = () => {
       projects,
       selectedElement,
       loadElementTree,
-      treeRef: typeof treeRef !== 'undefined' ? treeRef : null,
+      treeRef,
       expandedKeys,
       pages,
       $vm: { // 当前组件实例

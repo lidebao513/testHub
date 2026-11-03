@@ -275,7 +275,7 @@
             :check-on-click-node="false"
             @check="onRequestCheck"
           >
-            <template #default="{ node, data }">
+            <template #default="{ data }">
               <div class="request-tree-node">
                 <el-icon v-if="data.type === 'collection'">
                   <Folder />

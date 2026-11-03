@@ -128,7 +128,7 @@
                     </div>
                     <div v-else class="element-canvas">
                       <div
-                        v-for="(poElement, index) in pageObjectElements"
+                        v-for="poElement in pageObjectElements"
                         :key="poElement.id"
                         class="canvas-element"
                         @click="selectCanvasElement(poElement)"
