@@ -34,13 +34,24 @@ if str(ROOT) not in sys.path:
 # 工具：用真实 settings.py 源码 + 受控 env 重新执行，得到干净的命名空间
 # （用真实源码，避免与实现漂移；env 覆盖 decouple 的 .env 取值）
 # ---------------------------------------------------------------------------
+
+# DEBUG=False 分支下 settings.py 会对若干「生产中必须显式配置」的项 fail-fast
+# （SECRET_KEY / REDIS_URL 等 H 系列修复）。本文件测的是 CORS / CSRF / TLS 分支，
+# 不是这些 fail-fast 本身，所以统一注入占位基线——否则测试结果会随
+# 「本机有没有 .env」漂移：本地绿、CI 红（CI 没有 .env）。
+_PRODUCTION_BASELINE_ENV = {
+    "SECRET_KEY": "test-only-placeholder-not-a-real-secret",
+    "REDIS_URL": "redis://127.0.0.1:6379/0",
+}
+
+
 def _exec_settings(env_overrides: dict) -> dict:
     src = SETTINGS_PATH.read_text(encoding="utf-8")
     saved = dict(os.environ)
     # 先清掉可能来自 .env / shell 的 CORS 取值，避免泄漏；随后仅由 env_overrides 控制
     os.environ.pop("CORS_ALLOWED_ORIGINS", None)
     os.environ.pop("CORS_ALLOW_ALL_ORIGINS", None)
-    for k, v in env_overrides.items():
+    for k, v in {**_PRODUCTION_BASELINE_ENV, **env_overrides}.items():
         os.environ[k] = v
     try:
         ns = {"__name__": "settings_exec_test", "__file__": str(SETTINGS_PATH)}
