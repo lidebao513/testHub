@@ -106,6 +106,7 @@
       <a href="#sec-sync">用例回流</a>
       <a href="#sec-verdict">安全判定</a>
       <a href="#sec-defects">安全缺陷</a>
+      <a href="#sec-stage-compare">阶段对比</a>
     </nav>
   </aside>
 
@@ -275,6 +276,46 @@
       <div id="def_result" class="result"></div>
       <div id="def_table"></div>
     </section>
+
+    <!-- 分支阶段对比（#121 / C4） -->
+    <section id="sec-stage-compare" class="card">
+      <h2>分支阶段对比 <span class="tag">POST /api/testgen/stage-analyze · stage-compare</span></h2>
+      <div class="row">
+        <div>
+          <label>仓库本地路径 *</label>
+          <input type="text" id="sc_repo" placeholder="如 D:/repos/research-agent" />
+        </div>
+        <div>
+          <label>分支</label>
+          <input type="text" id="sc_branch" value="master" />
+        </div>
+      </div>
+      <div class="hint">
+        「登记阶段快照」= 对当前代码做一次扫描分析并锚定到当前 HEAD；
+        两个以上快照后即可对比两阶段的功能点差异（新增/失效/保留）与 git diff 统计。
+      </div>
+      <button onclick="doStageAnalyze()">登记阶段快照</button>
+      <button class="ghost" onclick="loadStages()">加载快照列表</button>
+      <div id="sc_analyze_result" class="result"></div>
+
+      <div class="row" style="margin-top:12px">
+        <div>
+          <label>基线阶段（from）</label>
+          <select id="sc_from" style="width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:6px"></select>
+        </div>
+        <div>
+          <label>目标阶段（to）</label>
+          <select id="sc_to" style="width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:6px"></select>
+        </div>
+        <div>
+          <label>附带 diff 统计的仓库路径（可选，缺省用上方仓库路径）</label>
+          <input type="text" id="sc_repo_path" placeholder="可选" />
+        </div>
+      </div>
+      <button onclick="doStageCompare()">对比两阶段</button>
+      <div id="sc_compare_result" class="result"></div>
+      <div id="sc_compare_table"></div>
+    </section>
   </main>
 </div>
 
@@ -292,6 +333,9 @@ const API = {
   cancel: (id) => `/api/testgen/tasks/${id}/cancel`,
   cases: (id) => `/api/testgen/tasks/${id}/cases`,
   defects: '/api/defects/defects/?defect_type=security',
+  stages: '/api/testgen/stages',
+  stageAnalyze: '/api/testgen/stage-analyze',
+  stageCompare: '/api/testgen/stage-compare',
 };
 
 // 鉴权令牌：默认走同源会话（直接访问 /testgen/ 并已登录 Django 时）；
@@ -1266,7 +1310,7 @@ document.querySelectorAll('.sidebar nav a').forEach(a => {
 (function () {
   const params = new URLSearchParams(location.search);
   if (params.get('embed') !== '1') return;
-  const ZONE_MAP = { generate: 'sec-generate', sync: 'sec-sync', verdict: 'sec-verdict', defects: 'sec-defects' };
+  const ZONE_MAP = { generate: 'sec-generate', sync: 'sec-sync', verdict: 'sec-verdict', defects: 'sec-defects', 'stage-compare': 'sec-stage-compare' };
   const keep = ZONE_MAP[params.get('zone') || 'generate'];
   document.addEventListener('DOMContentLoaded', function () {
     document.body.classList.add('embed');
@@ -1281,6 +1325,107 @@ setInterval(loadHealth, 15000);
 loadProjects();
 restoreTasks();
 onGenModeChange();
+
+// ---- 分支阶段对比（#121 / C4）----
+function scRepo() { return document.getElementById('sc_repo').value.trim(); }
+function scBranch() { return document.getElementById('sc_branch').value.trim() || 'master'; }
+
+async function doStageAnalyze() {
+  const repo = scRepo();
+  if (!repo) { show('sc_analyze_result', '请先填仓库本地路径', 'warn'); return; }
+  show('sc_analyze_result', '扫描分析中…（大仓可能需要几十秒）', 'info');
+  const { status, data } = await api(API.stageAnalyze, {
+    method: 'POST',
+    body: JSON.stringify({ local_path: repo, branch: scBranch() }),
+  });
+  if (status !== 200 || !data || data.ok === false) {
+    show('sc_analyze_result', data || ('HTTP ' + status), 'error');
+    return;
+  }
+  show('sc_analyze_result', data, 'ok');
+  loadStages();
+}
+
+async function loadStages() {
+  const repo = scRepo();
+  if (!repo) { show('sc_analyze_result', '请先填仓库本地路径', 'warn'); return; }
+  const { status, data } = await api(API.stages + '?repo=' + encodeURIComponent(repo) + '&branch=' + encodeURIComponent(scBranch()));
+  if (status !== 200 || !data || data.ok === false) {
+    show('sc_analyze_result', data || ('HTTP ' + status), 'error');
+    return;
+  }
+  const stages = data.stages || [];
+  const opts = stages.map(function (s) {
+    const label = s.stage_id + '（' + (s.created_at || '').slice(0, 19).replace('T', ' ') + '）';
+    return '<option value="' + s.stage_id + '">' + label + '</option>';
+  }).join('');
+  document.getElementById('sc_from').innerHTML = opts;
+  document.getElementById('sc_to').innerHTML = opts;
+  // 目标阶段默认选最新一个
+  const to = document.getElementById('sc_to');
+  if (to.options.length > 1) to.selectedIndex = to.options.length - 1;
+  show('sc_analyze_result', '已加载 ' + stages.length + ' 个快照', stages.length ? 'ok' : 'warn');
+}
+
+function scRows(items, limit) {
+  const rows = (items || []).slice(0, limit).map(function (t) {
+    return '<tr><td>' + (t.id || '') + '</td><td>' + (t.title || t.name || '') + '</td><td>' +
+      (t.module || '') + '</td><td>' + (t.file_path || '') + '</td></tr>';
+  }).join('');
+  const rest = (items || []).length - Math.min((items || []).length, limit);
+  return { rows: rows, rest: rest };
+}
+
+function scTable(title, items, kind) {
+  const total = (items || []).length;
+  if (!total) return '';
+  const limit = 30;
+  const r = scRows(items, limit);
+  return '<h3 style="margin:14px 0 6px;font-size:14px">' + title + '（' + total + '）</h3>' +
+    '<table><thead><tr><th>ID</th><th>名称</th><th>模块</th><th>文件</th></tr></thead><tbody>' +
+    r.rows + '</tbody></table>' +
+    (r.rest > 0 ? '<div class="hint">…其余 ' + r.rest + ' 条见完整 JSON 输出</div>' : '');
+}
+
+async function doStageCompare() {
+  const repo = scRepo();
+  const fromV = document.getElementById('sc_from').value;
+  const toV = document.getElementById('sc_to').value;
+  if (!repo || !fromV || !toV) { show('sc_compare_result', '请先填仓库路径并加载快照列表', 'warn'); return; }
+  if (fromV === toV) { show('sc_compare_result', '基线与目标不能是同一快照', 'warn'); return; }
+  show('sc_compare_result', '对比中…', 'info');
+  const { status, data } = await api(API.stageCompare, {
+    method: 'POST',
+    body: JSON.stringify({
+      repo: repo,
+      from_ref: fromV,
+      to_ref: toV,
+      repo_path: document.getElementById('sc_repo_path').value.trim() || repo,
+    }),
+  });
+  if (status !== 200 || !data || data.ok === false) {
+    show('sc_compare_result', data || ('HTTP ' + status), 'error');
+    return;
+  }
+  show('sc_compare_result', data, 'ok');
+  const rep = data.report || {};
+  const ds = rep.diff_stat || {};
+  let html = '';
+  html += '<div class="hint" style="margin-top:10px">汇总：功能点 新增 ' + (rep.added_tps || []).length +
+    ' / 失效 ' + (rep.removed_tps || []).length + ' / 保留 ' + (rep.kept_tps || []).length +
+    '；问题 新增 ' + (rep.added_issues || []).length + ' / 修复 ' + (rep.fixed_issues || []).length + '</div>';
+  if (ds.changed_file_count !== undefined) {
+    html += '<div class="hint">git diff：' + ds.changed_file_count + ' 个文件变更，' +
+      (ds.hunk_count || 0) + ' 个 hunk</div>';
+  } else if (ds.error) {
+    html += '<div class="hint">diff 统计：' + ds.error + '</div>';
+  }
+  html += scTable('➕ 新增功能点', rep.added_tps);
+  html += scTable('➖ 失效功能点', rep.removed_tps);
+  html += scTable('♻️ 新增问题', rep.added_issues);
+  html += scTable('🛠️ 已修复问题', rep.fixed_issues);
+  document.getElementById('sc_compare_table').innerHTML = html;
+}
 
 // 通知父页面（SPA 嵌入场景）本页已就绪，等待鉴权令牌
 try {

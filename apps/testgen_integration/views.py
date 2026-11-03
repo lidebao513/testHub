@@ -33,8 +33,11 @@ from .client import (
     is_sidecar_available,
     list_branches,
     list_commits,
+    list_stages,
     quality_summary,
     scan,
+    stage_analyze,
+    stage_compare,
     task_cases,
     verdict,
 )
@@ -320,3 +323,70 @@ class TestgenQualityView(APIView):
         except Exception as exc:  # noqa: BLE001
             return _sidecar_error_response(exc)
         return Response({"project_id": pid, **data})
+
+
+class TestgenStageListView(APIView):
+    """列某仓库（可选某分支）的阶段快照（#121 前端阶段对比 from/to 下拉）。"""
+
+    permission_classes: ClassVar[list] = [IsAuthenticated]
+    parser_classes = _PARSERS
+
+    def get(self, request: Any) -> Response:
+        repo = (request.query_params.get("repo") or "").strip()
+        if not repo:
+            return Response({"ok": False, "error": "repo 必填"}, status=400)
+        branch = (request.query_params.get("branch") or "").strip()
+        try:
+            data = list_stages(repo=repo, branch=branch)
+        except Exception as exc:  # noqa: BLE001 - 连接/超时→502
+            return _sidecar_error_response(exc)
+        return Response({"ok": True, **data})
+
+
+class TestgenStageAnalyzeView(APIView):
+    """对本地仓库当前状态做一次分析并登记阶段快照（#121）。"""
+
+    permission_classes: ClassVar[list] = [IsAuthenticated]
+    parser_classes = _PARSERS
+
+    def post(self, request: Any) -> Response:
+        body = request.data or {}
+        local_path = (body.get("local_path") or "").strip()
+        if not local_path:
+            return Response({"ok": False, "error": "local_path 必填"}, status=400)
+        try:
+            data = stage_analyze(
+                local_path=local_path,
+                branch=body.get("branch") or "master",
+                commit=body.get("commit") or "",
+            )
+        except Exception as exc:  # noqa: BLE001 - 连接/超时→502
+            return _sidecar_error_response(exc)
+        return Response({"ok": True, **data})
+
+
+class TestgenStageCompareView(APIView):
+    """两阶段产物对比（#121 前端阶段对比视图数据源）。"""
+
+    permission_classes: ClassVar[list] = [IsAuthenticated]
+    parser_classes = _PARSERS
+
+    def post(self, request: Any) -> Response:
+        body = request.data or {}
+        repo = (body.get("repo") or "").strip()
+        from_ref = (body.get("from_ref") or "").strip()
+        to_ref = (body.get("to_ref") or "").strip()
+        if not repo or not from_ref or not to_ref:
+            return Response(
+                {"ok": False, "error": "repo / from_ref / to_ref 必填"}, status=400
+            )
+        try:
+            data = stage_compare(
+                repo=repo,
+                from_ref=from_ref,
+                to_ref=to_ref,
+                repo_path=body.get("repo_path") or "",
+            )
+        except Exception as exc:  # noqa: BLE001 - 连接/超时→502
+            return _sidecar_error_response(exc)
+        return Response({"ok": True, **data})

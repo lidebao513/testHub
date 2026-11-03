@@ -927,6 +927,111 @@ def analyze(req: AnalyzeRequest) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# 分支阶段快照与对比（C3/C4：stage-analyze / stage-compare / stages 列表）
+# ---------------------------------------------------------------------------
+
+
+class StageAnalyzeRequest(BaseModel):
+    """阶段快照请求：对本地仓库当前状态做一次分析并登记为阶段快照。"""
+
+    local_path: str = Field(..., description="本地仓库路径（也是 StageStore 的 repo 键）")
+    branch: str = Field("master", description="分支名（快照归属）")
+    commit: str = Field("", description="显式 commit（缺省取当前 HEAD）")
+    include_business: bool = True
+    extract_pages: bool = True
+
+
+class StageCompareRequest(BaseModel):
+    """两阶段对比请求。from_ref/to_ref 为 stage_id 或分支 ref（由 StageStore.resolve）。"""
+
+    repo: str = Field(..., description="仓库路径（与 stage-analyze 的 local_path 一致）")
+    from_ref: str
+    to_ref: str
+    repo_path: str = Field("", description="可选；提供时附带两 commit 的 git diff 统计")
+
+
+def _stage_store():
+    from engine.stage_snapshot import StageStore
+
+    return StageStore(settings.workspace_root / "stages")
+
+
+@app.post("/api/v1/stage-analyze", dependencies=[Depends(require_auth)])
+def stage_analyze(req: StageAnalyzeRequest) -> dict[str, Any]:
+    """扫描 + 功能点提取 + 登记阶段快照（C3）。
+
+    与 `/api/v1/analyze` 同一套功能点语义（含合并开关）；产物作为 `analysis`
+    artifact 存入 StageStore，供 stage-compare 对比两阶段差异。
+    """
+    from engine import fp_extract, fp_merge, scan
+    from engine.stage_snapshot import create_snapshot
+
+    scanner = scan.Scanner(req.local_path)
+    files = scanner.index()
+    extracted = fp_extract.extract_functional_points(
+        files, include_business=req.include_business, extract_pages=req.extract_pages
+    )
+    fps = extracted.functional_points
+    if settings.fp_semantic_merge:
+        fps, _ = fp_merge.dedupe_functional_points(fps)
+
+    repo = str(Path(req.local_path).resolve())
+    store_stages = _stage_store()
+    snap = create_snapshot(store_stages, repo, req.branch, commit=req.commit or None)
+    analysis = {
+        "stage_id": snap.stage_id,
+        "commit": snap.commit,
+        "branch": snap.branch,
+        # 对比引擎按 id 索引；功能点用 fp_id 做稳定键
+        "test_points": [
+            {
+                "id": fp.fp_id,
+                "name": fp.name,
+                "title": fp.title,
+                "module": fp.module,
+                "file_path": fp.file_path,
+                "ftype": fp.ftype,
+            }
+            for fp in fps
+        ],
+        "issues": [],
+    }
+    store_stages.save_artifact(snap, "analysis", analysis)
+    return {
+        "ok": True,
+        "stage_id": snap.stage_id,
+        "commit": snap.commit,
+        "branch": snap.branch,
+        "stats": {"files": len(files), "functional_points": len(fps)},
+    }
+
+
+@app.post("/api/v1/stage-compare", dependencies=[Depends(require_auth)])
+def stage_compare(req: StageCompareRequest) -> dict[str, Any]:
+    """两阶段产物对比（C3）：新增/失效/保留的功能点与问题 + 可选 diff 统计。"""
+    from engine.stage_compare import compare_stages
+
+    repo = str(Path(req.repo).resolve())
+    report = compare_stages(
+        _stage_store(),
+        repo,
+        req.from_ref,
+        req.to_ref,
+        repo_path=req.repo_path or None,
+    )
+    return {"ok": True, "report": report.to_dict()}
+
+
+@app.get("/api/v1/stages", dependencies=[Depends(require_auth)])
+def list_stages(repo: str, branch: str = "") -> dict[str, Any]:
+    """列某仓库（可选某分支）的全部阶段快照（前端 from/to 下拉数据源）。"""
+    store_stages = _stage_store()
+    repo = str(Path(repo).resolve())
+    snaps = store_stages.list_by_branch(repo, branch) if branch else store_stages.list_all(repo)
+    return {"ok": True, "stages": [s.to_dict() for s in snaps]}
+
+
 @app.get("/api/v1/projects", dependencies=[Depends(require_auth)])
 def list_projects() -> dict[str, Any]:
     return {"projects": store.list_projects()}
