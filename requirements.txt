@@ -114,6 +114,9 @@ pypdf==6.5.0
 PyPDF2==3.0.1
 PySocks==1.7.1
 pytest==8.4.1
+# pytest-django 此前只装在本地，未写进依赖 → CI 里 pytest.ini 的 DJANGO_SETTINGS_MODULE 不生效，
+# 测试各自 django.setup()，碰到 backend.settings 的 SECRET_KEY fail-fast 就整批收集失败。
+pytest-django==4.14.0
 python-barcode==0.16.1
 python-dateutil==2.9.0.post0
 python-decouple==3.8

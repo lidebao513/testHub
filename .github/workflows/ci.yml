@@ -52,10 +52,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: "Run Django tests (canonical green scope: 263 tests)"
+      - name: "Run Django tests (canonical green scope)"
         env:
           DJANGO_SETTINGS_MODULE: backend.test_settings
-        run: pytest tests apps/ui_automation/tests apps/llm_judge/tests -q
+          # backend/test_settings.py 里 `from backend.settings import *`，而 settings 在
+          # DEBUG=False 时对 SECRET_KEY 缺失 fail-fast（H2 修复）。CI 没有 .env，
+          # 所以这里给一个仅供测试的占位值——不是密钥，也不进任何运行时路径。
+          SECRET_KEY: ci-test-only-placeholder-not-a-real-secret
+          DEBUG: "1"
+        # 必须用 `python -m pytest`：裸 `pytest` 的 sys.path[0] 是 pytest 脚本所在目录，
+        # 不含仓库根，导致 `import apps.*` 全部 ModuleNotFoundError。
+        run: python -m pytest tests apps/ui_automation/tests apps/llm_judge/tests -q
 
   # 前端 ESLint（.eslintrc.cjs 由本轮补齐；存量 11 处错误为技术债，先作建议项）
   frontend-lint:
