@@ -10,6 +10,7 @@ os.environ['ANONYMIZED_TELEMETRY'] = 'false'
 import asyncio
 import contextvars
 import functools
+import ipaddress
 import json
 import re
 from dotenv import load_dotenv
@@ -298,19 +299,145 @@ def _split_env_list(raw):
     return {_normalize_host(part) for part in str(raw or '').split(',') if _normalize_host(part)}
 
 
+# ============================================================================
+# #179 内网 / 云元数据拦截
+# ============================================================================
+# 背景：③ 域名层原来只按「白名单里有谁」判断，白名单为空时直接放行（见 check() 的逃生口），
+# 于是任务里没写 URL 的场景下 Agent 可以导航到任意地址——包括 169.254.169.254 这类
+# 云厂商元数据端点（拿到实例角色的临时凭据），以及内网管理后台。
+#
+# 分级策略（三档，越靠前越硬）：
+#   1. 云元数据端点：**无条件硬拦**，不受 domain_mode / UI_ALLOWED_DOMAINS 影响，没有开关。
+#   2. 内网私有段：默认拦，可用 UI_ALLOWED_DOMAINS 显式放行（平台要测自己跑在 :8900 的主用例）。
+#   3. 回环地址：默认放行（本地自测是主要场景）。
+#
+# 已知局限：只判 host 字面量，**不做 DNS 解析**——域名指向内网 IP 时拦不住（见文档 §4）。
+
+# 云元数据端点：169.254.0.0/16 覆盖 AWS/GCP/Azure/腾讯云的链路本地元数据，
+# 100.100.100.200 是阿里云 ECS 的元数据服务地址（不在链路本地段，必须单列）。
+_METADATA_NETS = (ipaddress.ip_network('169.254.0.0/16'),)
+_METADATA_IPS = frozenset({ipaddress.ip_address('100.100.100.200')})
+# 元数据的常见域名写法（都解析到上面这些 IP，直接按名字拦更省事、也更早）
+_METADATA_HOSTNAMES = frozenset(
+    {
+        'metadata',
+        'metadata.google.internal',
+        'metadata.goog',
+        'metadata.azure.com',
+        'metadata.tencentyun.com',
+        'metadata.tencent.internal',
+        'instance-data',
+        'instance-data.ec2.internal',
+    }
+)
+
+# 私有网段（RFC1918 + 0.0.0.0/8「本机」+ IPv6 ULA）
+_PRIVATE_NETS = (
+    ipaddress.ip_network('10.0.0.0/8'),
+    ipaddress.ip_network('172.16.0.0/12'),
+    ipaddress.ip_network('192.168.0.0/16'),
+    ipaddress.ip_network('0.0.0.0/8'),
+    ipaddress.ip_network('fc00::/7'),
+)
+_LOOPBACK_NETS = (
+    ipaddress.ip_network('127.0.0.0/8'),
+    ipaddress.ip_network('::1/128'),
+)
+_LOOPBACK_NAMES = frozenset({'localhost', 'localhost.localdomain', 'ip6-localhost'})
+
+
+def _parse_ip_literal(host):
+    """把 host 解析成 ip_address 对象；不是 IP 字面量则返回 None。
+
+    额外处理浏览器的**混淆写法**：`http://2852039166/`、`http://0xA9FEA9FE/`
+    都会被浏览器当成 169.254.169.254，只认点分十进制等于留了个绕过口子。
+    """
+    text = str(host or '').strip().strip('[]')
+    if not text:
+        return None
+    try:
+        return ipaddress.ip_address(text)
+    except ValueError:
+        pass
+    try:
+        if text[:2].lower() == '0x':
+            number = int(text, 16)
+        elif text.isdigit():
+            number = int(text, 10)
+        else:
+            return None
+    except ValueError:
+        return None
+    if 0 <= number <= 0xFFFFFFFF:
+        return ipaddress.IPv4Address(number)
+    return None
+
+
+def _ip_in_any(ip, networks):
+    """ip 是否落在任一网段内（显式比较 version，避免 v4/v6 混比抛错）。"""
+    for net in networks:
+        if ip.version == net.version and ip in net:
+            return True
+    return False
+
+
+def _is_cloud_metadata_host(host):
+    """是否云元数据端点（硬拦，不可配置）。"""
+    name = _normalize_host(host)
+    if not name:
+        return False
+    if name in _METADATA_HOSTNAMES:
+        return True
+    ip = _parse_ip_literal(name)
+    if ip is None:
+        return False
+    if ip in _METADATA_IPS:
+        return True
+    return _ip_in_any(ip, _METADATA_NETS)
+
+
+def _is_loopback_host(host):
+    name = _normalize_host(host)
+    if not name:
+        return False
+    if name in _LOOPBACK_NAMES:
+        return True
+    ip = _parse_ip_literal(name)
+    return ip is not None and _ip_in_any(ip, _LOOPBACK_NETS)
+
+
+def _is_private_host(host):
+    """是否内网私有段（不含回环与元数据，两者各有独立策略）。"""
+    name = _normalize_host(host)
+    if not name or _is_loopback_host(name) or _is_cloud_metadata_host(name):
+        return False
+    ip = _parse_ip_literal(name)
+    return ip is not None and _ip_in_any(ip, _PRIVATE_NETS)
+
+
 class _ActionGuard:
     """任务级动作守卫（M10 的 ②③ 层）。
 
     - blocked_actions：命中即拒绝执行
     - domain_mode：off / warn（默认，只记日志）/ strict（不在白名单的 URL 一律拒绝）
+    - private_mode：block（默认，拦内网私有段）/ warn（只记日志）/ off
+      注意：云元数据端点由 check() 无条件硬拦，与 private_mode、domain_mode 均无关。
     """
 
-    def __init__(self, allowed_domains=None, blocked_actions=None, domain_mode='warn', semantic_guard=False):
+    def __init__(
+        self,
+        allowed_domains=None,
+        blocked_actions=None,
+        domain_mode='warn',
+        semantic_guard=False,
+        private_mode='block',
+    ):
         self.allowed_domains = set(allowed_domains or ())
         self.blocked_actions = set(blocked_actions or ())
         self.domain_mode = domain_mode if domain_mode in {'off', 'warn', 'strict'} else 'warn'
         # 语义族兜底：UI_BLOCKED_ACTIONS 未显式配置时开启，防止动作改名后漏拦
         self.semantic_guard = semantic_guard
+        self.private_mode = private_mode if private_mode in {'block', 'warn', 'off'} else 'block'
         self._warned_hosts = set()
 
     @classmethod
@@ -318,6 +445,8 @@ class _ActionGuard:
         """按任务描述与环境变量构造守卫。
 
         白名单 = 任务里显式出现的域名 ∪ UI_ALLOWED_DOMAINS ∪ 调用方补充。
+        白名单同时承担两个职责：域名层的放行名单，以及内网私有段的**显式**放行
+        （平台自身主用例跑在 127.0.0.1:8900 / 局域网 :8099，必须留这条路）。
         """
         allowed = _extract_hosts(task_text)
         allowed |= _split_env_list(os.getenv('UI_ALLOWED_DOMAINS'))
@@ -336,15 +465,18 @@ class _ActionGuard:
             semantic_guard = False
 
         mode = str(os.getenv('UI_DOMAIN_GUARD', 'warn')).strip().lower() or 'warn'
+        private_mode = str(os.getenv('UI_PRIVATE_NET_GUARD', 'block')).strip().lower() or 'block'
         guard = cls(
             allowed_domains=allowed,
             blocked_actions=blocked,
             domain_mode=mode,
             semantic_guard=semantic_guard,
+            private_mode=private_mode,
         )
         logger.info(
-            "🛡️ ActionGuard active: domain_mode=%s, allowed_domains=%s, blocked_actions=%s",
+            "🛡️ ActionGuard active: domain_mode=%s, private_mode=%s, allowed_domains=%s, blocked_actions=%s",
             guard.domain_mode,
+            guard.private_mode,
             len(guard.allowed_domains),
             sorted(guard.blocked_actions),
         )
@@ -362,21 +494,62 @@ class _ActionGuard:
         return False
 
     def check(self, action_name, params):
-        """返回拒绝原因字符串；None 表示放行。"""
+        """返回拒绝原因字符串；None 表示放行。
+
+        判定顺序本身就是安全语义，改动前先读这段：
+          1. 动作黑名单；
+          2. 云元数据端点 —— **硬拦**，必须排在 domain_mode / 空白名单逃生口之前，
+             否则 `UI_DOMAIN_GUARD=off`、或「任务里没写 URL」就能直接绕过；
+          3. 内网私有段 —— 默认拦，`UI_ALLOWED_DOMAINS` 可显式放行；
+          4. 域名白名单越界 —— 按 domain_mode 走 warn / strict。
+        """
         name = str(action_name or '').strip().lower().replace('-', '_')
         if self.is_blocked_action(action_name):
             return f"action '{name}' is disabled by security policy (UI_BLOCKED_ACTIONS)"
 
+        hosts = []
+        for url in _iter_urls(params):
+            host = _normalize_host(urlparse(url).hostname)
+            if host:
+                hosts.append(host)
+
+        # ② 云元数据：没有开关，白名单也放不开
+        for host in hosts:
+            if _is_cloud_metadata_host(host):
+                logger.warning("🛡️ [blocked] cloud metadata endpoint refused: %s", host)
+                return (
+                    f"navigation to cloud metadata endpoint '{host}' is always blocked "
+                    '(SSRF protection, not configurable)'
+                )
+
+        # ③ 内网私有段：默认拦，显式写进白名单才放行
+        if self.private_mode != 'off':
+            for host in hosts:
+                if not _is_private_host(host) or _host_allowed(host, self.allowed_domains):
+                    continue
+                reason = (
+                    f"navigation to private network host '{host}' is blocked by default; "
+                    'add it to UI_ALLOWED_DOMAINS to allow'
+                )
+                if self.private_mode == 'warn':
+                    if host not in self._warned_hosts:
+                        self._warned_hosts.add(host)
+                        logger.warning("🛡️ [warn] private network host: %s (%s)", host, reason)
+                    continue
+                logger.warning("🛡️ [blocked] private network host refused: %s", host)
+                return reason
+
+        # ④ 域名白名单
         if self.domain_mode == 'off':
             return None
         if not self.allowed_domains:
             # 白名单为空说明任务里没写显式 URL，也没有 UI_ALLOWED_DOMAINS；
             # 此时 strict 若照拦会拦掉一切导航，等于把功能关死。宁可放行。
+            # 注意：这个逃生口**不覆盖** ②③，元数据与内网段在上面已经判过了。
             return None
 
-        for url in _iter_urls(params):
-            host = _normalize_host(urlparse(url).hostname)
-            if not host or _host_allowed(host, self.allowed_domains):
+        for host in hosts:
+            if _host_allowed(host, self.allowed_domains):
                 continue
             if self.domain_mode == 'strict':
                 return (
