@@ -84,7 +84,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
@@ -107,8 +107,6 @@ const dialogTitle = ref('')
 const saving = ref(false)
 const editingId = ref(null)
 const form = ref({ name: '', description: '', status: 'IN_PROGRESS', member_ids: [] })
-
-const dialogTitle_ = computed(() => dialogTitle.value)
 
 async function load() {
   loading.value = true
@@ -202,8 +200,6 @@ async function loadUsers() {
 }
 
 onMounted(() => { load(); loadUsers() })
-// 暴露给模板（避免未使用告警）
-void dialogTitle_
 </script>
 
 <style lang="scss" scoped>

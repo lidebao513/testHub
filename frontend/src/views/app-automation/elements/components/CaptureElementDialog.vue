@@ -228,15 +228,10 @@
   </el-dialog>
 </template>
 
-<script setup lang="ts">
+<script setup>
 import { ref, reactive, computed, watch } from 'vue'
-import type { PropType } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-interface ProjectItem {
-  id: number
-  name: string
-}
 import { FolderOpened, Plus, Delete } from '@element-plus/icons-vue'
 import {
   getDeviceList,
@@ -253,7 +248,7 @@ const { t } = useI18n()
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
-  projectList: { type: Array as PropType<ProjectItem[]>, default: () => [] }
+  projectList: { type: Array, default: () => [] }
 })
 
 const emit = defineEmits(['update:modelValue', 'success'])
