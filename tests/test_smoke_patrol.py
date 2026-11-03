@@ -153,9 +153,12 @@ class TestReports:
         assert len(data['items']) == 2
         assert '巡检报告 2026-11-03' in Path(paths['md']).read_text(encoding='utf-8')
 
-    def test_write_reports_bad_dir_does_not_raise(self):
+    def test_write_reports_bad_dir_does_not_raise(self, tmp_path):
+        # 平台无关的"不可创建"路径：在一个文件路径下建子目录（任何 OS 都会 NotADirectoryError）
+        blocker = tmp_path / 'file.txt'
+        blocker.write_text('x', encoding='utf-8')
         paths = smoke_patrol.write_reports(
-            [], smoke_patrol.summarize([]), datetime.now(), 0, 'Z:/不可能存在的盘符/x')
+            [], smoke_patrol.summarize([]), datetime.now(), 0, blocker / 'sub')
         assert paths == {'json': '', 'md': ''}
 
 
