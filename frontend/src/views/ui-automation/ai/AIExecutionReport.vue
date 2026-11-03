@@ -63,6 +63,50 @@
           </div>
         </div>
 
+        <!-- #178 AI 用量归因：模型 / token / 成本 / 预探索 -->
+        <div class="report-section" v-if="reportData.ai_usage">
+          <h3 class="section-title">{{ $t('uiAutomation.ai.executionReport.aiUsage') }}</h3>
+          <div class="performance-metrics usage-metrics">
+            <div class="metric-card">
+              <div class="metric-label">{{ $t('uiAutomation.ai.executionReport.routedModel') }}</div>
+              <div class="metric-value metric-text">{{ reportData.ai_usage.routed_model || '-' }}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">{{ $t('uiAutomation.ai.executionReport.totalTokens') }}</div>
+              <div class="metric-value">{{ formatTokens(reportData.ai_usage.total_tokens) }}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">{{ $t('uiAutomation.ai.executionReport.cost') }}</div>
+              <div class="metric-value">{{ formatCost(reportData.ai_usage) }}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">{{ $t('uiAutomation.ai.executionReport.preExploreElements') }}</div>
+              <div class="metric-value">{{ formatPreExploreCount(reportData.ai_usage.pre_explore) }}</div>
+            </div>
+          </div>
+
+          <!-- 预探索清单：动手前页面有哪些可交互元素，作为「模型是否真的先看清页面」的审计证据 -->
+          <div v-if="preExploreElements.length > 0" class="pre-explore-block">
+            <div class="pre-explore-header">
+              <span class="pre-explore-title">{{ $t('uiAutomation.ai.executionReport.preExploreTitle') }}</span>
+              <span class="pre-explore-count">
+                {{ $t('uiAutomation.ai.executionReport.preExploreCount', { count: reportData.ai_usage.pre_explore.count }) }}
+              </span>
+            </div>
+            <div v-if="reportData.ai_usage.pre_explore.url" class="pre-explore-url">
+              {{ $t('uiAutomation.ai.executionReport.preExploreUrl') }}: {{ reportData.ai_usage.pre_explore.url }}
+            </div>
+            <el-table :data="preExploreElements" size="small" max-height="240" stripe>
+              <el-table-column prop="index" label="#" width="70" />
+              <el-table-column prop="tag" :label="$t('uiAutomation.ai.executionReport.elementTag')" width="110" />
+              <el-table-column prop="label" :label="$t('uiAutomation.ai.executionReport.elementText')" min-width="200" show-overflow-tooltip />
+            </el-table>
+          </div>
+          <div v-else class="pre-explore-empty">
+            {{ $t('uiAutomation.ai.executionReport.preExploreNotCaptured') }}
+          </div>
+        </div>
+
         <!-- 任务统计 -->
         <div class="report-section" v-if="reportData.statistics">
           <h3 class="section-title">{{ $t('uiAutomation.ai.executionReport.taskStatistics') }}</h3>
@@ -187,6 +231,15 @@
               <div class="metric-label">{{ $t('uiAutomation.ai.executionReport.minStepDuration') }}</div>
               <div class="metric-value">{{ reportData.metrics.min_step_duration }} {{ $t('uiAutomation.ai.executionReport.seconds') }}</div>
             </div>
+            <!-- #178 性能页同时看成本：慢和贵经常是同一处 -->
+            <div class="metric-card" v-if="reportData.ai_usage">
+              <div class="metric-label">{{ $t('uiAutomation.ai.executionReport.totalTokens') }}</div>
+              <div class="metric-value">{{ formatTokens(reportData.ai_usage.total_tokens) }}</div>
+            </div>
+            <div class="metric-card" v-if="reportData.ai_usage">
+              <div class="metric-label">{{ $t('uiAutomation.ai.executionReport.cost') }}</div>
+              <div class="metric-value">{{ formatCost(reportData.ai_usage) }}</div>
+            </div>
           </div>
         </div>
 
@@ -288,6 +341,40 @@ const reportTypeDisplay = computed(() => {
     'performance': t('uiAutomation.ai.executionReport.performance')
   }
   return map[currentReportType.value] || t('uiAutomation.ai.executionReport.summary')
+})
+
+// ===== #178 用量归因的展示 helpers =====
+// 统一约定：缺数据一律显示 '-' 或「未知」，绝不显示 0。
+
+const formatTokens = (value) => {
+  if (value === null || value === undefined || value === '') return '-'
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '-'
+  return num.toLocaleString()
+}
+
+// 成本三档：provider 实报 / 价目表估算 / 未知（null）。
+// 后端用 cost_known 显式区分「未知」与「真的为 0」，前端照此渲染，不要自己猜。
+const formatCost = (usage) => {
+  if (!usage) return t('uiAutomation.ai.executionReport.costUnknown')
+  const known = usage.cost_known === true ||
+    (usage.cost_known === undefined && usage.cost !== null && usage.cost !== undefined)
+  const num = Number(usage.cost)
+  if (!known || !Number.isFinite(num)) {
+    return t('uiAutomation.ai.executionReport.costUnknown')
+  }
+  return `$${num.toFixed(6)}`
+}
+
+const formatPreExploreCount = (pre) => {
+  if (!pre || !pre.count) return '-'
+  return String(pre.count)
+}
+
+const preExploreElements = computed(() => {
+  const pre = reportData.value?.ai_usage?.pre_explore
+  const list = pre && Array.isArray(pre.elements) ? pre.elements : []
+  return list
 })
 
 // GIF URL
@@ -751,7 +838,7 @@ const handleClose = () => {
 
 .performance-metrics {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 16px;
 }
 
@@ -772,6 +859,56 @@ const handleClose = () => {
   font-size: 24px;
   font-weight: 600;
   color: #409EFF;
+}
+
+/* #178 用量归因 */
+.usage-metrics {
+  grid-template-columns: repeat(4, 1fr);
+  margin-bottom: 16px;
+}
+
+.usage-metrics .metric-text {
+  font-size: 14px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.pre-explore-block {
+  margin-top: 8px;
+}
+
+.pre-explore-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.pre-explore-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.pre-explore-count {
+  font-size: 12px;
+  color: #909399;
+}
+
+.pre-explore-url {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 8px;
+  word-break: break-all;
+}
+
+.pre-explore-empty {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #909399;
+  background: #F5F7FA;
+  border-radius: 4px;
+  padding: 12px 16px;
 }
 
 .gif-container {

@@ -394,6 +394,187 @@ class _ActionGuard:
         return None
 
 
+# ============================================================================
+# 页面预探索（#177）：让 Agent 动手前先建立"页面地图"
+# ============================================================================
+# 为什么用 prompt + 首步快照，而不是另起浏览器预扫描：
+# browser-use 每一步都会重算并注入完整 DOM，"页面信息"本来就不缺；
+# 缺的是让模型**先结构化地看一遍**再动手。另起浏览器会多一次启动/往返，
+# 在单条用例上很容易把省下的步数成本又花回去。
+_PRE_EXPLORE_FALSY = {'0', 'false', 'off', 'no'}
+
+_PRE_EXPLORE_ROLE_ATTRS = (
+    'role', 'type', 'name', 'aria-label', 'placeholder', 'title', 'id',
+)
+_PRE_EXPLORE_TEXT_ATTRS = ('aria-label', 'placeholder', 'title', 'value', 'alt')
+_PRE_EXPLORE_MAX_TEXT = 40
+_PRE_EXPLORE_MAX_ELEMENTS = 60
+_PRE_EXPLORE_RENDER_LIMIT = 15
+# 纯布局容器：没有 role、没有文本、没有可读属性时对 Agent 毫无信息量，
+# 真实登录页实测 23 项里有 8 项是这类噪音，会把"页面地图"稀释成噪声清单。
+_PRE_EXPLORE_NOISE_TAGS = {
+    'div', 'span', 'i', 'svg', 'path', 'g', 'b', 'em', 'strong', 'p', 'br', 'section',
+}
+
+
+def _ui_pre_explore_enabled():
+    """UI_PRE_EXPLORE 开关（默认开启）。
+
+    只有显式写成 0/false/off/no 才关闭；未配置时默认开启。
+    """
+    raw = os.getenv('UI_PRE_EXPLORE')
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in _PRE_EXPLORE_FALSY
+
+
+def build_pre_explore_prompt():
+    """构造页面预探索指令块（prompt 级，零额外浏览器开销）。"""
+    return (
+        "\n\nPAGE PRE-EXPLORATION (do this once, before your first real action):\n"
+        "1. Look at the current page state and list the interactive elements you can actually see, "
+        "each with its index, element type and visible text (e.g. [3] button \"登录\").\n"
+        "2. Only use indices that appear in the current page state. NEVER invent an index.\n"
+        "3. If the element you need is not listed, navigate or scroll until it appears, then re-read the state.\n"
+        "Keep the list short (max 15 lines), then continue with the task.\n"
+    )
+
+
+def _pre_explore_text_of(node):
+    """提取节点的可读文本（优先浏览器给的"给 LLM 的语义文本"）。"""
+    text = ''
+    getter = getattr(node, 'get_meaningful_text_for_llm', None)
+    if callable(getter):
+        try:
+            text = str(getter() or '').strip()
+        except Exception as e:  # 节点文本提取失败不应影响清单生成
+            logger.debug(f'预探索文本提取失败: {e}')
+            text = ''
+    if text:
+        return text
+
+    text = str(getattr(node, 'node_value', '') or '').strip()
+    if text:
+        return text
+
+    attrs = getattr(node, 'attributes', None) or {}
+    if isinstance(attrs, dict):
+        for key in _PRE_EXPLORE_TEXT_ATTRS:
+            value = attrs.get(key)
+            if value:
+                return str(value).strip()
+    return ''
+
+
+def _pre_explore_is_noise(node, text):
+    """判断节点是否是"对 Agent 无信息量的布局容器"（text 由调用方算好传入，避免重复遍历子树）。"""
+    tag = str(getattr(node, 'tag_name', '') or '').strip().lower()
+    if tag not in _PRE_EXPLORE_NOISE_TAGS:
+        return False
+
+    attrs = getattr(node, 'attributes', None) or {}
+    if not isinstance(attrs, dict):
+        attrs = {}
+    if attrs.get('role'):
+        return False
+    for key in _PRE_EXPLORE_TEXT_ATTRS:
+        if attrs.get(key):
+            return False
+    return not text
+
+
+def _pre_explore_element_label(node, text=None):
+    """从 DOM 节点提取「类型 + 可见文本」，作为清单里的一行描述。"""
+    tag = str(getattr(node, 'tag_name', '') or '').strip().lower()
+    attrs = getattr(node, 'attributes', None) or {}
+    if not isinstance(attrs, dict):
+        attrs = {}
+
+    role = ''
+    for key in _PRE_EXPLORE_ROLE_ATTRS:
+        value = attrs.get(key)
+        if value:
+            role = str(value).strip()
+            break
+
+    if text is None:
+        text = _pre_explore_text_of(node)
+    # 换行/连续空白会把"一行一个元素"的清单撑破，统一压成单空格
+    text = ' '.join(text.split())
+    if len(text) > _PRE_EXPLORE_MAX_TEXT:
+        text = text[:_PRE_EXPLORE_MAX_TEXT] + '…'
+
+    kind = tag or 'element'
+    if role and role != tag:
+        kind = f'{tag}[{role}]'
+    return f'{kind} "{text}"' if text else kind
+
+
+def format_pre_explore_elements(selector_map, limit=_PRE_EXPLORE_MAX_ELEMENTS):
+    """把 browser-use 的 selector_map 转成结构化元素清单。
+
+    selector_map: dict[index, DOMElementNode]。
+    返回 [{'index': int, 'tag': str, 'label': str}]，按 index 升序，
+    跳过不可见节点、无信息量的布局容器与无效索引，最多 limit 条。
+    """
+    if not selector_map:
+        return []
+
+    try:
+        items = sorted(selector_map.items(), key=lambda kv: int(kv[0]))
+    except (TypeError, ValueError):
+        items = list(selector_map.items())
+
+    try:
+        max_items = max(1, int(limit))
+    except (TypeError, ValueError):
+        max_items = _PRE_EXPLORE_MAX_ELEMENTS
+
+    elements = []
+    for index, node in items:
+        if node is None:
+            continue
+        if getattr(node, 'is_visible', True) is False:
+            continue
+        try:
+            normalized_index = int(index)
+        except (TypeError, ValueError):
+            continue
+        # 文本只提取一次：噪音判断与标签生成共用
+        text = _pre_explore_text_of(node)
+        if _pre_explore_is_noise(node, text):
+            continue
+        elements.append({
+            'index': normalized_index,
+            'tag': str(getattr(node, 'tag_name', '') or '').strip().lower(),
+            'label': _pre_explore_element_label(node, text),
+        })
+        if len(elements) >= max_items:
+            break
+    return elements
+
+
+def render_pre_explore_block(elements, url='', title='', limit=_PRE_EXPLORE_RENDER_LIMIT):
+    """把元素清单渲染成可读文本（写日志 / 报告审计用）。"""
+    if not elements:
+        return '预探索元素清单 0 项（当前页面无可交互元素或 DOM 尚未就绪）'
+
+    try:
+        max_lines = max(1, int(limit))
+    except (TypeError, ValueError):
+        max_lines = _PRE_EXPLORE_RENDER_LIMIT
+
+    header = f'预探索元素清单 {len(elements)} 项'
+    if url or title:
+        header += f'（{title or "-"} | {url or "-"}）'
+    lines = [header, f'前 {min(max_lines, len(elements))} 项：']
+    for item in elements[:max_lines]:
+        lines.append(f'  [{item.get("index")}] {item.get("label")}')
+    if len(elements) > max_lines:
+        lines.append(f'  … 其余 {len(elements) - max_lines} 项已省略')
+    return '\n'.join(lines)
+
+
 def _assert_cost_allowed(model_name: str) -> None:
     """成本护栏：付费档 / 过期 / 额度耗尽 / 当日预算到顶 → 抛 ValueError 拒跑。
 
@@ -1197,6 +1378,272 @@ class RawResponseLogger(BaseCallbackHandler):
             pass
 
 
+def _extract_token_usage(response):
+    """从 langchain 回调响应里取 (prompt_tokens, completion_tokens)。取不到返回 (0, 0)。"""
+    generations = getattr(response, 'generations', None) or []
+    if generations and generations[0]:
+        message = getattr(generations[0][0], 'message', None)
+        meta = getattr(message, 'usage_metadata', None)
+        if isinstance(meta, dict) and meta:
+            return int(meta.get('input_tokens') or 0), int(meta.get('output_tokens') or 0)
+
+    llm_output = getattr(response, 'llm_output', None) or {}
+    usage = llm_output.get('token_usage') if isinstance(llm_output, dict) else None
+    if isinstance(usage, dict):
+        return int(usage.get('prompt_tokens') or 0), int(usage.get('completion_tokens') or 0)
+    return 0, 0
+
+
+class TokenUsageCounter(BaseCallbackHandler):
+    """在每次 LLM 调用结束时累计 token 用量。
+
+    为什么要自己数：browser-use 的 TokenCost 只在 `result.usage` 有值时才记账，
+    而 langchain 的 ChatOpenAI 把用量放在 `usage_metadata` 上——实测整条用例跑完
+    `history.usage.total_tokens` 仍是 0，成本字段会永远是空的。回调口径不依赖
+    上层实现，所以用它兜底（browser-use 报得出数时优先用它的）。
+    """
+
+    def __init__(self):
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.calls = 0
+
+    def on_llm_end(self, response: Any, **kwargs: Any) -> Any:
+        try:
+            prompt, completion = _extract_token_usage(response)
+        except Exception:
+            return
+        if prompt or completion:
+            self.prompt_tokens += prompt
+            self.completion_tokens += completion
+            self.calls += 1
+
+    @property
+    def total_tokens(self):
+        return self.prompt_tokens + self.completion_tokens
+
+
+# ============================================================================
+# #178 模型分级路由 + 成本归因
+# ============================================================================
+# 为什么只换模型名、不换 provider：AI 用例的单价主要来自「每一步都把完整 DOM
+# 重发一遍」，而 simple 任务（步骤少、描述短）用不上顶配模型的推理能力。在同一个
+# key/base_url 下把 simple 任务降到同厂轻档模型，是唯一「零改造成本、可立刻验证」的
+# 省钱路径；跨厂降级会直接撞上计费与鉴权，因此不在本模块范围内。
+_UI_ROUTING_FALSY = {'0', 'false', 'off', 'no'}
+
+# 重档 → 轻档（同厂同接口，只换档位）。顺序即优先级。
+_LIGHT_MODEL_SIBLINGS = (
+    ('deepseek-v4-pro', 'deepseek-v4.1-flash'),
+    ('deepseek-reasoner', 'deepseek-chat'),
+    ('deepseek-v3', 'deepseek-chat'),
+    ('qwen-max', 'qwen-turbo'),
+    ('qwen-plus', 'qwen-turbo'),
+    ('gpt-4o', 'gpt-4o-mini'),
+    ('glm-4-plus', 'glm-4-flash'),
+    ('glm-4', 'glm-4-flash'),
+)
+
+# 复杂度阈值：任一命中即视为 complex（宁可上顶配，也不要为了省钱跑歪一条用例）。
+_UI_ROUTING_COMPLEX_STEP_SCORE = 2
+_UI_ROUTING_COMPLEX_TOTAL_SCORE = 4
+_UI_ROUTING_COMPLEX_STEPS = 6
+_UI_ROUTING_COMPLEX_TEXT_LEN = 160
+# 没规划步骤时，动词数量是唯一能反映"要做几件事"的硬信号：
+# 「打开+输入+点击+查看+校验」这种一步到位的长句，长度分给不出复杂度的区别。
+_UI_ROUTING_COMPLEX_ACTIONS = 4
+
+_ACTION_TOKENS = (
+    '点击', '输入', '搜索', '选择', '打开', '关闭', '提交', '保存', '查看', '切换',
+    '上传', '下载', '删除',
+)
+
+# 只接受固定 temperature 的模型（写死值，配置里的值对它们无效）
+_SPECIAL_MODEL_TEMPERATURE = (
+    ('kimi-2.5', 1.0),
+    ('kimi-k2.5', 1.0),
+    ('kimi', 1.0),
+)
+
+
+def _ui_model_routing_enabled():
+    """UI_MODEL_ROUTING 开关（默认开启）。
+
+    默认开是因为它在「解析不到轻档模型」时会自动留在主模型，不会因为忘记配置而
+    产生任何副作用；只有显式写 0/false/off/no 才彻底关闭。
+    """
+    raw = os.getenv('UI_MODEL_ROUTING')
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in _UI_ROUTING_FALSY
+
+
+def step_complexity_score(step):
+    """粗略评估单个步骤是否包含多个动作（原 BaseBrowserAgent._step_complexity_score）。
+
+    提到模块级是为了让「要不要二次拆解」与「要不要上顶配模型」共用同一套口径，
+    避免出现两套互相矛盾的标准；方法同名的旧入口保留为薄封装。
+    """
+    text = str(step).strip()
+    if not text:
+        return 0
+
+    score = 0
+    if len(text) >= 24:
+        score += 1
+    if len(text) >= 48:
+        score += 1
+    if any(token in text for token in ['并', '然后', '之后', '再', '并且', '同时', '且']):
+        score += 1
+    action_tokens = ['点击', '输入', '搜索', '选择', '打开', '关闭', '提交', '保存', '查看', '切换']
+    action_hits = sum(text.count(token) for token in action_tokens)
+    if action_hits >= 2:
+        score += 1
+    return score
+
+
+_URL_PATTERN = re.compile(r'https?://[^\s，。；、！？）)]+')
+
+
+def _strip_urls(text):
+    """把 URL 压成占位符后再算复杂度。
+
+    真实踩到的坑：一条「打开 <长 URL>，确认有输入框和按钮」的简单任务，
+    仅 URL 长度就能顶满长度分，被判成 complex——分级路由就永远不会生效。
+    导航目标的长度不代表操作复杂度，所以长度分必须剔除 URL。
+    """
+    return _URL_PATTERN.sub('<url>', str(text or ''))
+
+
+def estimate_task_complexity(task_description, steps=None):
+    """估算任务复杂度：返回 {complexity, score, step_count, reasons}。
+
+    有规划步骤时按步骤判（真实执行单元），没有时退回按任务描述判。
+    判定偏保守：任何一条复杂信号命中就归 complex；但长度分不计 URL。
+    """
+    text = _strip_urls(task_description).strip()
+    step_texts = []
+    for step in steps or []:
+        raw = step.get('description') if isinstance(step, dict) else step
+        cleaned = _strip_urls(raw).strip()
+        if cleaned:
+            step_texts.append(cleaned)
+
+    score = 0
+    reasons = []
+    if step_texts:
+        scores = [step_complexity_score(step) for step in step_texts]
+        score = sum(scores)
+        max_score = max(scores)
+        if max_score >= _UI_ROUTING_COMPLEX_STEP_SCORE:
+            reasons.append(f'存在高复杂步骤(score={max_score})')
+        if len(step_texts) >= _UI_ROUTING_COMPLEX_STEPS:
+            reasons.append(f'步骤数 {len(step_texts)} >= {_UI_ROUTING_COMPLEX_STEPS}')
+    else:
+        score = step_complexity_score(text)
+        if len(text) >= _UI_ROUTING_COMPLEX_TEXT_LEN:
+            reasons.append(f'任务描述 {len(text)} 字 >= {_UI_ROUTING_COMPLEX_TEXT_LEN}')
+        action_hits = sum(text.count(token) for token in _ACTION_TOKENS)
+        if action_hits >= _UI_ROUTING_COMPLEX_ACTIONS:
+            reasons.append(f'任务含 {action_hits} 个动作 >= {_UI_ROUTING_COMPLEX_ACTIONS}')
+
+    if score >= _UI_ROUTING_COMPLEX_TOTAL_SCORE:
+        reasons.append(f'复杂度累计分 {score} >= {_UI_ROUTING_COMPLEX_TOTAL_SCORE}')
+
+    return {
+        'complexity': 'complex' if reasons else 'simple',
+        'score': score,
+        'step_count': len(step_texts),
+        'reasons': reasons,
+    }
+
+
+def resolve_light_model(model_name):
+    """解析 simple 任务要用的轻档模型：显式 UI_MODEL_LIGHT > 同厂降级映射 > 空。"""
+    explicit = (os.getenv('UI_MODEL_LIGHT') or '').strip()
+    if explicit:
+        return explicit
+
+    name = str(model_name or '').strip().lower()
+    if not name:
+        return ''
+    for heavy, light in _LIGHT_MODEL_SIBLINGS:
+        if heavy in name:
+            return light
+    return ''
+
+
+def _resolve_temperature(model_name, configured=None):
+    """返回 (temperature, 来源说明)。特殊模型的强制值优先于配置值。"""
+    name = str(model_name or '').lower()
+    for keyword, temp in _SPECIAL_MODEL_TEMPERATURE:
+        if keyword in name:
+            return temp, f'特殊模型 {keyword} 强制值'
+    if configured is not None:
+        try:
+            return float(configured), '配置值'
+        except (TypeError, ValueError):
+            pass
+    return 0.0, '默认值'
+
+
+def _load_price_table():
+    """读取 UI_MODEL_PRICE_JSON 价目表（USD / 1M token）。
+
+    格式：{"model-name": {"in": 0.28, "out": 1.10}} 或 {"model-name": [0.28, 1.10]}。
+    不内置任何价格：编造的单价会让「成本下降」这个结论失去意义，宁可记为未知。
+    """
+    raw = (os.getenv('UI_MODEL_PRICE_JSON') or '').strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError) as e:
+        logger.warning(f'UI_MODEL_PRICE_JSON 解析失败，成本将记为未知: {e}')
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    table = {}
+    for model, value in data.items():
+        if isinstance(value, dict):
+            in_price = value.get('in', value.get('input'))
+            out_price = value.get('out', value.get('output'))
+        elif isinstance(value, (list, tuple)) and len(value) == 2:
+            in_price, out_price = value
+        else:
+            continue
+        try:
+            table[str(model).strip().lower()] = (float(in_price), float(out_price))
+        except (TypeError, ValueError):
+            continue
+    return table
+
+
+def resolve_usage_cost(model_name, prompt_tokens, completion_tokens, reported_cost=None):
+    """返回 (cost, source)：provider 实报优先 → 本地价目表估算 → 未知(None)。
+
+    成本记 None 而不是 0：0 会被读成「免费」，而未知必须能被看出来。
+    """
+    if reported_cost is not None:
+        try:
+            reported = float(reported_cost)
+        except (TypeError, ValueError):
+            reported = 0.0
+        if reported > 0:
+            return reported, 'provider'
+
+    price = _load_price_table().get(str(model_name or '').strip().lower())
+    if not price:
+        return None, 'unavailable'
+
+    in_price, out_price = price
+    cost = (
+        int(prompt_tokens or 0) * in_price + int(completion_tokens or 0) * out_price
+    ) / 1_000_000
+    return round(cost, 6), 'pricing'
+
+
 # ============================================================================
 # PART 3: Base Browser Agent
 # ============================================================================
@@ -1204,6 +1651,20 @@ class RawResponseLogger(BaseCallbackHandler):
 from browser_use import Agent, Controller
 from browser_use.browser.events import CloseTabEvent, SwitchTabEvent
 from browser_use.browser.profile import BrowserProfile
+
+
+def _history_step_count(history):
+    """browser-use 的 AgentHistoryList 把步骤存在 `history` 字段里（不是 `steps`）。"""
+    if not history:
+        return 0
+    for attr in ('steps', 'history'):
+        value = getattr(history, attr, None)
+        if isinstance(value, list):
+            return len(value)
+    try:
+        return len(history)
+    except TypeError:
+        return 0
 
 
 class BaseBrowserAgent:
@@ -1242,54 +1703,161 @@ class BaseBrowserAgent:
         # 所以这里在创建 agent 之前就拦，失败即拒跑，不进入执行。
         _assert_cost_allowed(self.model_name or '')
 
-        # 智能temperature处理：特殊模型强制使用特定temperature值
-        # 格式: {'模型名称关键字': temperature值}
-        special_model_temperature_map = {
-            'kimi-2.5': 1.0,  # Moonshot AI Kimi 2.5 只支持 temperature=1
-            'kimi-k2.5': 1.0,  # Moonshot AI Kimi K2.5 只支持 temperature=1
-            'kimi': 1.0,  # 通用Kimi模型匹配（兜底）
-            # 未来可以在这里添加其他特殊模型，例如：
-            # 'claude-3.5-sonnet': 0.7,
-            # 'gpt-4-turbo': 0.0,
-        }
+        # 智能temperature处理：特殊模型强制值优先，其次配置值，最后默认 0.0
+        self.configured_temperature = model_config.get('temperature')
+        final_temperature, temperature_source = _resolve_temperature(
+            self.model_name, self.configured_temperature
+        )
+        logger.info(
+            f"🌡️ {self.model_name} temperature={final_temperature}（来源：{temperature_source}）"
+        )
 
-        # 确定最终使用的temperature值
-        final_temperature = 0.0  # 默认值
-        model_name_lower = self.model_name.lower()
+        # 主模型客户端。分级路由（#178）只在 run_task 阶段按任务复杂度替换
+        # self.llm，_primary_llm 保留主模型以便同一 agent 重复执行时复位。
+        # 计数器跨主模型/轻档模型共用，保证一次执行的总量能合在一起。
+        self._token_counter = TokenUsageCounter()
+        self._primary_llm = self._build_chat_llm(self.model_name)
+        self.llm = self._primary_llm
+        self.routed_model = self.model_name
+        self.routing_info = {}
+        self._usage_snapshot = None
+        self._pre_explore_summary = None
 
-        # 1. 优先检查是否是特殊模型
-        for model_keyword, temp in special_model_temperature_map.items():
-            if model_keyword in model_name_lower:
-                final_temperature = temp
-                logger.info(f"✅ 检测到特殊模型 '{self.model_name}'，使用强制 temperature={temp}")
-                break
-        else:
-            # 2. 如果不是特殊模型，使用配置中的值
-            if 'temperature' in model_config:
-                final_temperature = model_config['temperature']
-                logger.info(f"📋 使用配置的 temperature={final_temperature}")
-            else:
-                # 3. 如果配置中没有，使用默认值
-                final_temperature = 0.0
-                logger.info(f"⚙️ 使用默认 temperature={final_temperature}")
-
-        self.llm = ChatOpenAI(
-            model=self.model_name,
+    def _build_chat_llm(self, model_name):
+        """按当前 key/base_url 构造 chat 客户端（主模型与分级路由共用）。"""
+        temperature, _ = _resolve_temperature(model_name, self.configured_temperature)
+        llm = ChatOpenAI(
+            model=model_name,
             api_key=self.api_key,
             base_url=self.base_url,
-            temperature=final_temperature,
-            callbacks=[RawResponseLogger()]
+            temperature=temperature,
+            callbacks=[RawResponseLogger(), self._token_counter]
         )
 
         # browser-use requirement
         try:
-            object.__setattr__(self.llm, 'provider', self.provider)
-            object.__setattr__(self.llm, 'model', self.model_name)
-        except:
-            if not hasattr(self.llm, '__pydantic_extra__') or self.llm.__pydantic_extra__ is None:
-                self.llm.__pydantic_extra__ = {}
-            self.llm.__pydantic_extra__['provider'] = self.provider
-            self.llm.__pydantic_extra__['model'] = self.model_name
+            object.__setattr__(llm, 'provider', self.provider)
+            object.__setattr__(llm, 'model', model_name)
+        except Exception:
+            if not hasattr(llm, '__pydantic_extra__') or llm.__pydantic_extra__ is None:
+                llm.__pydantic_extra__ = {}
+            llm.__pydantic_extra__['provider'] = self.provider
+            llm.__pydantic_extra__['model'] = model_name
+        return llm
+
+    def _apply_model_routing(self, task_description, planned_tasks=None):
+        """按任务复杂度决定用主模型还是轻档模型（#178）。
+
+        任何不确定（无映射、轻档被成本护栏拒绝、开关关闭）都留在主模型：
+        分级路由的收益是「省钱」，代价绝不能是「用例跑歪」。
+        """
+        base_model = self.model_name
+        info = {
+            'enabled': _ui_model_routing_enabled(),
+            'complexity': '',
+            'score': 0,
+            'base_model': base_model,
+            'model': base_model,
+            'switched': False,
+            'reason': '',
+        }
+        self.routing_info = info
+        self.llm = self._primary_llm
+        self.routed_model = base_model
+
+        if not info['enabled']:
+            info['reason'] = 'UI_MODEL_ROUTING 已关闭，使用主模型'
+            return info
+
+        estimate = estimate_task_complexity(task_description, planned_tasks)
+        info['complexity'] = estimate['complexity']
+        info['score'] = estimate['score']
+
+        if estimate['complexity'] == 'complex':
+            info['reason'] = '、'.join(estimate['reasons']) or '复杂任务，使用主模型'
+            return info
+
+        light_model = resolve_light_model(base_model)
+        if not light_model or light_model == base_model:
+            info['reason'] = '未解析到轻档模型（可配置 UI_MODEL_LIGHT），使用主模型'
+            return info
+
+        try:
+            _assert_cost_allowed(light_model)
+        except ValueError as e:
+            info['reason'] = f'轻档模型被成本护栏拒绝，回退主模型：{e}'
+            logger.warning(f"🛡️ 分级路由回退：{info['reason']}")
+            return info
+
+        self.llm = self._build_chat_llm(light_model)
+        self.routed_model = light_model
+        info['model'] = light_model
+        info['switched'] = True
+        info['reason'] = 'simple 任务降级到轻档模型'
+        logger.info(
+            f"🧭 模型分级路由：{base_model} → {light_model}"
+            f"（复杂度分={estimate['score']}，步骤数={estimate['step_count']}）"
+        )
+        return info
+
+    def _capture_usage(self, agent_instance):
+        """抓取本次运行的 token 用量。只读、绝不抛。
+
+        两个来源取较大者：
+        - browser-use 的 `history.usage`（原生模型时准确）；
+        - 自己的 langchain 回调计数（browser-use 对 langchain 客户端常记 0）。
+        """
+        try:
+            history = getattr(agent_instance, 'history', None)
+            usage = getattr(history, 'usage', None)
+
+            total_tokens = getattr(usage, 'total_tokens', None) if usage is not None else None
+            prompt_tokens = getattr(usage, 'total_prompt_tokens', None) if usage is not None else None
+            completion_tokens = (
+                getattr(usage, 'total_completion_tokens', None) if usage is not None else None
+            )
+            reported_cost = getattr(usage, 'total_cost', None) if usage is not None else None
+
+            counter = getattr(self, '_token_counter', None)
+            counter_tokens = counter.total_tokens if counter is not None else 0
+            if counter_tokens > (total_tokens or 0):
+                total_tokens = counter_tokens
+                prompt_tokens = counter.prompt_tokens
+                completion_tokens = counter.completion_tokens
+
+            self._usage_snapshot = {
+                'total_tokens': total_tokens,
+                'prompt_tokens': prompt_tokens,
+                'completion_tokens': completion_tokens,
+                'reported_cost': reported_cost,
+                'steps': _history_step_count(history),
+            }
+        except Exception as e:
+            logger.warning(f'用量抓取失败（不影响执行结果）: {e}')
+
+    def get_usage_snapshot(self):
+        """执行结束后供调用方归因：模型 / token / 成本 / 预探索 / 路由决策。"""
+        usage = self._usage_snapshot or {}
+        routed_model = getattr(self, 'routed_model', '') or self.model_name
+        total_tokens = usage.get('total_tokens')
+        cost, cost_source = resolve_usage_cost(
+            routed_model,
+            usage.get('prompt_tokens'),
+            usage.get('completion_tokens'),
+            usage.get('reported_cost'),
+        )
+        pre_explore = getattr(self, '_pre_explore_summary', None) or {}
+        return {
+            'routed_model': routed_model,
+            'total_tokens': total_tokens if isinstance(total_tokens, int) else None,
+            'prompt_tokens': usage.get('prompt_tokens'),
+            'completion_tokens': usage.get('completion_tokens'),
+            'cost': cost,
+            'cost_source': cost_source,
+            'steps': usage.get('steps'),
+            'routing': getattr(self, 'routing_info', {}) or {},
+            'pre_explore': pre_explore if isinstance(pre_explore, dict) else {},
+        }
 
     def _format_action(self, action):
         try:
@@ -1495,23 +2063,8 @@ class BaseBrowserAgent:
         return deduped
 
     def _step_complexity_score(self, step: str) -> int:
-        """粗略评估单个步骤是否包含多个动作。"""
-        text = str(step).strip()
-        if not text:
-            return 0
-
-        score = 0
-        if len(text) >= 24:
-            score += 1
-        if len(text) >= 48:
-            score += 1
-        if any(token in text for token in ['并', '然后', '之后', '再', '并且', '同时', '且']):
-            score += 1
-        if any(token in text for token in ['点击', '输入', '搜索', '选择', '打开', '关闭', '提交', '保存', '查看', '切换']):
-            action_hits = sum(text.count(token) for token in ['点击', '输入', '搜索', '选择', '打开', '关闭', '提交', '保存', '查看', '切换'])
-            if action_hits >= 2:
-                score += 1
-        return score
+        """粗略评估单个步骤是否包含多个动作（委托模块级口径，见 #178）。"""
+        return step_complexity_score(step)
 
     def _step_has_specific_requirements(self, step: str) -> bool:
         """判断步骤是否包含必须保留的字面值、断言或字段约束。"""
@@ -1759,7 +2312,46 @@ class BaseBrowserAgent:
             enable_default_extensions=False
         )
 
+    async def _run_pre_explore(self, agent_instance, emit_callback=None):
+        """抓一次当前页面的可交互元素清单（#177）。
+
+        只读、非阻断：任何异常都只记日志并返回 None，绝不影响主任务执行。
+        """
+        session = getattr(agent_instance, 'browser_session', None)
+        if session is None or not hasattr(session, 'get_browser_state_summary'):
+            logger.info('页面预探索跳过：当前会话不支持状态快照')
+            return None
+
+        state = await session.get_browser_state_summary(include_screenshot=False)
+        dom_state = getattr(state, 'dom_state', None)
+        selector_map = getattr(dom_state, 'selector_map', None) or {}
+
+        elements = format_pre_explore_elements(selector_map)
+        url = str(getattr(state, 'url', '') or '')
+        title = str(getattr(state, 'title', '') or '')
+        block = render_pre_explore_block(elements, url=url, title=title)
+
+        self._pre_explore_summary = {
+            'url': url,
+            'title': title,
+            'count': len(elements),
+            'elements': elements,
+        }
+
+        logger.info(f'🔎 {block.splitlines()[0]}')
+        logger.info(f'🔎 预探索前 {min(_PRE_EXPLORE_RENDER_LIMIT, len(elements))} 项: {elements[:_PRE_EXPLORE_RENDER_LIMIT]}')
+
+        if emit_callback:
+            try:
+                await emit_callback({'type': 'log', 'content': f'\n[预探索]\n{block}\n'})
+            except Exception as e:
+                logger.warning(f'预探索日志回传失败: {e}')
+
+        return self._pre_explore_summary
+
     async def run_task(self, task_description: str, planned_tasks=None, callback=None, should_stop=None):
+        # #178 模型分级：先定用哪个模型，再做连通性校验——校验必须打在真正会用的模型上
+        routing_info = self._apply_model_routing(task_description, planned_tasks)
         await self._verify_execution_llm()
 
         # Cleanup potential zombie processes before starting
@@ -1773,6 +2365,10 @@ class BaseBrowserAgent:
         controller = Controller()
         _task_was_done = False
         active_task_statuses = {'pending', 'in_progress'}
+        # #177 页面预探索：开关与"只抓一次"标记
+        pre_explore_on = _ui_pre_explore_enabled()
+        pre_explore_captured = False
+        pre_explore_attempts = 0
 
         async def emit_callback(payload):
             if not callback:
@@ -1782,6 +2378,16 @@ class BaseBrowserAgent:
                 await callback(payload)
             else:
                 callback(payload)
+
+        # #178：把路由决策透出到执行日志（简单任务降级时用户必须看得见）
+        if routing_info.get('switched'):
+            await emit_callback({
+                'type': 'log',
+                'content': (
+                    f"\n[模型路由] {routing_info['complexity']} 任务 → {routing_info['model']}"
+                    f"（复杂度分={routing_info['score']}，主模型={routing_info['base_model']}）\n"
+                ),
+            })
 
         def is_placeholder_url(url: str) -> bool:
             normalized = (url or '').strip().lower()
@@ -1919,6 +2525,10 @@ class BaseBrowserAgent:
                 cleaned_tasks.append(f"{t['id']}. {desc}")
             final_task += "\n".join(cleaned_tasks)
 
+        # #177：预探索指令放在规则区之前，确保模型先读到"先看页面再动手"
+        if pre_explore_on:
+            final_task += build_pre_explore_prompt()
+
         # 极限效率版标记指令
         from datetime import datetime
         final_task += f"\n\nCURRENT TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -2001,6 +2611,22 @@ class BaseBrowserAgent:
 
         async def on_step_end(agent_instance):
             nonlocal last_processed_step, last_marked_task_id, known_tab_ids
+            nonlocal pre_explore_captured, pre_explore_attempts
+
+            # #177：抓一次页面元素清单。首步可能还没导航（about:blank），
+            # 此时不算完成，最多重试 3 次，避免"抓到空页面就永久放弃"。
+            if pre_explore_on and not pre_explore_captured and pre_explore_attempts < 3:
+                pre_explore_attempts += 1
+                try:
+                    summary = await self._run_pre_explore(agent_instance, emit_callback)
+                except Exception as e:  # 预探索失败绝不阻断主链路
+                    summary = None
+                    logger.warning(f'页面预探索失败（已跳过，不影响任务执行）: {e}')
+                if summary is None:
+                    # 会话不支持快照，重试无意义
+                    pre_explore_captured = True
+                elif not is_placeholder_url(str(summary.get('url') or '')):
+                    pre_explore_captured = True
 
             if should_stop:
                 do_stop = await should_stop() if asyncio.iscoroutinefunction(should_stop) else should_stop()
@@ -2200,6 +2826,8 @@ class BaseBrowserAgent:
             raise
         finally:
             _current_action_guard.reset(guard_token)
+            # #178：无论成功、失败还是被停止，都尽量把 token 用量抓下来
+            self._capture_usage(agent)
 
         # 在任务结束时检查不一致的任务状态
         history = getattr(agent, 'history', [])

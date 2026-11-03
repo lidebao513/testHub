@@ -43,6 +43,17 @@
             {{ row.duration ? row.duration.toFixed(2) : '-' }}
           </template>
         </el-table-column>
+        <!-- #178 用量归因：接口已返回，列表直接可见，避免逐条点进报告才知道花了多少 -->
+        <el-table-column prop="routed_model" :label="$t('uiAutomation.ai.executionRecords.routedModel')" width="170" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.routed_model || '-' }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="total_tokens" :label="$t('uiAutomation.ai.executionRecords.totalTokens')" width="110" align="right">
+          <template #default="{ row }">
+            {{ formatTokens(row.total_tokens) }}
+          </template>
+        </el-table-column>
         <el-table-column prop="start_time" :label="$t('uiAutomation.ai.executionRecords.startTime')" width="180" :formatter="formatDate" />
         <el-table-column prop="executed_by.username" :label="$t('uiAutomation.ai.executionRecords.executor')" width="120" />
         <el-table-column :label="$t('uiAutomation.common.operation')" width="200" fixed="right">
@@ -93,6 +104,41 @@
           <span>{{ currentRecord.duration ? currentRecord.duration.toFixed(2) + ' ' + $t('uiAutomation.ai.executionRecords.seconds') : $t('uiAutomation.ai.executionRecords.unknown') }}</span>
         </div>
 
+        <!-- #178 用量归因：模型 / token / 成本 / 预探索 -->
+        <div class="usage-grid">
+          <div class="usage-cell">
+            <div class="usage-label">{{ $t('uiAutomation.ai.executionRecords.routedModel') }}</div>
+            <div class="usage-value">{{ currentRecord.routed_model || '-' }}</div>
+          </div>
+          <div class="usage-cell">
+            <div class="usage-label">{{ $t('uiAutomation.ai.executionRecords.totalTokens') }}</div>
+            <div class="usage-value">{{ formatTokens(currentRecord.total_tokens) }}</div>
+          </div>
+          <div class="usage-cell">
+            <div class="usage-label">{{ $t('uiAutomation.ai.executionRecords.costUsd') }}</div>
+            <div class="usage-value">{{ formatCost(currentRecord.cost) }}</div>
+          </div>
+          <div class="usage-cell">
+            <div class="usage-label">{{ $t('uiAutomation.ai.executionRecords.preExplore') }}</div>
+            <div class="usage-value">{{ formatPreExploreCount(currentRecord.pre_explore) }}</div>
+          </div>
+        </div>
+
+        <!-- 预探索元素清单（动手前抓到的可交互元素） -->
+        <template v-if="preExploreElements.length > 0">
+          <div class="detail-item mt-15">
+            <span class="label">{{ $t('uiAutomation.ai.executionRecords.preExploreElements') }}:</span>
+            <span class="pre-explore-meta">{{ preExploreMeta }}</span>
+          </div>
+          <div class="pre-explore-container">
+            <div v-for="el in preExploreElements" :key="el.index" class="pre-explore-item">
+              <span class="pre-explore-index">[{{ el.index }}]</span>
+              <span class="pre-explore-tag">{{ el.tag }}</span>
+              <span class="pre-explore-label">{{ el.label }}</span>
+            </div>
+          </div>
+        </template>
+
         <!-- 任务描述 -->
         <div v-if="currentRecord.task_description" class="detail-item mt-15">
           <span class="label">{{ $t('uiAutomation.ai.executionRecords.taskDescription') }}:</span>
@@ -127,7 +173,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete } from '@element-plus/icons-vue'
@@ -232,6 +278,48 @@ const formatDate = (row, column, cellValue) => {
   if (!cellValue) return ''
   return new Date(cellValue).toLocaleString()
 }
+
+// ===== #178 用量归因的展示 helpers =====
+// 统一约定：缺数据一律显示 '-'，绝不显示 0——0 会被读成「真的花了 0」。
+
+const formatTokens = (value) => {
+  if (value === null || value === undefined || value === '') return '-'
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '-'
+  return num.toLocaleString()
+}
+
+// 成本三档：provider 实报 / 价目表估算 / 未知（null）。
+// null 必须落到「未知」，不能落成 0 或「免费」。
+const formatCost = (value) => {
+  if (value === null || value === undefined || value === '') {
+    return t('uiAutomation.ai.executionRecords.costUnknown')
+  }
+  const num = Number(value)
+  if (!Number.isFinite(num)) return t('uiAutomation.ai.executionRecords.costUnknown')
+  // 单次执行成本通常远小于 1 分钱，固定 4 位会把小额显示成 0.0000，故小额放到 6 位
+  return `$${num < 0.01 ? num.toFixed(6) : num.toFixed(4)}`
+}
+
+const formatPreExploreCount = (pre) => {
+  if (!pre || !pre.count) return t('uiAutomation.ai.executionRecords.preExploreNotCaptured')
+  return `${pre.count}`
+}
+
+// 详情里最多列 20 项，与后端报告裁剪口径保持一致
+const preExploreElements = computed(() => {
+  const pre = currentRecord.value?.pre_explore
+  const list = pre && Array.isArray(pre.elements) ? pre.elements : []
+  return list.slice(0, 20)
+})
+
+const preExploreMeta = computed(() => {
+  const pre = currentRecord.value?.pre_explore || {}
+  const parts = []
+  if (pre.title) parts.push(pre.title)
+  if (pre.url) parts.push(pre.url)
+  return parts.join(' | ')
+})
 
 // 获取序号
 const getSerialNumber = (index) => {
@@ -393,6 +481,72 @@ onUnmounted(() => {
       line-height: 1.6;
       white-space: pre-wrap;
       word-wrap: break-word;
+    }
+  }
+
+  // #178 用量归因
+  .usage-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-top: 15px;
+
+    .usage-cell {
+      background-color: #f5f7fa;
+      border-radius: 4px;
+      padding: 10px 12px;
+      text-align: center;
+    }
+
+    .usage-label {
+      font-size: 12px;
+      color: #909399;
+      margin-bottom: 6px;
+    }
+
+    .usage-value {
+      font-size: 14px;
+      font-weight: 600;
+      color: #303133;
+      word-break: break-all;
+    }
+  }
+
+  .pre-explore-meta {
+    color: #909399;
+    font-size: 12px;
+  }
+
+  .pre-explore-container {
+    background-color: #f5f7fa;
+    border: 1px solid #e4e7ed;
+    border-radius: 4px;
+    padding: 10px 15px;
+    margin-top: 8px;
+    max-height: 220px;
+    overflow-y: auto;
+
+    .pre-explore-item {
+      font-size: 13px;
+      line-height: 1.8;
+      color: #606266;
+      display: flex;
+      gap: 8px;
+    }
+
+    .pre-explore-index {
+      color: #409eff;
+      font-family: monospace;
+      flex-shrink: 0;
+    }
+
+    .pre-explore-tag {
+      color: #909399;
+      flex-shrink: 0;
+    }
+
+    .pre-explore-label {
+      word-break: break-all;
     }
   }
 }
