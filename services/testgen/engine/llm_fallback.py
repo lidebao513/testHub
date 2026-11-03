@@ -325,7 +325,7 @@ def chat_with_fallback(  # noqa: C901, PLR0912, PLR0915
             # - 真实错误（参数错误）→ 不降级，直接判死。
             for attempt in range(1 + _MAX_TRANSIENT_RETRY):
                 try:
-                    resp = client.chat.completions.create(
+                    resp = client.chat.completions.create(  # type: ignore[call-overload]
                         model=m,
                         messages=_strip_images(messages, m),
                         temperature=temperature,

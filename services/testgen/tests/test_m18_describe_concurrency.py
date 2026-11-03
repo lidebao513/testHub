@@ -23,6 +23,19 @@ def client():
     return TestClient(app, raise_server_exceptions=False)
 
 
+@pytest.fixture(autouse=True)
+def _llm_configured(monkeypatch):
+    """注入占位 LLM 配置，使 describe 的 llm_ready 守卫为真。
+
+    CI 无 .env 时 settings 的 llm_api_key/base_url/model 为空，``describe`` 会在调 LLM
+    前短路成「全部 unresolved」，导致本组用例假失败。这里填占位值仅为通过守卫——
+    真实 LLM 调用已由各用例 monkeypatch 的桩接管，不会发出网络请求。
+    """
+    monkeypatch.setattr(app_module.settings, "llm_api_key", "test-key")
+    monkeypatch.setattr(app_module.settings, "llm_base_url", "http://stub.local/v1")
+    monkeypatch.setattr(app_module.settings, "llm_model", "stub-model")
+
+
 class _Msg:
     def __init__(self, content: str) -> None:
         self.content = content
