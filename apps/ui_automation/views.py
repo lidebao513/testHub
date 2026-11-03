@@ -3120,6 +3120,8 @@ class AICaseViewSet(viewsets.ModelViewSet):
                 # #178：必须放在 should_stop() 的 refresh_from_db() 之后、最终保存之前，
                 # 否则刚赋的归因字段会被 refresh 冲掉（实测踩过这个坑）
                 apply_usage_snapshot(execution_record, agent_holder.get('agent'))
+                # #181：三层断言质量信号落库（非阻断，不改变 status）
+                apply_assertion_report(execution_record, agent_holder.get('agent'))
                 safe_save(execution_record)
 
             except Exception as e:
@@ -3402,6 +3404,22 @@ def apply_usage_snapshot(record, agent) -> None:
         (record.pre_explore or {}).get('count', 0),
         routing.get('reason', ''),
     )
+
+
+def apply_assertion_report(record, agent) -> None:
+    """把三层断言的质量信号写进执行记录（#181）。
+
+    断言是"AI 自称完成"之外的独立证据，非阻断：只落库 + 日志已由 run_task
+    通过 emit_callback 追加，不改变 passed/failed 判定。整体只读 + 兜底。
+    """
+    try:
+        report = getattr(agent, '_assertion_report', None) if agent is not None else None
+        if isinstance(report, dict) and report:
+            record.assertion_report = report
+            signal = report.get('quality_signal', 'none')
+            logger.info('📊 三层断言质量信号: %s counts=%s', signal, report.get('counts'))
+    except Exception as e:
+        logger.warning(f'断言报告落库失败（不影响执行结果）: {e}')
 
 
 def is_infrastructure_failure(error_message: str) -> bool:
@@ -3706,6 +3724,8 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                 # #178：必须放在 should_stop() 的 refresh_from_db() 之后、最终保存之前，
                 # 否则刚赋的归因字段会被 refresh 冲掉（实测踩过这个坑）
                 apply_usage_snapshot(execution_record, agent_holder.get('agent'))
+                # #181：三层断言质量信号落库（非阻断，不改变 status）
+                apply_assertion_report(execution_record, agent_holder.get('agent'))
                 safe_save(execution_record)
 
             except Exception as e:

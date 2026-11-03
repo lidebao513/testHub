@@ -1065,6 +1065,10 @@ class AIExecutionRecord(models.Model):
         default=dict, blank=True, verbose_name='页面预探索快照',
         help_text='{url, title, count, elements}；为空表示未启用或未抓到',
     )
+    assertion_report = models.JSONField(
+        default=dict, blank=True, verbose_name='三层断言报告',
+        help_text='#181 AI/规则/会话三层断言的质量信号（quality_signal/counts/items），不改变执行状态判定',
+    )
 
     class Meta:
         db_table = 'ui_ai_execution_records'

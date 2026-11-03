@@ -602,6 +602,14 @@ def _ui_pre_explore_enabled():
     return str(raw).strip().lower() not in _PRE_EXPLORE_FALSY
 
 
+def _ui_assertions_enabled():
+    """#181 三层断言开关 UI_ASSERTIONS（默认开启，语义同 _ui_pre_explore_enabled）。"""
+    raw = os.getenv('UI_ASSERTIONS')
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in _PRE_EXPLORE_FALSY
+
+
 def build_pre_explore_prompt():
     """构造页面预探索指令块（prompt 级，零额外浏览器开销）。"""
     return (
@@ -1863,6 +1871,8 @@ class BaseBrowserAgent:
         self.routing_info = {}
         self._usage_snapshot = None
         self._pre_explore_summary = None
+        # #181 三层断言：执行结束后由 run_task 写入（dict，见 assertions.AssertionReport.to_dict）
+        self._assertion_report = None
 
     def _build_chat_llm(self, model_name):
         """按当前 key/base_url 构造 chat 客户端（主模型与分级路由共用）。"""
@@ -2522,10 +2532,32 @@ class BaseBrowserAgent:
 
         return self._pre_explore_summary
 
+    async def _capture_final_state(self, agent_instance):
+        """#181：抓一次会话终态（供三层断言对比）。只读、非阻断，失败返回 None。"""
+        session = getattr(agent_instance, 'browser_session', None)
+        if session is None or not hasattr(session, 'get_browser_state_summary'):
+            return None
+        try:
+            return await asyncio.wait_for(
+                session.get_browser_state_summary(include_screenshot=False), timeout=15.0
+            )
+        except Exception as e:
+            logger.warning(f'终态快照采集失败（断言降级为 unknown）: {e}')
+            return None
+
     async def run_task(self, task_description: str, planned_tasks=None, callback=None, should_stop=None):
         # #178 模型分级：先定用哪个模型，再做连通性校验——校验必须打在真正会用的模型上
         routing_info = self._apply_model_routing(task_description, planned_tasks)
         await self._verify_execution_llm()
+
+        # #181 三层断言（L1）：执行前生成 AI 断言。非阻断：LLM 不可用/超时/脏输出 → 空列表。
+        ai_assertion_items = []
+        if _ui_assertions_enabled():
+            from .assertions import generate_ai_assertions
+            try:
+                ai_assertion_items = await generate_ai_assertions(self.llm, task_description, planned_tasks)
+            except Exception as e:
+                logger.warning(f'AI 断言生成跳过（不影响执行）: {e}')
 
         # Cleanup potential zombie processes before starting
         self._cleanup_zombie_chrome()
@@ -3017,6 +3049,46 @@ class BaseBrowserAgent:
                     f"⚠️ Found {executed_tasks_info['executed_actions']} executed actions, but only {len(executed_tasks_info['marked_tasks'])} tasks were explicitly marked complete")
                 logger.warning(f"⚠️ Unmarked actions: {executed_tasks_info['unmarked_actions']}")
                 logger.warning("⚠️ This indicates the AI agent did not follow the 'mark_task_complete' rule properly.")
+
+        # #181 三层断言（L2 规则 + L3 会话 + L1 评估）：终态采集与评估。质量信号，非阻断。
+        if _ui_assertions_enabled():
+            try:
+                from .assertions import (
+                    build_assertion_report,
+                    page_text_from_state,
+                    render_assertion_block,
+                )
+
+                final_state_raw = await self._capture_final_state(agent)
+                final_state = None
+                final_text = ''
+                if final_state_raw is not None:
+                    final_state = {
+                        'url': str(getattr(final_state_raw, 'url', '') or ''),
+                        'title': str(getattr(final_state_raw, 'title', '') or ''),
+                    }
+                    final_text = page_text_from_state(final_state_raw)
+
+                # 是否真的执行过动作（决定会话级断言的严格程度）
+                had_actions = True
+                try:
+                    hist_steps = getattr(getattr(agent, 'history', None), 'steps', None) or []
+                    had_actions = any(getattr(s, 'actions', None) for s in hist_steps)
+                except Exception:
+                    pass
+
+                report = build_assertion_report(
+                    task_description, planned_tasks, self._pre_explore_summary,
+                    final_state, final_text, ai_assertion_items, had_actions=had_actions,
+                )
+                self._assertion_report = report.to_dict()
+
+                block = render_assertion_block(report)
+                if block:
+                    logger.info(f"📊 {block.splitlines()[0]}")
+                    await emit_callback({'type': 'log', 'content': f'\n{block}\n'})
+            except Exception as e:
+                logger.warning(f'断言评估跳过（不影响执行结果）: {e}')
 
         return history
 
