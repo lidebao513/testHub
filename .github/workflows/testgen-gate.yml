@@ -5,13 +5,14 @@ name: testgen-gate
 
 on:
   push:
+    branches: [main]
     paths:
       - 'services/testgen/**'
-      - '.github/workflows/testgen-gate.yml'
+      - '.github/workflows/**'
+  # 不按路径过滤：main 分支保护要求 gate 检查在**每次** PR 上必现，
+  # 否则仅改前端/后端的 PR 会因缺少 gate 检查而被误锁。
   pull_request:
-    paths:
-      - 'services/testgen/**'
-      - '.github/workflows/testgen-gate.yml'
+    branches: [main]
 
 jobs:
   gate:
