@@ -32,10 +32,11 @@ static_files/img/
 *.bak
 # Redis/Memurai 落盘快照（运行时产物，可重建，不入库）
 *.rdb
-# 忽略所有 app/*/migrations/ 目录下的所有内容 (包括文件和子目录)
-apps/*/migrations/*
-# 使用否定模式，例外地跟踪 __init__.py 文件
-!apps/*/migrations/__init__.py
+# migrations 必须入库（2026-11-03 决策）
+# 此前用 `apps/*/migrations/*` + `!__init__.py` 只跟踪包占位文件，迁移实体被忽略，
+# 结果是各环境的 schema 靠 `makemigrations` 各生成一份，等于没有版本化的表结构。
+# 现改为全量入库；只排除 Python 缓存。
+apps/*/migrations/__pycache__/
 
 # 忽略 allure-static 下的所有文件（运行时生成）
 media/allure-static/*

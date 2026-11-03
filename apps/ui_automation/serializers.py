@@ -830,9 +830,13 @@ class AIExecutionRecordSerializer(serializers.ModelSerializer):
             'task_description',
             'execution_mode', 'status', 'start_time', 'end_time', 'duration',
             'logs', 'steps_completed', 'planned_tasks', 'executed_by', 'executed_by_name',
-            'gif_path', 'screenshots_sequence'
+            'gif_path', 'screenshots_sequence',
+            'total_tokens', 'cost', 'routed_model', 'pre_explore'
         ]
-        read_only_fields = ('start_time', 'end_time', 'duration', 'executed_by', 'gif_path', 'screenshots_sequence')
+        read_only_fields = (
+            'start_time', 'end_time', 'duration', 'executed_by', 'gif_path', 'screenshots_sequence',
+            'total_tokens', 'cost', 'routed_model', 'pre_explore'
+        )
 
 
 

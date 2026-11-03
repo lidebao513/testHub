@@ -69,7 +69,8 @@ class AIExecutionReportGenerator:
                 'duration': self.record.duration,
                 'total_tasks': len(planned_tasks),
             },
-            'gif_path': self.record.gif_path  # 添加GIF路径
+            'gif_path': self.record.gif_path,  # 添加GIF路径
+            'ai_usage': self._generate_ai_usage(),  # #178 用量归因
         }
 
         return report
@@ -178,6 +179,51 @@ class AIExecutionReportGenerator:
             'completion_rate': task_stats['completion_rate'],
         }
 
+    def _generate_ai_usage(self) -> Dict[str, Any]:
+        """AI 用量归因（#178）：路由模型 / token / 成本 / 预探索快照。
+
+        成本是三档口径：provider 实报 > 价目表估算 > NULL（未知）。
+        cost 为 None 时前端必须显示「未知」，不能渲染成 0 或「免费」——
+        0 会被误读成「这次执行不花钱」。
+        """
+        routed_model = str(getattr(self.record, 'routed_model', '') or '').strip()
+
+        total_tokens = getattr(self.record, 'total_tokens', None)
+        if isinstance(total_tokens, bool) or not isinstance(total_tokens, int):
+            total_tokens = None
+
+        cost = getattr(self.record, 'cost', None)
+        cost_known = isinstance(cost, (int, float)) and not isinstance(cost, bool)
+        if cost_known:
+            cost = round(float(cost), 6)
+        else:
+            cost = None
+
+        raw_pre = getattr(self.record, 'pre_explore', None)
+        pre_explore = raw_pre if isinstance(raw_pre, dict) else {}
+        elements = pre_explore.get('elements')
+        if not isinstance(elements, list):
+            elements = []
+
+        count = pre_explore.get('count')
+        if isinstance(count, bool) or not isinstance(count, int):
+            count = len(elements)
+
+        return {
+            'routed_model': routed_model or None,
+            'total_tokens': total_tokens,
+            'cost': cost,
+            'cost_known': cost_known,
+            'pre_explore': {
+                'captured': bool(pre_explore),
+                'count': count,
+                'url': str(pre_explore.get('url') or ''),
+                'title': str(pre_explore.get('title') or ''),
+                # 报告只回前 20 项：完整清单可能上百条，前端表格放不下也无阅读价值
+                'elements': elements[:20],
+            },
+        }
+
     def _generate_timeline(self, planned_tasks: List[Dict]) -> List[Dict[str, Any]]:
         """
         生成任务时间线
@@ -281,7 +327,8 @@ class AIExecutionReportGenerator:
                 'end_time': self.record.end_time.isoformat() if self.record.end_time else None,
                 'duration': self.record.duration,
             },
-            'gif_path': self.record.gif_path  # 添加GIF路径
+            'gif_path': self.record.gif_path,  # 添加GIF路径
+            'ai_usage': self._generate_ai_usage(),  # #178 用量归因
         }
 
     def generate_performance_report(self) -> Dict[str, Any]:
@@ -317,7 +364,8 @@ class AIExecutionReportGenerator:
                 'duration': self.record.duration,
                 'total_steps': len(steps_completed),
             },
-            'gif_path': self.record.gif_path  # 添加GIF路径
+            'gif_path': self.record.gif_path,  # 添加GIF路径
+            'ai_usage': self._generate_ai_usage(),  # #178 用量归因
         }
 
     def _parse_detailed_steps(self, logs: str, steps_completed: List) -> List[Dict[str, Any]]:

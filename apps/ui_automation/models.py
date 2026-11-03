@@ -1054,6 +1054,17 @@ class AIExecutionRecord(models.Model):
     source_generation_task = models.CharField(
         max_length=64, null=True, blank=True, verbose_name='来源生成任务ID'
     )
+    # #178 成本归因：browser-use 每步重发完整 DOM，token 是这类用例最真实的成本口径。
+    # cost 允许为空：未配置价目表且 provider 未回报时记 NULL（未知），不要写成 0 冒充免费。
+    total_tokens = models.IntegerField(null=True, blank=True, verbose_name='总Token数')
+    cost = models.FloatField(null=True, blank=True, verbose_name='成本(USD)')
+    routed_model = models.CharField(
+        max_length=100, blank=True, default='', verbose_name='实际使用模型'
+    )
+    pre_explore = models.JSONField(
+        default=dict, blank=True, verbose_name='页面预探索快照',
+        help_text='{url, title, count, elements}；为空表示未启用或未抓到',
+    )
 
     class Meta:
         db_table = 'ui_ai_execution_records'

@@ -3002,6 +3002,8 @@ class AICaseViewSet(viewsets.ModelViewSet):
                             raise
                 return False
 
+            # #178：提前建好 holder，异常路径也能拿到 agent 做用量归因
+            agent_holder = {}
             try:
                 def should_stop():
                     return STOP_SIGNALS.get(execution_record.id, False)
@@ -3048,11 +3050,13 @@ class AICaseViewSet(viewsets.ModelViewSet):
                     except Exception as e:
                         logger.error(f"更新步骤状态失败: {e}")
 
+                # #178：交给 agent_holder 把 agent 带回，用于执行结束后的用量/成本归因
                 history = run_full_process_sync(
                     ai_case.task_description,
                     analysis_callback=on_analysis_complete,
                     step_callback=on_step_update,
-                    should_stop=should_stop
+                    should_stop=should_stop,
+                    agent_holder=agent_holder
                 )
 
                 # 检查是否是手动停止
@@ -3113,6 +3117,9 @@ class AICaseViewSet(viewsets.ModelViewSet):
                 # 处理GIF录制文件
                 self._process_gif_recording(execution_record, history)
 
+                # #178：必须放在 should_stop() 的 refresh_from_db() 之后、最终保存之前，
+                # 否则刚赋的归因字段会被 refresh 冲掉（实测踩过这个坑）
+                apply_usage_snapshot(execution_record, agent_holder.get('agent'))
                 safe_save(execution_record)
 
             except Exception as e:
@@ -3127,6 +3134,8 @@ class AICaseViewSet(viewsets.ModelViewSet):
                     execution_record.logs += f"\n执行出错: {error_message}"
                 if failed_task_id is not None:
                     execution_record.logs += f"\n[System] 子任务 {failed_task_id} 已自动标记为失败。"
+                # #178：失败任务同样记录已消耗的 token（只统计成功用例会低估成本）
+                apply_usage_snapshot(execution_record, agent_holder.get('agent'))
                 execution_record.logs = append_execution_summary(
                     execution_record.logs,
                     summarize_planned_tasks(execution_record.planned_tasks)
@@ -3362,6 +3371,39 @@ def append_execution_summary(logs, summary):
     )
 
 
+def apply_usage_snapshot(record, agent) -> None:
+    """把一次 AI 执行的用量/成本/路由/预探索归因写进执行记录（#178）。
+
+    agent 由 run_full_process_sync 通过 agent_holder 交回（asyncio.run 结束后对象仍在）。
+    整体只读 + 兜底：归因失败绝不能把一条已经跑完的用例变成失败。
+    """
+    if agent is None:
+        return
+    try:
+        snapshot = agent.get_usage_snapshot()
+    except Exception as e:
+        logger.warning(f'用量归因失败（不影响执行结果）: {e}')
+        return
+
+    record.total_tokens = snapshot.get('total_tokens')
+    record.cost = snapshot.get('cost')
+    record.routed_model = str(snapshot.get('routed_model') or '')[:100]
+    pre_explore = snapshot.get('pre_explore')
+    record.pre_explore = pre_explore if isinstance(pre_explore, dict) else {}
+
+    routing = snapshot.get('routing') or {}
+    logger.info(
+        "📊 用量归因: model=%s tokens=%s cost=%s(%s) steps=%s pre_explore=%s项 routing=%s",
+        record.routed_model,
+        record.total_tokens,
+        record.cost,
+        snapshot.get('cost_source'),
+        snapshot.get('steps'),
+        (record.pre_explore or {}).get('count', 0),
+        routing.get('reason', ''),
+    )
+
+
 def is_infrastructure_failure(error_message: str) -> bool:
     """判断是否为模型/网络/初始化类故障，这类问题不应直接把首个子任务标失败。"""
     message = (error_message or '').lower()
@@ -3514,6 +3556,8 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                             raise
                 return False
 
+            # #178：提前建好 holder，异常路径也能拿到 agent 做用量归因
+            agent_holder = {}
             try:
                 # 定义异步安全的 should_stop
                 async def should_stop_async():
@@ -3590,6 +3634,7 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                     except Exception as e:
                         logger.error(f"更新步骤状态失败: {e}", exc_info=True)
 
+                # #178：交给 agent_holder 把 agent 带回，用于执行结束后的用量/成本归因
                 history = run_full_process_sync(
                     task_description,
                     analysis_callback=on_analysis_complete,
@@ -3597,7 +3642,8 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                     should_stop=should_stop_async,  # 传递异步版本
                     execution_mode=execution_mode,
                     enable_gif=enable_gif,  # 传递GIF录制开关
-                    case_name=task_description[:50] if task_description else "Adhoc Task"  # 传递用例名称用于GIF文件命名
+                    case_name=task_description[:50] if task_description else "Adhoc Task",  # 传递用例名称用于GIF文件命名
+                    agent_holder=agent_holder
                 )
 
                 # 检查是否是手动停止 (使用同步版本)
@@ -3657,6 +3703,9 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                 # 处理GIF录制文件
                 self._process_gif_recording(execution_record, history)
 
+                # #178：必须放在 should_stop() 的 refresh_from_db() 之后、最终保存之前，
+                # 否则刚赋的归因字段会被 refresh 冲掉（实测踩过这个坑）
+                apply_usage_snapshot(execution_record, agent_holder.get('agent'))
                 safe_save(execution_record)
 
             except Exception as e:
@@ -3671,6 +3720,8 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                     execution_record.logs += f"\n执行出错: {error_message}"
                 if failed_task_id is not None:
                     execution_record.logs += f"\n[System] 子任务 {failed_task_id} 已自动标记为失败。"
+                # #178：失败任务同样记录已消耗的 token（只统计成功用例会低估成本）
+                apply_usage_snapshot(execution_record, agent_holder.get('agent'))
                 execution_record.logs = append_execution_summary(
                     execution_record.logs,
                     summarize_planned_tasks(execution_record.planned_tasks)
