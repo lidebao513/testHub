@@ -13,6 +13,7 @@ import functools
 import ipaddress
 import json
 import re
+import tempfile
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from urllib.parse import urlparse
@@ -1255,7 +1256,6 @@ except Exception as e:
 # Patch BrowserSession.connect (Windows CDP fix)
 try:
     from browser_use.browser.session import BrowserSession
-    import httpx
 
     _original_connect = BrowserSession.connect
 
@@ -1267,31 +1267,19 @@ try:
         if hasattr(browser_profile, 'cdp_url') and browser_profile.cdp_url:
             return await _original_connect(self, cdp_url=browser_profile.cdp_url)
 
-        port = 9222
-        if hasattr(browser_profile, 'extra_chromium_args'):
-            for arg in browser_profile.extra_chromium_args:
-                if '--remote-debugging-port=' in str(arg):
-                    try:
-                        port = int(arg.split('=')[1]); break
-                    except:
-                        pass
-        if hasattr(browser_profile, 'remote_debugging_port'):
-            port = browser_profile.remote_debugging_port
-
-        cdp_endpoint = f"http://localhost:{port}/json/version"
-
-        for attempt in range(10): # 增加重试次数
+        # #180 会话隔离：调试端口由 LocalBrowserWatchdog 每次启动动态分配（_find_free_port），
+        # 不再从启动参数里猜固定端口——旧逻辑按固定端口轮询，并发时会把别的会话
+        # 监听在同端口上的浏览器误当成自己的（跨会话串浏览器）。
+        # 保留有界重试，兜底 CDP 尚未就绪的窗口期。
+        last_exc = None
+        for attempt in range(3):
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.get(cdp_endpoint)
-                    if response.status_code == 200 and response.text:
-                        version_info = response.json()
-                        browser_profile.cdp_url = version_info['webSocketDebuggerUrl']
-                        return await _original_connect(self, cdp_url=browser_profile.cdp_url)
-            except Exception:
-                if attempt < 4: await asyncio.sleep(1.0)
-
-        return await _original_connect(self, cdp_url=cdp_url)
+                return await _original_connect(self, cdp_url=cdp_url)
+            except Exception as e:
+                last_exc = e
+                if attempt < 2:
+                    await asyncio.sleep(1.0)
+        raise last_exc
 
 
     BrowserSession.connect = _patched_connect
@@ -1507,29 +1495,9 @@ try:
 except Exception:
     pass
 
-# Patch LocalBrowserWatchdog._find_free_port to force port 9222 on Linux
-try:
-    from browser_use.browser.watchdogs.local_browser_watchdog import LocalBrowserWatchdog
-    import platform
-
-    _original_find_free_port = LocalBrowserWatchdog._find_free_port
-
-    # 创建补丁函数 - 始终作为实例方法（接受 self）
-    def _patched_find_free_port(self):
-        if platform.system() == 'Linux':
-            logger.info("🔧 Force using port 9222 for Linux environment")
-            return 9222
-        # 尝试调用原始方法，兼容不同签名
-        try:
-            return _original_find_free_port(self)
-        except TypeError:
-            # 如果原始方法不接受 self，尝试不带参数调用
-            return _original_find_free_port()
-
-    LocalBrowserWatchdog._find_free_port = _patched_find_free_port
-    logger.info("✅ Successfully patched LocalBrowserWatchdog._find_free_port")
-except Exception as e:
-    logger.error(f"❌ Failed to patch LocalBrowserWatchdog._find_free_port: {e}")
+# #180 会话隔离：不再 patch LocalBrowserWatchdog._find_free_port 强制 Linux 用 9222。
+# 调试端口由 browser-use 每次启动时动态分配（绑定 127.0.0.1:0 取空闲端口），
+# 并发会话各拿各的端口，互不抢占。旧 patch 强制 9222 是并发会话抢端口的根源。
 
 # ============================================================================
 # PART 2: Helper Classes
@@ -2343,25 +2311,49 @@ class BaseBrowserAgent:
             cleaned_steps = self._finalize_steps([], task_description)
             return [{'id': i + 1, 'description': s, 'status': 'pending'} for i, s in enumerate(cleaned_steps)]
 
+    @staticmethod
+    def _is_orphaned_chrome_cmdline(cmdline) -> bool:
+        """#180 会话隔离：判断命令行是否属于"孤儿" Chrome。
+
+        判定标准（fail-closed，宁可不杀也不错杀）：进程命令行带有 --user-data-dir=，
+        且该目录已不存在（临时目录被清理 = 启动它的会话早已结束，进程是残留孤儿）。
+        旧逻辑按固定调试端口子串匹配，动态端口时代会误杀其他并发会话正在使用的浏览器。
+        """
+        try:
+            if not cmdline:
+                return False
+            for arg in cmdline:
+                arg = str(arg)
+                if arg.startswith('--user-data-dir='):
+                    path = arg.split('=', 1)[1].strip().strip('"')
+                    return bool(path) and not os.path.exists(path)
+            return False
+        except Exception:
+            return False
+
     def _cleanup_zombie_chrome(self):
-        """Clean up any existing Chrome processes on port 9222 (Linux only)"""
+        """Clean up orphaned Chrome processes whose temp user-data-dir is gone (Linux only).
+
+        #180 会话隔离：调试端口改为动态分配后，不能再按固定端口子串匹配杀进程
+        （会误杀其他并发会话的浏览器）。只有 user-data-dir 指向已消失临时目录的
+        进程才判定为孤儿并清理，见 _is_orphaned_chrome_cmdline。
+        """
         import platform
         import psutil
 
         if platform.system() != 'Linux':
             return
 
-        logger.info("🧹 Cleaning up zombie Chrome processes...")
+        logger.info("🧹 Cleaning up orphaned Chrome processes...")
         cleaned_count = 0
         try:
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
                 try:
                     # Check for chrome/chromium
                     if proc.info['name'] and ('chrome' in proc.info['name'] or 'chromium' in proc.info['name']):
-                        # Check command line for port 9222
                         cmdline = proc.info.get('cmdline', [])
-                        if cmdline and any('9222' in str(arg) for arg in cmdline):
-                            logger.info(f"Killing zombie chrome pid={proc.pid}")
+                        if cmdline and self._is_orphaned_chrome_cmdline(cmdline):
+                            logger.info(f"Killing orphaned chrome pid={proc.pid}")
                             proc.kill()
                             cleaned_count += 1
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
@@ -2370,7 +2362,7 @@ class BaseBrowserAgent:
             logger.warning(f"⚠️ Failed to cleanup zombie chrome: {e}")
 
         if cleaned_count > 0:
-            logger.info(f"✅ Cleaned up {cleaned_count} zombie Chrome processes")
+            logger.info(f"✅ Cleaned up {cleaned_count} orphaned Chrome processes")
 
     def _create_browser_profile(self):
         # Default implementation, can be overridden
@@ -2461,7 +2453,8 @@ class BaseBrowserAgent:
                 '--disable-gpu',  # 禁用 GPU 加速（服务器通常无 GPU）
                 '--headless=new',  # Linux 服务器使用无头模式
                 '--disable-software-rasterizer',  # 禁用软件光栅化器
-                '--remote-debugging-port=9222',  # 使用固定端口，避免随机端口导致连接失败
+                # #180 会话隔离：不在此处固定 --remote-debugging-port，
+                # 由 LocalBrowserWatchdog 每次启动动态分配空闲端口，并发会话互不抢占。
                 '--remote-debugging-address=0.0.0.0', # 允许远程连接，而不仅仅是 127.0.0.1
                 '--no-zygote',  # 减少进程数
                 '--single-process',  # 单进程模式，虽然不稳定但能解决某些 Docker 环境下的 PID 问题
@@ -2471,10 +2464,17 @@ class BaseBrowserAgent:
             extra_args.extend([
                 '--no-sandbox',  # 兼容性
                 '--disable-gpu',
-                '--remote-debugging-port=9222',
+                # #180 会话隔离：调试端口由 watchdog 动态分配，见上方 Linux 分支注释
             ])
 
+        # #180 会话隔离：每个任务会话独立的临时 user_data_dir。
+        # 目录名带上 'browser-use-user-data-dir-' 前缀（browser-use _copy_profile
+        # 以该子串识别"已是临时目录"，避免它再做一次 profile 拷贝），
+        # 同时满足 browser-use get_args() 对 user_data_dir 非 None 的断言。
+        user_data_dir = tempfile.mkdtemp(prefix='browser-use-user-data-dir-ui-')
+
         return BrowserProfile(
+            user_data_dir=user_data_dir,
             headless=(system == 'Linux'),  # Linux 使用无头模式，其他系统使用显示模式
             disable_security=True,
             executable_path=chrome_path,
