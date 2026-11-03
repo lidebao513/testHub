@@ -162,5 +162,61 @@ log: 预探索元素清单 7 项（TestHub - AI一体化测试平台 | http://12
 2. **复杂度判定是启发式**：中文动作词/连接词计数，不做语义理解。判错方向是
    「简单任务被当成复杂」——多花钱但不会跑歪，属可接受偏差。
 3. **只做同厂降级**：跨 provider 路由需要独立的 key/base_url 解析，未在范围内。
-4. **前端未展示新字段**：接口已返回，报表页展示是后续项。
+4. ~~**前端未展示新字段**：接口已返回，报表页展示是后续项。~~ **已补齐**，见第八节。
 5. **`AIExecutionRecord.steps_completed`** 的 steps 修正属顺带修复，历史记录不会回填。
+
+## 八、展示层补齐与 migrations 入库（同日追加）
+
+### 8.1 报告接口
+
+`AIExecutionReportGenerator._generate_ai_usage()` 新增 `ai_usage` 段，
+`generate_summary_report` / `generate_detailed_report` / `generate_performance_report`
+三类报告都带：
+
+```json
+{
+  "routed_model": "deepseek-v4.1-flash",
+  "total_tokens": 46317,
+  "cost": null,
+  "cost_known": false,
+  "pre_explore": {
+    "captured": true, "count": 7,
+    "url": "...", "title": "...",
+    "elements": [{"index": 4, "tag": "input", "label": "input[text] \"请输入用户名\""}]
+  }
+}
+```
+
+`cost_known` 是显式布尔值：前端不得用 `cost === 0` 判断未知——provider 真报 0
+（例如命中缓存）与「我们不知道」是两件事。`pre_explore.elements` 裁到 20 项。
+
+### 8.2 页面
+
+| 位置 | 展示内容 |
+|---|---|
+| 列表页 | 新增「模型」「Token 数」两列（Token 千分位） |
+| 详情弹窗 | 四个归因卡（模型 / Token 数 / 成本(USD) / 预探索）+ 元素清单（最多 20 项） |
+| 报告 · 执行摘要 | 新增「AI 用量归因」区块：四卡 + 「动手前页面元素清单」表格 |
+| 报告 · 性能分析 | 指标区补 Token / 成本两卡（慢和贵常出自同一处） |
+
+缺数据统一显示 `-` 或「未知」，绝不显示 `0`。
+
+### 8.3 migrations 入库决策
+
+原 `.gitignore` 只有 `apps/*/migrations/*` + `!apps/*/migrations/__init__.py`，
+等于只跟踪包占位文件，迁移实体从未进版本库——各环境靠 `makemigrations` 各生成一份，
+schema 漂移无法发现。已改为**全量入库**（68 个文件），仅排除 `__pycache__/`；
+`manage.py makemigrations --check --dry-run` 输出 `No changes detected`。
+
+### 8.4 页面级验证
+
+`tests/verify_report_usage_ui.py`（真实浏览器从登录页进入）：
+
+```
+✅ 列表页表头含「模型」「Token 数」      首行: deepseek-v4.1-flash | 46,317
+✅ 详情弹窗含四项归因标签
+✅ 预探索元素清单已渲染（7 项）
+✅ 报告摘要页含「AI 用量归因」四项
+✅ 成本未知显示为「未知」（未被渲染成 0）
+✅ 性能分析页含 Token / 成本卡
+```
