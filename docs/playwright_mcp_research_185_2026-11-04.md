@@ -195,3 +195,23 @@
 - **B1 安全 guard 未抽公共模块**：`ai_base.py` 顶层依赖 `langchain_openai`/`browser_use` 等重型库，纯 Python 调用链引入会拖慢/污染；沿用 `pw_mcp_client` 内的最小硬拦截（语义与 `ai_base` 一致，注释指向权威源）。抽公共模块留作后续债务。
 - **preview/confirm 用字段而非独立接口**：不加 `TestScript.status` 之外的状态机，前端生成→编辑器复核→保存即「确认」，`draft` 表示 AI 产物未复核。避免一次性引入过多模型改动。
 - **LLM agent loop 未落地**：`record_flow` 仍是确定性最小流程（navigate→snapshot→type→press），LLM 决策替换仍是后续增强项（需先有 LLM 调用预算与提示词工程）。
+
+### 合入后真实栈联调与缺陷修复（2026-11-04）
+
+PR #16 合并后（main=`25552b9`）在**真实 MySQL + 真实 URLconf + 真实 MCP/chromium** 上做了一次端到端联调（`manage.py migrate ui_automation` 应用 0009 → APIClient 打新路由）：
+
+| 校验项 | 结果 |
+|---|---|
+| 云元数据地址 `169.254.169.254` | 400 拦截 ✅ |
+| 真实生成（demo.todomvc） | 200，`steps=[navigate,snapshot,type,press_key]`，`status=draft`，content 447B ✅ |
+| instruction 回显 | `密码:Su***9 登录后搜索`（已打码）✅ |
+| 草稿态落库 + 回读 | 201 / 200，`status=draft` ✅ |
+| **响应体内是否含明文密码** | **❌ 首轮 True** |
+
+**真实缺陷（与 #184 的 planned_tasks 泄露同类）**：`instruction` 回显已打码，但引擎把原始指令当作填充文本写进生成脚本 `page.fill("密码 SuperSecret9 登录后搜索")`，该 `content` 会由前端以 `draft` 落库 → **明文凭据进入脚本正文与数据库**。
+
+**修复（凭据双防线）**：
+1. **生成前**打码：`safe_instruction = _mask_secret_in_text(instruction)` 再交给 `GENERATE_FN`，引擎填入的就是打码值（占位符语义，真实密码应由环境变量注入）。
+2. **生成后**兜底：对 `content` 再过一次打码，防止凭据从页面文本等其它来源混入脚本。
+
+**回归**：新增 `test_generate_scrubs_secret_in_generated_content` + 强化 `test_generate_scrubs_secret_in_instruction`（断言引擎收到的是打码指令）→ 11 passed；真实栈 E2E 复跑 `LEAK_CHECK_plaintext_in_body: False` ✅。
