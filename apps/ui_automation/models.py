@@ -1014,6 +1014,12 @@ class AICase(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, verbose_name='创建者')
+    # #183 闭环回流标记：承载最近一次「生成→执行→回流」判定的可追溯快照，
+    # 不替代 AIExecutionRecord（那是每次执行的明细），只做「该用例当前闭环结论」的快速落点。
+    last_loop = models.JSONField(
+        default=dict, blank=True, verbose_name='闭环回流标记',
+        help_text='{state, exec_status, assertion_signal, last_record_id, updated_at}；空表示尚未进入闭环',
+    )
 
     class Meta:
         db_table = 'ui_ai_cases'
