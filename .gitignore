@@ -93,6 +93,9 @@ Dockerfile*
 docker-compose*.yml
 .dockerignore
 
+# Playwright MCP server 运行时产物（accessibility snapshot / console 临时输出）
+.playwright-mcp/
+
 # 工作区克隆的第三方被测目标（含他人代码/凭据），整目录排除，不混入自有仓库
 work/
 
