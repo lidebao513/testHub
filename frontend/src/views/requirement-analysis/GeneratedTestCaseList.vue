@@ -8,7 +8,7 @@
       <div class="filter-card">
         <div class="filter-group">
           <label>{{ $t('generatedTestCases.statusFilter') }}</label>
-          <select v-model="selectedStatus" @change="loadTasks" class="filter-select">
+          <select v-model="selectedStatus" class="filter-select" @change="loadTasks">
             <option value="">{{ $t('generatedTestCases.allStatus') }}</option>
             <option value="pending">{{ $t('generatedTestCases.statusPending') }}</option>
             <option value="generating">{{ $t('generatedTestCases.statusGenerating') }}</option>
@@ -22,12 +22,12 @@
           <button
             v-if="selectedTasks.length > 0"
             class="batch-delete-btn"
-            @click="batchDeleteTasks"
-            :disabled="isDeleting">
+            :disabled="isDeleting"
+            @click="batchDeleteTasks">
             <span v-if="isDeleting">{{ $t('generatedTestCases.deleting') }}</span>
             <span v-else>{{ $t('generatedTestCases.batchDelete', { count: selectedTasks.length }) }}</span>
           </button>
-          <button class="refresh-btn" @click="loadTasks" :disabled="isLoading">
+          <button class="refresh-btn" :disabled="isLoading" @click="loadTasks">
             <span v-if="isLoading">{{ $t('generatedTestCases.loading') }}</span>
             <span v-else>{{ $t('generatedTestCases.refresh') }}</span>
           </button>
@@ -36,7 +36,7 @@
     </div>
 
     <!-- 统计信息 -->
-    <div class="stats-section" v-if="allStats.total > 0">
+    <div v-if="allStats.total > 0" class="stats-section">
       <div class="stats-card">
         <div class="stat-item">
           <span class="stat-number">{{ allStats.total }}</span>
@@ -74,9 +74,9 @@
           <div class="header-cell checkbox-cell">
             <input
               type="checkbox"
-              @change="toggleSelectAll"
               :checked="isAllSelected"
-              class="task-checkbox">
+              class="task-checkbox"
+              @change="toggleSelectAll">
           </div>
           <div class="header-cell serial-cell">{{ $t('generatedTestCases.serialNumber') }}</div>
           <div class="header-cell task-id-cell">{{ $t('generatedTestCases.taskId') }}</div>
@@ -97,8 +97,8 @@
               <input
                 type="checkbox"
                 :checked="isTaskSelected(task.task_id)"
-                @change="toggleTaskSelection(task.task_id)"
-                class="task-checkbox">
+                class="task-checkbox"
+                @change="toggleTaskSelection(task.task_id)">
             </div>
             <div class="body-cell serial-cell">{{ getSerialNumber(index) }}</div>
             <div class="body-cell task-id-cell">{{ task.task_id }}</div>
@@ -196,8 +196,8 @@
             type="number"
             :min="1"
             :max="totalPages"
-            @keyup.enter="jumpToPage"
-            :placeholder="$t('generatedTestCases.pageNumber')">
+            :placeholder="$t('generatedTestCases.pageNumber')"
+            @keyup.enter="jumpToPage">
           <button class="jump-btn" @click="jumpToPage">{{ $t('generatedTestCases.jump') }}</button>
         </div>
       </div>
@@ -243,7 +243,7 @@
             <label>{{ $t('generatedTestCases.expectedResult') }}</label>
             <p v-html="sanitizeHtml(selectedTestCaseDetail.expected_result)"></p>
           </div>
-          <div class="detail-item" v-if="selectedTestCaseDetail.review_comments">
+          <div v-if="selectedTestCaseDetail.review_comments" class="detail-item">
             <label>{{ $t('generatedTestCases.reviewComments') }}</label>
             <p>{{ selectedTestCaseDetail.review_comments }}</p>
           </div>
@@ -251,7 +251,7 @@
             <label>{{ $t('generatedTestCases.generatedAI') }}</label>
             <span>{{ selectedTestCaseDetail.generated_by_ai }}</span>
           </div>
-          <div class="detail-item" v-if="selectedTestCaseDetail.reviewed_by_ai">
+          <div v-if="selectedTestCaseDetail.reviewed_by_ai" class="detail-item">
             <label>{{ $t('generatedTestCases.reviewedAI') }}</label>
             <span>{{ selectedTestCaseDetail.reviewed_by_ai }}</span>
           </div>
@@ -367,7 +367,7 @@
             </div>
 
             <div class="form-actions">
-              <button type="button" class="confirm-btn" @click="confirmAdopt" :disabled="isAdopting">
+              <button type="button" class="confirm-btn" :disabled="isAdopting" @click="confirmAdopt">
                 {{ isAdopting ? $t('generatedTestCases.adopting') : $t('generatedTestCases.confirmAdopt') }}
               </button>
               <button type="button" class="cancel-btn" @click="closeAdoptModal">{{ $t('generatedTestCases.cancel') }}</button>

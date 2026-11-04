@@ -93,8 +93,8 @@
                     type="success"
                     plain
                     :icon="Check"
-                    @click="applyParsed"
                     style="margin-top:10px;width:100%"
+                    @click="applyParsed"
                   >
                     {{ $t('llmJudge.batch.useFileCases') }}（{{ parsedFile.valid_rows }} {{ $t('llmJudge.common.rows') }}）
                   </el-button>

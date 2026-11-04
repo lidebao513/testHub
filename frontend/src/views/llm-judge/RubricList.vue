@@ -11,7 +11,7 @@
         </div>
       </template>
 
-      <el-table :data="rubrics" border stripe size="small" v-loading="loading" style="width:100%">
+      <el-table v-loading="loading" :data="rubrics" border stripe size="small" style="width:100%">
         <el-table-column prop="id" label="ID" width="70" />
         <el-table-column prop="name" :label="$t('llmJudge.rubric.name')" min-width="180" show-overflow-tooltip />
         <el-table-column :label="$t('llmJudge.rubric.domain')" width="120">
@@ -43,7 +43,8 @@
       </el-table>
 
       <div class="pagination-wrap">
-        <el-pagination v-model:current-page="page" v-model:page-size="pageSize"
+        <el-pagination
+v-model:current-page="page" v-model:page-size="pageSize"
           :total="total" :page-sizes="[20, 50]" layout="total, prev, pager, next"
           @size-change="loadData" @current-change="loadData" />
       </div>
@@ -107,7 +108,8 @@
       <el-form :model="cloneForm" label-position="top">
         <el-form-item :label="$t('llmJudge.rubric.cloneFrom')">
           <el-select v-model="cloneForm.clone_from" placeholder="选择预设" style="width:100%">
-            <el-option v-for="r in presets" :key="r.id"
+            <el-option
+v-for="r in presets" :key="r.id"
               :label="`${r.name}（${domainText(r.domain)}）`" :value="r.id" />
           </el-select>
         </el-form-item>

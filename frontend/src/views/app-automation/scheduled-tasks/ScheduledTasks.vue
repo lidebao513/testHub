@@ -45,7 +45,7 @@
     </div>
 
     <!-- 列表 -->
-    <el-table :data="tasks" v-loading="loading" border>
+    <el-table v-loading="loading" :data="tasks" border>
       <el-table-column prop="name" :label="$t('appAutomation.scheduledTask.taskName')" min-width="180" />
       <el-table-column prop="task_type" :label="$t('appAutomation.scheduledTask.taskType')" width="120">
         <template #default="{ row }">
@@ -98,14 +98,14 @@
       </el-table-column>
       <el-table-column :label="$t('appAutomation.common.operation')" width="200" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" @click="runNow(row)" :loading="row._running">{{ $t('appAutomation.common.execute') }}</el-button>
+          <el-button size="small" :loading="row._running" @click="runNow(row)">{{ $t('appAutomation.common.execute') }}</el-button>
           <el-dropdown @command="cmd => handleAction(cmd, row)">
             <el-button size="small">{{ $t('appAutomation.scheduledTask.more') }}<el-icon><ArrowDown /></el-icon></el-button>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="edit">{{ $t('appAutomation.common.edit') }}</el-dropdown-item>
-                <el-dropdown-item command="pause" v-if="row.status === 'ACTIVE'">{{ $t('appAutomation.scheduledTask.actions.pause') }}</el-dropdown-item>
-                <el-dropdown-item command="resume" v-if="row.status === 'PAUSED'">{{ $t('appAutomation.scheduledTask.actions.resume') }}</el-dropdown-item>
+                <el-dropdown-item v-if="row.status === 'ACTIVE'" command="pause">{{ $t('appAutomation.scheduledTask.actions.pause') }}</el-dropdown-item>
+                <el-dropdown-item v-if="row.status === 'PAUSED'" command="resume">{{ $t('appAutomation.scheduledTask.actions.resume') }}</el-dropdown-item>
                 <el-dropdown-item command="delete" divided>{{ $t('appAutomation.common.delete') }}</el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -238,7 +238,7 @@
 
       <template #footer>
         <el-button @click="showDialog = false">{{ $t('appAutomation.common.cancel') }}</el-button>
-        <el-button type="primary" @click="submitForm" :loading="submitting">
+        <el-button type="primary" :loading="submitting" @click="submitForm">
           {{ editingTask ? $t('appAutomation.common.save') : $t('appAutomation.scheduledTask.create') }}
         </el-button>
       </template>

@@ -18,7 +18,8 @@
     <el-card class="filter-card" shadow="never">
       <el-form :inline="true" @submit.prevent>
         <el-form-item label="搜索">
-          <el-input v-model="filterSearch" placeholder="按目标名称模糊搜索" clearable style="width:240px"
+          <el-input
+v-model="filterSearch" placeholder="按目标名称模糊搜索" clearable style="width:240px"
                     @input="onSearchInput" @clear="onSearchClear">
             <template #prefix><el-icon><Search /></el-icon></template>
           </el-input>
@@ -66,7 +67,8 @@
       <el-table-column prop="last_check_at" :label="t('monitor.targets.col.lastCheck')" min-width="170" :formatter="formatDateTime" />
       <el-table-column :label="t('monitor.targets.col.actions')" width="220" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" :icon="VideoPlay" :loading="row._checking"
+          <el-button
+link type="primary" :icon="VideoPlay" :loading="row._checking"
                      @click="checkNow(row)">{{ t('monitor.targets.checkNow') }}</el-button>
           <el-button link type="primary" :icon="Edit" @click="openEdit(row)">{{ t('monitor.targets.edit') }}</el-button>
           <el-button link type="danger" :icon="Delete" :title="t('monitor.targets.deleteSuccess')" @click="remove(row)" />
@@ -89,7 +91,8 @@
     </div>
 
     <!-- 新增 / 编辑 对话框 -->
-    <el-dialog v-model="dialogVisible" :title="editingId ? t('monitor.targets.edit') : t('monitor.targets.add')"
+    <el-dialog
+v-model="dialogVisible" :title="editingId ? t('monitor.targets.edit') : t('monitor.targets.add')"
                width="680px" @closed="resetForm">
       <el-form :model="form" label-width="130px">
         <el-divider content-position="left">{{ t('monitor.targets.common') }}</el-divider>
@@ -103,13 +106,13 @@
         </el-form-item>
         <el-form-item :label="form.type === 'LOGIN' ? '登录地址' : t('monitor.targets.urlLabel')">
           <el-input v-model="form.url" :placeholder="form.type === 'LOGIN' ? 'https://example.com/api/login（登录接口完整地址）' : 'https://... 或留空（配置内覆盖）'" />
-          <div class="hint" v-if="form.type === 'LOGIN'">登录可用性的请求目标地址。完整 URL 直接使用；若非完整 URL，将与探测配置中的「登录路径」拼接。</div>
+          <div v-if="form.type === 'LOGIN'" class="hint">登录可用性的请求目标地址。完整 URL 直接使用；若非完整 URL，将与探测配置中的「登录路径」拼接。</div>
         </el-form-item>
         <el-form-item :label="t('monitor.targets.method')">
           <el-select v-model="form.method" style="width:140px">
             <el-option v-for="m in methods" :key="m" :label="m" :value="m" />
           </el-select>
-          <div class="hint" v-if="form.type === 'LOGIN'">登录请求的 HTTP 方法，默认 POST。可在探测配置的请求体中自定义字段名。</div>
+          <div v-if="form.type === 'LOGIN'" class="hint">登录请求的 HTTP 方法，默认 POST。可在探测配置的请求体中自定义字段名。</div>
         </el-form-item>
         <el-form-item :label="t('monitor.targets.hostLabel')">
           <el-input v-model="form.host" :placeholder="form.type === 'LOGIN' ? 'example.com（如 URL 已含主机则留空）' : 'host（DOCKER/SL651 用）'" />
@@ -135,14 +138,16 @@
           <el-switch v-model="form.enabled" />
         </el-form-item>
         <el-form-item :label="t('monitor.targets.primaryChannels')">
-          <el-select v-model="form.primary_channels" multiple filterable placeholder="可选"
+          <el-select
+v-model="form.primary_channels" multiple filterable placeholder="可选"
                      style="width:100%">
             <el-option v-for="c in channels" :key="c.id" :label="c.name" :value="c.id" />
           </el-select>
           <div class="hint">{{ t('monitor.targets.primaryChannelsHint') }}</div>
         </el-form-item>
         <el-form-item :label="t('monitor.targets.secondaryChannels')">
-          <el-select v-model="form.secondary_channels" multiple filterable placeholder="可选"
+          <el-select
+v-model="form.secondary_channels" multiple filterable placeholder="可选"
                      style="width:100%">
             <el-option v-for="c in channels" :key="c.id" :label="c.name" :value="c.id" />
           </el-select>
@@ -150,7 +155,8 @@
         </el-form-item>
 
         <el-divider content-position="left">{{ t('monitor.targets.configLabel') }}</el-divider>
-        <ConfigForm ref="configFormRef" v-model="configData" :type="form.type"
+        <ConfigForm
+ref="configFormRef" v-model="configData" :type="form.type"
           :url="form.url" :method="form.method" :host="form.host" :port="form.port" />
       </el-form>
       <template #footer>

@@ -15,7 +15,7 @@
           </div>
         </template>
 
-        <el-form :model="form" :rules="rules" ref="configForm" label-width="120px">
+        <el-form ref="configForm" :model="form" :rules="rules" label-width="120px">
           <el-form-item :label="$t('configuration.dify.apiUrl')" prop="api_url">
             <el-input
               v-model="form.api_url"
@@ -50,11 +50,11 @@
           </el-form-item>
 
           <el-form-item>
-            <el-button type="primary" @click="testConnection" :loading="testing">
+            <el-button type="primary" :loading="testing" @click="testConnection">
               <el-icon><Connection /></el-icon>
               {{ $t('configuration.dify.testConnection') }}
             </el-button>
-            <el-button type="success" @click="saveConfig" :loading="saving">
+            <el-button type="success" :loading="saving" @click="saveConfig">
               <el-icon><Check /></el-icon>
               {{ $t('configuration.common.save') }}
             </el-button>
@@ -66,7 +66,7 @@
         </el-form>
       </el-card>
 
-      <el-card class="info-card" v-if="currentConfig">
+      <el-card v-if="currentConfig" class="info-card">
         <template #header>
           <span>{{ $t('configuration.dify.currentConfig') }}</span>
         </template>

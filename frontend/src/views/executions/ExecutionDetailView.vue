@@ -87,8 +87,8 @@
           <el-button
             type="danger"
             :icon="Delete"
-            @click="batchDeleteCases"
-            :disabled="isDeleting">
+            :disabled="isDeleting"
+            @click="batchDeleteCases">
             {{ $t('execution.batchDelete') }} ({{ selectedCases.length }})
           </el-button>
         </div>
@@ -100,8 +100,8 @@
           style="width: 100%"
           class="execution-table"
           :row-class-name="rowClassName"
-          @selection-change="handleSelectionChange"
-          :row-key="(row) => row.id">
+          :row-key="(row) => row.id"
+          @selection-change="handleSelectionChange">
           <el-table-column type="selection" width="48" :reserve-selection="true" />
           <el-table-column
             type="index"
@@ -179,8 +179,8 @@
 
     <!-- 历史记录对话框 -->
     <el-dialog
-      :title="$t('execution.executionHistory')"
       v-model="historyDialogVisible"
+      :title="$t('execution.executionHistory')"
       width="80%">
       <el-table :data="currentCaseHistory" style="width: 100%">
         <el-table-column prop="status" :label="$t('execution.status')" width="100">

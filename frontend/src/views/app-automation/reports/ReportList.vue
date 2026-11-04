@@ -43,7 +43,7 @@
         </div>
 
         <!-- 套件报告列表 -->
-        <el-table :data="suiteReports" v-loading="suiteLoading" border stripe>
+        <el-table v-loading="suiteLoading" :data="suiteReports" border stripe>
           <el-table-column prop="name" :label="$t('appAutomation.report.suiteName')" min-width="140" show-overflow-tooltip />
           <el-table-column prop="description" :label="$t('appAutomation.common.description')" min-width="120" show-overflow-tooltip>
             <template #default="{ row }">{{ row.description || '-' }}</template>
@@ -148,7 +148,7 @@
         </div>
 
         <!-- 用例报告列表 -->
-        <el-table :data="caseReports" v-loading="caseLoading" border stripe>
+        <el-table v-loading="caseLoading" :data="caseReports" border stripe>
           <el-table-column :label="$t('appAutomation.report.testCase')" min-width="140" show-overflow-tooltip>
             <template #default="{ row }">{{ row.case_name || '-' }}</template>
           </el-table-column>
@@ -273,7 +273,7 @@
 
     <!-- ==================== 套件执行记录弹窗 ==================== -->
     <el-dialog v-model="suiteExecVisible" :title="t('appAutomation.report.executionRecordsTitle', { name: selectedSuite?.name || '' })" width="900px">
-      <el-table :data="suiteExecRecords" v-loading="suiteExecLoading" border stripe max-height="500">
+      <el-table v-loading="suiteExecLoading" :data="suiteExecRecords" border stripe max-height="500">
         <el-table-column :label="$t('appAutomation.report.testCase')" min-width="180">
           <template #default="{ row }">{{ row.case_name || '-' }}</template>
         </el-table-column>

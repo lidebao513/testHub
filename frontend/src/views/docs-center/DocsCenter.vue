@@ -29,7 +29,7 @@
 
     <!-- 右侧内容区 -->
     <div class="docs-content">
-      <div v-if="contentLoading" class="content-loading" v-loading="true" />
+      <div v-if="contentLoading" v-loading="true" class="content-loading" />
       <div v-else-if="currentContent" class="markdown-body" v-html="renderedHtml" />
       <el-empty v-else :description="$t('docs.selectTip')" />
     </div>

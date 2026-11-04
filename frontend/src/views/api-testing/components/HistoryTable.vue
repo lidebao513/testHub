@@ -1,8 +1,8 @@
 <template>
   <div class="history-table">
     <el-table
-      :data="data"
       v-loading="loading"
+      :data="data"
       style="width: 100%"
       @selection-change="$emit('selection-change', $event)"
     >
@@ -46,13 +46,13 @@
       </el-table-column>
       <el-table-column :label="$t('apiTesting.common.operation')" width="200" fixed="right">
         <template #default="scope">
-          <el-button link type="primary" @click="$emit('view-detail', scope.row)" size="small">
+          <el-button link type="primary" size="small" @click="$emit('view-detail', scope.row)">
             {{ $t('apiTesting.component.historyTable.viewDetail') }}
           </el-button>
-          <el-button link type="primary" @click="$emit('retry-request', scope.row)" size="small">
+          <el-button link type="primary" size="small" @click="$emit('retry-request', scope.row)">
             {{ $t('apiTesting.component.historyTable.retryRequest') }}
           </el-button>
-          <el-button link type="danger" @click="$emit('delete-item', scope.row)" size="small">
+          <el-button link type="danger" size="small" @click="$emit('delete-item', scope.row)">
             {{ $t('apiTesting.component.historyTable.delete') }}
           </el-button>
         </template>

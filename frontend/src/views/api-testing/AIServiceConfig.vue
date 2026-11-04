@@ -9,7 +9,7 @@
     </div>
 
     <div class="config-list">
-      <el-table :data="configs" v-loading="loading" stripe>
+      <el-table v-loading="loading" :data="configs" stripe>
         <el-table-column prop="name" :label="$t('apiTesting.aiServiceConfig.configName')" width="200" />
         <el-table-column prop="service_type_display" :label="$t('apiTesting.aiServiceConfig.serviceType')" width="120" />
         <el-table-column prop="role_display" :label="$t('apiTesting.aiServiceConfig.roleType')" width="150" />
@@ -29,7 +29,7 @@
         </el-table-column>
         <el-table-column :label="$t('apiTesting.aiServiceConfig.operation')" width="200" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" @click="testConnection(row)" :loading="testing[row.id]">
+            <el-button size="small" :loading="testing[row.id]" @click="testConnection(row)">
               {{ $t('apiTesting.aiServiceConfig.testConnection') }}
             </el-button>
             <el-button size="small" @click="editConfig(row)">{{ $t('apiTesting.aiServiceConfig.edit') }}</el-button>
@@ -89,7 +89,7 @@
       </el-form>
       <template #footer>
         <el-button @click="showCreateDialog = false">{{ $t('apiTesting.aiServiceConfig.cancel') }}</el-button>
-        <el-button type="primary" @click="saveConfig" :loading="saving">{{ $t('apiTesting.aiServiceConfig.save') }}</el-button>
+        <el-button type="primary" :loading="saving" @click="saveConfig">{{ $t('apiTesting.aiServiceConfig.save') }}</el-button>
       </template>
     </el-dialog>
   </div>

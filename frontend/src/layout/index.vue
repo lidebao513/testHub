@@ -3,7 +3,7 @@
     <el-container>
       <!-- 侧边栏 -->
       <el-aside width="240px">
-        <div class="logo" @click="router.push('/home')" style="cursor: pointer;">
+        <div class="logo" style="cursor: pointer;" @click="router.push('/home')">
           <img :src="logoImage" alt="TestHub" class="logo-img" />
         </div>
         <el-menu
@@ -389,7 +389,7 @@
             </div>
             <div class="header-right">
               <!-- 语言切换 -->
-              <el-dropdown @command="handleLanguageChange" class="language-dropdown">
+              <el-dropdown class="language-dropdown" @command="handleLanguageChange">
                 <span class="language-selector">
                   <span class="language-flag">{{ appStore.language === 'zh-cn' ? '🇨🇳' : '🇺🇸' }}</span>
                   <span>{{ currentLanguage }}</span>
@@ -408,7 +408,7 @@
               </el-dropdown>
 
               <!-- 用户信息 -->
-              <el-dropdown @command="handleCommand" class="user-dropdown">
+              <el-dropdown class="user-dropdown" @command="handleCommand">
                 <span class="user-info">
                   <el-avatar :size="32" :src="userStore.user?.avatar" />
                   <span class="username">{{ userStore.user?.username }}</span>

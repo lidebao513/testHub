@@ -114,8 +114,8 @@
       </div>
 
       <el-table
-        :data="defects"
         v-loading="loading"
+        :data="defects"
         style="width: 100%"
         @selection-change="selectedRows = $event"
       >

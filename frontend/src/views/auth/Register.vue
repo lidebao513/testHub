@@ -48,8 +48,8 @@
               :src="captchaImage"
               alt="验证码"
               class="captcha-img"
-              @click="refreshCaptcha"
               title="点击刷新验证码"
+              @click="refreshCaptcha"
             />
           </el-col>
         </el-row>
@@ -66,8 +66,8 @@
               <el-button
                 :disabled="smsCountdown > 0 || !form.phone || !form.captcha_code"
                 :loading="sendingSms"
-                @click="sendVerifyCode"
                 style="min-width: 110px"
+                @click="sendVerifyCode"
               >
                 {{ smsCountdown > 0 ? `${smsCountdown}s后重试` : '发送验证码' }}
               </el-button>
@@ -154,8 +154,8 @@
             type="primary"
             size="large"
             :loading="loading"
-            @click="handleRegister"
             style="width: 100%"
+            @click="handleRegister"
           >
             {{ $t('auth.register') }}
           </el-button>

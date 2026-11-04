@@ -3,10 +3,10 @@
     <!-- Filter bar -->
     <div class="filter-bar">
       <div class="left-filters">
-        <el-select v-model="filters.project" :placeholder="$t('report.selectProject')" clearable @change="handleFilterChange" style="width: 200px">
+        <el-select v-model="filters.project" :placeholder="$t('report.selectProject')" clearable style="width: 200px" @change="handleFilterChange">
           <el-option v-for="item in projects" :key="item.id" :label="item.name" :value="item.id"></el-option>
         </el-select>
-        <el-select v-model="filters.days" :placeholder="$t('report.timeRange')" @change="handleFilterChange" style="width: 150px">
+        <el-select v-model="filters.days" :placeholder="$t('report.timeRange')" style="width: 150px" @change="handleFilterChange">
           <el-option :label="$t('report.recentDays')" :value="7"></el-option>
           <el-option :label="$t('report.recent14Days')" :value="14"></el-option>
           <el-option :label="$t('report.recent30Days')" :value="30"></el-option>
@@ -72,13 +72,13 @@
           <div class="chart-header">
             <h3>{{ $t('report.executionStatusDistribution') }}</h3>
           </div>
-          <div class="chart-body" ref="statusChartRef"></div>
+          <div ref="statusChartRef" class="chart-body"></div>
         </div>
         <div class="chart-card">
           <div class="chart-header">
             <h3>{{ $t('report.dailyExecutionTrend') }}</h3>
           </div>
-          <div class="chart-body" ref="trendChartRef"></div>
+          <div ref="trendChartRef" class="chart-body"></div>
         </div>
       </div>
 
@@ -88,7 +88,7 @@
           <div class="chart-header">
             <h3>{{ $t('report.failureDistribution') }}</h3>
           </div>
-          <div class="chart-body" ref="defectChartRef"></div>
+          <div ref="defectChartRef" class="chart-body"></div>
         </div>
         <div class="chart-card">
           <div class="chart-header">
@@ -129,13 +129,13 @@
               <div class="metric-label">{{ $t('report.savedHours') }}</div>
             </div>
           </div>
-          <div class="chart-body-small" ref="aiEfficiencyChartRef"></div>
+          <div ref="aiEfficiencyChartRef" class="chart-body-small"></div>
         </div>
         <div class="chart-card">
           <div class="chart-header">
             <h3>{{ $t('report.teamWorkload') }}</h3>
           </div>
-          <div class="chart-body" ref="workloadChartRef"></div>
+          <div ref="workloadChartRef" class="chart-body"></div>
         </div>
       </div>
     </div>

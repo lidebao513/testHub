@@ -6,8 +6,8 @@
       <el-menu
         :default-active="currentRoute"
         mode="horizontal"
-        @select="handleMenuSelect"
         class="nav-menu"
+        @select="handleMenuSelect"
       >
         <el-menu-item index="projects">{{ $t('apiTesting.nav.projects') }}</el-menu-item>
         <el-menu-item index="interfaces">{{ $t('apiTesting.nav.interfaces') }}</el-menu-item>

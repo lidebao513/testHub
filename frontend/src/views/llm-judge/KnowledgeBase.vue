@@ -100,8 +100,8 @@
           </el-table>
           <el-pagination
             v-if="companies.length > pageSize"
-            class="tab-paginator"
             v-model:current-page="pCompany"
+            class="tab-paginator"
             :page-size="pageSize"
             :total="companies.length"
             layout="prev, pager, next, total"
@@ -133,8 +133,8 @@
           </el-table>
           <el-pagination
             v-if="periods.length > pageSize"
-            class="tab-paginator"
             v-model:current-page="pPeriod"
+            class="tab-paginator"
             :page-size="pageSize"
             :total="periods.length"
             layout="prev, pager, next, total"
@@ -168,8 +168,8 @@
           </el-table>
           <el-pagination
             v-if="metrics.length > pageSize"
-            class="tab-paginator"
             v-model:current-page="pMetric"
+            class="tab-paginator"
             :page-size="pageSize"
             :total="metrics.length"
             layout="prev, pager, next, total"
@@ -211,8 +211,8 @@
           </el-table>
           <el-pagination
             v-if="values.length > pageSize"
-            class="tab-paginator"
             v-model:current-page="pValue"
+            class="tab-paginator"
             :page-size="pageSize"
             :total="values.length"
             layout="prev, pager, next, total"

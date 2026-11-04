@@ -41,7 +41,7 @@
 
     <!-- 任务列表 -->
     <div class="task-list">
-      <el-table :data="tasks" v-loading="loading">
+      <el-table v-loading="loading" :data="tasks">
         <el-table-column prop="name" :label="$t('uiAutomation.scheduledTask.taskName')" min-width="200" />
         <el-table-column prop="task_type" :label="$t('uiAutomation.scheduledTask.taskType')" width="120">
           <template #default="scope">
@@ -52,7 +52,8 @@
         </el-table-column>
         <el-table-column prop="notification_type_display" :label="$t('uiAutomation.scheduledTask.notificationType')" width="130">
           <template #default="scope">
-            <el-tag v-if="scope.row.notification_type_display && scope.row.notification_type_display !== '-'"
+            <el-tag
+v-if="scope.row.notification_type_display && scope.row.notification_type_display !== '-'"
                     :type="getNotificationTypeTagType(scope.row.notification_type_display)"
                     size="small">
               {{ getNotificationTypeText(scope.row.notification_type) }}
@@ -98,7 +99,7 @@
         </el-table-column>
         <el-table-column :label="$t('uiAutomation.common.operation')" width="200" fixed="right">
           <template #default="scope">
-            <el-button size="small" @click="runTaskNow(scope.row)" :loading="scope.row.running">
+            <el-button size="small" :loading="scope.row.running" @click="runTaskNow(scope.row)">
               {{ $t('uiAutomation.scheduledTask.runNow') }}
             </el-button>
             <el-dropdown @command="(command) => handleTaskAction(command, scope.row)">
@@ -108,8 +109,8 @@
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item command="edit">{{ $t('uiAutomation.scheduledTask.actions.edit') }}</el-dropdown-item>
-                  <el-dropdown-item command="pause" v-if="scope.row.status === 'ACTIVE'">{{ $t('uiAutomation.scheduledTask.actions.pause') }}</el-dropdown-item>
-                  <el-dropdown-item command="resume" v-if="scope.row.status === 'PAUSED'">{{ $t('uiAutomation.scheduledTask.actions.resume') }}</el-dropdown-item>
+                  <el-dropdown-item v-if="scope.row.status === 'ACTIVE'" command="pause">{{ $t('uiAutomation.scheduledTask.actions.pause') }}</el-dropdown-item>
+                  <el-dropdown-item v-if="scope.row.status === 'PAUSED'" command="resume">{{ $t('uiAutomation.scheduledTask.actions.resume') }}</el-dropdown-item>
                   <el-dropdown-item command="delete" divided>{{ $t('uiAutomation.scheduledTask.actions.delete') }}</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
@@ -292,7 +293,7 @@
 
       <template #footer>
         <el-button @click="showCreateDialog = false">{{ $t('uiAutomation.common.cancel') }}</el-button>
-        <el-button type="primary" @click="submitTaskForm" :loading="submitting">
+        <el-button type="primary" :loading="submitting" @click="submitTaskForm">
           {{ editingTask ? $t('uiAutomation.messages.success.update') : $t('uiAutomation.messages.success.create') }}
         </el-button>
       </template>

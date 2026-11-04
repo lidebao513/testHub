@@ -114,7 +114,7 @@
         </el-form-item>
 
         <el-form-item>
-          <el-button type="primary" @click="handleSubmit" :loading="submitting">
+          <el-button type="primary" :loading="submitting" @click="handleSubmit">
             {{ $t('testcase.createCase') }}
           </el-button>
           <el-button @click="$router.back()">{{ $t('common.cancel') }}</el-button>

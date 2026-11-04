@@ -19,7 +19,7 @@
 
     <el-row :gutter="16">
       <el-col :xs="24" :lg="16">
-        <el-card shadow="never" v-loading="loading">
+        <el-card v-loading="loading" shadow="never">
           <template #header>
             <div class="card-header">
               <span>基本信息</span>

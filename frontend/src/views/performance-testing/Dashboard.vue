@@ -22,7 +22,7 @@
 
     <!-- 概览卡片 -->
     <el-row :gutter="16" class="stat-row">
-      <el-col :span="4" v-for="c in statCards" :key="c.key">
+      <el-col v-for="c in statCards" :key="c.key" :span="4">
         <el-card shadow="hover" class="stat-card" :class="c.cls">
           <div class="sc-val">{{ c.value }}</div>
           <div class="sc-label">{{ c.label }}</div>
@@ -58,7 +58,7 @@
       <el-col :span="12">
         <el-card shadow="hover" class="chart-card">
           <template #header>{{ t('performanceTesting.dashboard.recentTitle') }}</template>
-          <el-table :data="recent" size="small" @row-click="openExecution" style="cursor: pointer">
+          <el-table :data="recent" size="small" style="cursor: pointer" @row-click="openExecution">
             <el-table-column :label="t('performanceTesting.execution.executionNo')" prop="execution_no" min-width="150" />
             <el-table-column :label="t('performanceTesting.scenario.title')" prop="scenario_name" min-width="120" show-overflow-tooltip />
             <el-table-column :label="t('performanceTesting.common.status')" width="100">

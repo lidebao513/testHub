@@ -23,12 +23,14 @@
     </div>
 
     <el-card shadow="never">
-      <el-table :data="reports" v-loading="loading" stripe>
-        <el-table-column prop="title" :label="t('performanceTesting.comparisonReport.reportTitle')"
+      <el-table v-loading="loading" :data="reports" stripe>
+        <el-table-column
+prop="title" :label="t('performanceTesting.comparisonReport.reportTitle')"
                          min-width="240" show-overflow-tooltip />
         <el-table-column :label="t('performanceTesting.comparisonReport.executionsCol')" min-width="180">
           <template #default="{ row }">
-            <el-tag v-for="id in row.execution_ids" :key="id" size="small" class="exec-tag"
+            <el-tag
+v-for="id in row.execution_ids" :key="id" size="small" class="exec-tag"
                     :type="id === row.reference_execution_id ? 'warning' : 'info'" effect="plain">
               #{{ id }}
             </el-tag>
@@ -44,7 +46,8 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="created_by" :label="t('performanceTesting.comparisonReport.createdBy')"
+        <el-table-column
+prop="created_by" :label="t('performanceTesting.comparisonReport.createdBy')"
                          width="120" />
         <el-table-column :label="t('performanceTesting.comparisonReport.createdAt')" width="170">
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
@@ -66,12 +69,14 @@
     </el-card>
 
     <!-- 详情对话框：指标矩阵 + AI 分析 -->
-    <el-dialog v-model="detailVisible" :title="detail?.title || t('performanceTesting.comparisonReport.detailTitle')"
+    <el-dialog
+v-model="detailVisible" :title="detail?.title || t('performanceTesting.comparisonReport.detailTitle')"
                width="920px" top="5vh" destroy-on-close>
       <div v-if="detail" v-loading="detailLoading">
         <h4 class="section-title">{{ t('performanceTesting.comparisonReport.metricMatrix') }}</h4>
         <el-table :data="matrixRows" size="small" border stripe>
-          <el-table-column prop="label" :label="t('performanceTesting.comparison.metricName')"
+          <el-table-column
+prop="label" :label="t('performanceTesting.comparison.metricName')"
                            width="150" fixed />
           <el-table-column
             v-for="e in snapshotExecutions"
@@ -98,7 +103,8 @@
         </el-table>
 
         <h4 class="section-title">{{ t('performanceTesting.comparisonReport.aiAnalysis') }}</h4>
-        <div v-if="detail.ai_analysis" class="ai-content markdown-body"
+        <div
+v-if="detail.ai_analysis" class="ai-content markdown-body"
              v-html="renderMarkdown(detail.ai_analysis)"></div>
         <el-empty v-else :description="t('performanceTesting.comparisonReport.aiNone')" :image-size="60" />
       </div>

@@ -10,13 +10,16 @@
 
       <!-- 过滤栏 -->
       <div class="filter-bar">
-        <el-input v-model="filters.search" :placeholder="$t('llmJudge.history.search')" clearable
+        <el-input
+v-model="filters.search" :placeholder="$t('llmJudge.history.search')" clearable
           style="width:240px" @keyup.enter="loadData" @clear="loadData" />
-        <el-select v-model="filters.overall_label" :placeholder="$t('llmJudge.history.filterLabel')" clearable
+        <el-select
+v-model="filters.overall_label" :placeholder="$t('llmJudge.history.filterLabel')" clearable
           style="width:140px" @change="loadData">
           <el-option v-for="k in labelKeys" :key="k" :label="t(`llmJudge.labels.${k}`)" :value="k" />
         </el-select>
-        <el-select v-model="filters.gate_zone" :placeholder="$t('llmJudge.history.filterZone')" clearable
+        <el-select
+v-model="filters.gate_zone" :placeholder="$t('llmJudge.history.filterZone')" clearable
           style="width:140px" @change="loadData">
           <el-option v-for="k in zoneKeys" :key="k" :label="t(`llmJudge.gate.${k}`)" :value="k" />
         </el-select>
@@ -25,7 +28,7 @@
       </div>
 
       <!-- 表格 -->
-      <el-table :data="records" border stripe size="small" v-loading="loading" style="width:100%;margin-top:16px">
+      <el-table v-loading="loading" :data="records" border stripe size="small" style="width:100%;margin-top:16px">
         <el-table-column prop="id" label="ID" width="70" />
         <el-table-column prop="request_id" :label="$t('llmJudge.common.requestId')" width="120" show-overflow-tooltip />
         <el-table-column :label="$t('llmJudge.common.question')" min-width="200" show-overflow-tooltip>
@@ -73,7 +76,8 @@
 
       <!-- 分页 -->
       <div class="pagination-wrap">
-        <el-pagination v-model:current-page="page" v-model:page-size="pageSize"
+        <el-pagination
+v-model:current-page="page" v-model:page-size="pageSize"
           :total="total" :page-sizes="[20, 50, 100]" layout="total, sizes, prev, pager, next"
           @size-change="loadData" @current-change="loadData" />
       </div>

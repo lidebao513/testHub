@@ -17,7 +17,7 @@
         >
           {{ $t('apiTesting.history.batchDelete') }}
         </el-button>
-        <el-button @click="clearHistory" type="danger" plain>
+        <el-button type="danger" plain @click="clearHistory">
           {{ $t('apiTesting.history.clearHistory') }}
         </el-button>
       </div>
@@ -53,9 +53,9 @@
       :page-sizes="[10, 20, 50, 100]"
       :total="total"
       layout="total, sizes, prev, pager, next, jumper"
+      class="pagination"
       @size-change="handleSizeChange"
       @current-change="handleCurrentChange"
-      class="pagination"
     />
 
     <!-- 详情对话框 -->

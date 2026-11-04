@@ -33,10 +33,10 @@
         </el-row>
       </div>
       
-      <el-table :data="projects" v-loading="loading" style="width: 100%">
+      <el-table v-loading="loading" :data="projects" style="width: 100%">
         <el-table-column prop="name" :label="$t('uiAutomation.project.projectName')" min-width="200">
           <template #default="{ row }">
-            <el-link @click="goToProjectDetail(row.id)" type="primary">
+            <el-link type="primary" @click="goToProjectDetail(row.id)">
               {{ row.name }}
             </el-link>
           </template>

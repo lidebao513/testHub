@@ -6,7 +6,7 @@
     </div>
 
     <!-- 配置引导弹出窗口 -->
-    <div v-if="showConfigGuide && !checkingConfig" class="modal-overlay" @click.self="showConfigGuide = false" :key="modalKey">
+    <div v-if="showConfigGuide && !checkingConfig" :key="modalKey" class="modal-overlay" @click.self="showConfigGuide = false">
       <div class="guide-config-modal">
       <div class="guide-header">
         <svg class="guide-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
@@ -27,17 +27,17 @@
             <div class="config-item-inline" :class="getConfigItemClass('writer_model')">
               <span class="status-symbol" v-html="getStatusSymbol('writer_model')"></span>
               <span class="config-label">{{ $t('configGuide.caseWriter') }}</span>
-              <span class="config-name" v-if="configStatus.writer_model.name">{{ configStatus.writer_model.name }}</span>
-              <span class="status-text" v-if="!configStatus.writer_model.configured">{{ $t('configGuide.unconfigured') }}</span>
-              <span class="status-text warning" v-else-if="!configStatus.writer_model.enabled">{{ $t('configGuide.disabled') }}</span>
+              <span v-if="configStatus.writer_model.name" class="config-name">{{ configStatus.writer_model.name }}</span>
+              <span v-if="!configStatus.writer_model.configured" class="status-text">{{ $t('configGuide.unconfigured') }}</span>
+              <span v-else-if="!configStatus.writer_model.enabled" class="status-text warning">{{ $t('configGuide.disabled') }}</span>
             </div>
 
             <div class="config-item-inline" :class="getConfigItemClass('reviewer_model')">
               <span class="status-symbol" v-html="getStatusSymbol('reviewer_model')"></span>
               <span class="config-label">{{ $t('configGuide.caseReviewer') }}</span>
-              <span class="config-name" v-if="configStatus.reviewer_model.name">{{ configStatus.reviewer_model.name }}</span>
-              <span class="status-text" v-if="!configStatus.reviewer_model.configured">{{ $t('configGuide.unconfigured') }}</span>
-              <span class="status-text warning" v-else-if="!configStatus.reviewer_model.enabled">{{ $t('configGuide.disabled') }}</span>
+              <span v-if="configStatus.reviewer_model.name" class="config-name">{{ configStatus.reviewer_model.name }}</span>
+              <span v-if="!configStatus.reviewer_model.configured" class="status-text">{{ $t('configGuide.unconfigured') }}</span>
+              <span v-else-if="!configStatus.reviewer_model.enabled" class="status-text warning">{{ $t('configGuide.disabled') }}</span>
             </div>
           </div>
         </div>
@@ -49,17 +49,17 @@
             <div class="config-item-inline" :class="getConfigItemClass('writer_prompt')">
               <span class="status-symbol" v-html="getStatusSymbol('writer_prompt')"></span>
               <span class="config-label">{{ $t('configGuide.caseWriter') }}</span>
-              <span class="config-name" v-if="configStatus.writer_prompt.name">{{ configStatus.writer_prompt.name }}</span>
-              <span class="status-text" v-if="!configStatus.writer_prompt.configured">{{ $t('configGuide.unconfigured') }}</span>
-              <span class="status-text warning" v-else-if="!configStatus.writer_prompt.enabled">{{ $t('configGuide.disabled') }}</span>
+              <span v-if="configStatus.writer_prompt.name" class="config-name">{{ configStatus.writer_prompt.name }}</span>
+              <span v-if="!configStatus.writer_prompt.configured" class="status-text">{{ $t('configGuide.unconfigured') }}</span>
+              <span v-else-if="!configStatus.writer_prompt.enabled" class="status-text warning">{{ $t('configGuide.disabled') }}</span>
             </div>
 
             <div class="config-item-inline" :class="getConfigItemClass('reviewer_prompt')">
               <span class="status-symbol" v-html="getStatusSymbol('reviewer_prompt')"></span>
               <span class="config-label">{{ $t('configGuide.caseReviewer') }}</span>
-              <span class="config-name" v-if="configStatus.reviewer_prompt.name">{{ configStatus.reviewer_prompt.name }}</span>
-              <span class="status-text" v-if="!configStatus.reviewer_prompt.configured">{{ $t('configGuide.unconfigured') }}</span>
-              <span class="status-text warning" v-else-if="!configStatus.reviewer_prompt.enabled">{{ $t('configGuide.disabled') }}</span>
+              <span v-if="configStatus.reviewer_prompt.name" class="config-name">{{ configStatus.reviewer_prompt.name }}</span>
+              <span v-if="!configStatus.reviewer_prompt.configured" class="status-text">{{ $t('configGuide.unconfigured') }}</span>
+              <span v-else-if="!configStatus.reviewer_prompt.enabled" class="status-text warning">{{ $t('configGuide.disabled') }}</span>
             </div>
           </div>
         </div>
@@ -71,8 +71,8 @@
             <div class="config-item-inline" :class="getConfigItemClass('generation_config')">
               <span class="status-symbol" v-html="getStatusSymbol('generation_config')"></span>
               <span class="config-label">{{ $t('configGuide.generationSettings') }}</span>
-              <span class="config-name" v-if="configStatus.generation_config && configStatus.generation_config.name">{{ configStatus.generation_config.name }}</span>
-              <span class="status-text" v-if="!configStatus.generation_config || !configStatus.generation_config.configured">{{ $t('configGuide.unconfigured') }}</span>
+              <span v-if="configStatus.generation_config && configStatus.generation_config.name" class="config-name">{{ configStatus.generation_config.name }}</span>
+              <span v-if="!configStatus.generation_config || !configStatus.generation_config.configured" class="status-text">{{ $t('configGuide.unconfigured') }}</span>
             </div>
           </div>
         </div>
@@ -90,20 +90,20 @@
     </div>
 
     <!-- 输出模式选择器 - 全局设置 -->
-    <div class="output-mode-section" v-if="!isGenerating && !showResults">
+    <div v-if="!isGenerating && !showResults" class="output-mode-section">
       <div class="output-mode-card">
         <h3>{{ $t('requirementAnalysis.outputModeTitle') }}</h3>
         <p class="mode-section-desc">{{ $t('requirementAnalysis.outputModeDesc') }}</p>
         <div class="output-mode-selector">
           <label class="mode-option" :class="{ active: globalOutputMode === 'stream' }">
-            <input type="radio" v-model="globalOutputMode" value="stream">
+            <input v-model="globalOutputMode" type="radio" value="stream">
             <div class="mode-content">
               <div class="mode-title">{{ $t('requirementAnalysis.realtimeStream') }}</div>
               <div class="mode-desc">{{ $t('requirementAnalysis.realtimeStreamDesc') }}</div>
             </div>
           </label>
           <label class="mode-option" :class="{ active: globalOutputMode === 'complete' }">
-            <input type="radio" v-model="globalOutputMode" value="complete">
+            <input v-model="globalOutputMode" type="radio" value="complete">
             <div class="mode-content">
               <div class="mode-title">{{ $t('requirementAnalysis.completeOutput') }}</div>
               <div class="mode-desc">{{ $t('requirementAnalysis.completeOutputDesc') }}</div>
@@ -115,7 +115,7 @@
 
     <div class="main-content">
       <!-- 手动输入需求描述区域 -->
-      <div class="manual-input-section" v-if="!isGenerating && !showResults">
+      <div v-if="!isGenerating && !showResults" class="manual-input-section">
         <div class="manual-input-card">
           <h2>{{ $t('requirementAnalysis.manualInputTitle') }}</h2>
           <div class="input-form">
@@ -150,8 +150,8 @@
 
             <button
               class="generate-manual-btn"
-              @click="generateFromManualInput"
-              :disabled="!canGenerateManual || isGenerating">
+              :disabled="!canGenerateManual || isGenerating"
+              @click="generateFromManualInput">
               <span v-if="isGenerating">{{ $t('requirementAnalysis.generating') }}</span>
               <span v-else>{{ $t('requirementAnalysis.generateButton') }}</span>
             </button>
@@ -160,18 +160,19 @@
       </div>
 
       <!-- 分隔线 -->
-      <div class="divider" v-if="!isGenerating && !showResults">
+      <div v-if="!isGenerating && !showResults" class="divider">
         <span>{{ $t('requirementAnalysis.dividerOr') }}</span>
       </div>
 
       <!-- 文档上传区域 -->
-      <div class="upload-section" v-if="!isGenerating && !showResults">
+      <div v-if="!isGenerating && !showResults" class="upload-section">
         <div class="upload-card">
           <h2>{{ $t('requirementAnalysis.uploadTitle') }}</h2>
-          <div class="upload-area"
+          <div
+class="upload-area"
+               :class="{ 'drag-over': isDragOver }"
                @dragover.prevent
                @drop="handleDrop"
-               :class="{ 'drag-over': isDragOver }"
                @dragenter="isDragOver = true"
                @dragleave="isDragOver = false">
             <div v-if="!selectedFile" class="upload-placeholder">
@@ -179,11 +180,11 @@
               <p>{{ $t('requirementAnalysis.dragDropText') }}</p>
               <p class="upload-hint">{{ $t('requirementAnalysis.supportedFormats') }}</p>
               <input
-                type="file"
                 ref="fileInput"
-                @change="handleFileSelect"
+                type="file"
                 accept=".pdf,.doc,.docx,.txt,.md"
-                style="display: none;">
+                style="display: none;"
+                @change="handleFileSelect">
               <button class="select-file-btn" @click="$refs.fileInput.click()">
                 {{ $t('requirementAnalysis.selectFile') }}
               </button>
@@ -223,8 +224,8 @@
 
             <button
               class="generate-btn"
-              @click="generateFromDocument"
-              :disabled="!documentTitle || isGenerating">
+              :disabled="!documentTitle || isGenerating"
+              @click="generateFromDocument">
               <span v-if="isGenerating">{{ $t('requirementAnalysis.generating') }}</span>
               <span v-else>{{ $t('requirementAnalysis.generateButton') }}</span>
             </button>

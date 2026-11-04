@@ -6,8 +6,8 @@
         <el-button
           v-if="selectedTestCases.length > 0"
           type="danger"
-          @click="batchDeleteTestCases"
-          :disabled="isDeleting">
+          :disabled="isDeleting"
+          @click="batchDeleteTestCases">
           <el-icon><Delete /></el-icon>
           {{ $t('testcase.batchDelete') }} ({{ selectedTestCases.length }})
         </el-button>
@@ -71,8 +71,8 @@
       
       <div class="table-container">
         <el-table 
-          :data="testcases" 
           v-loading="loading" 
+          :data="testcases" 
           style="width: 100%"
           height="100%"
           @selection-change="handleSelectionChange">
@@ -80,7 +80,7 @@
           <el-table-column type="index" :label="$t('testcase.serialNumber')" width="80" :index="getSerialNumber" />
           <el-table-column prop="title" :label="$t('testcase.caseTitle')" min-width="250">
             <template #default="{ row }">
-              <el-link @click="goToTestCase(row.id)" type="primary">
+              <el-link type="primary" @click="goToTestCase(row.id)">
                 {{ row.title }}
               </el-link>
             </template>

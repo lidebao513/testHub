@@ -27,7 +27,7 @@
     </div>
 
     <!-- 列表 -->
-    <el-table :data="logsData" v-loading="loading" border stripe @sort-change="handleSortChange">
+    <el-table v-loading="loading" :data="logsData" border stripe @sort-change="handleSortChange">
       <el-table-column prop="task_name" :label="$t('appAutomation.notification.taskName')" min-width="150" sortable="custom" />
       <el-table-column :label="$t('appAutomation.notification.taskType')" width="110">
         <template #default="{ row }">
@@ -97,7 +97,7 @@
           <el-col :span="12">
             <el-form-item :label="$t('appAutomation.notification.sendTime')"><span>{{ selectedLog.sent_at ? formatDate(selectedLog.sent_at) : '-' }}</span></el-form-item>
           </el-col>
-          <el-col :span="24" v-if="selectedLog.webhook_bot_info && (selectedLog.webhook_bot_info.type || selectedLog.webhook_bot_info.bot_type)">
+          <el-col v-if="selectedLog.webhook_bot_info && (selectedLog.webhook_bot_info.type || selectedLog.webhook_bot_info.bot_type)" :span="24">
             <el-form-item :label="$t('appAutomation.notification.webhookBot')">
               <el-tag size="small" type="info">{{ selectedLog.webhook_bot_info.name || $t('appAutomation.notification.defaultBot') }}</el-tag>
             </el-form-item>
@@ -115,7 +115,7 @@
               </div>
             </el-form-item>
           </el-col>
-          <el-col :span="24" v-if="selectedLog.error_message">
+          <el-col v-if="selectedLog.error_message" :span="24">
             <el-form-item :label="$t('appAutomation.notification.errorInfo')">
               <el-alert :title="selectedLog.error_message" type="error" show-icon :closable="false" />
             </el-form-item>

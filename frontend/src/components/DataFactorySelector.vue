@@ -4,8 +4,8 @@
     :title="t('apiTesting.dataFactory.select.title')"
     width="1000px"
     :close-on-click-modal="false"
-    @close="handleClose"
     class="data-factory-dialog"
+    @close="handleClose"
   >
     <div class="data-factory-selector">
       <el-tabs v-model="activeTab" @tab-change="handleTabChange">
@@ -53,9 +53,9 @@
             :data="records"
             stripe
             border
-            @row-click="handleRowClick"
             class="records-table"
             height="400"
+            @row-click="handleRowClick"
           >
             <el-table-column type="selection" width="55" />
             <el-table-column prop="tool_name_display" :label="t('apiTesting.dataFactory.select.toolName')" min-width="150" />
@@ -96,9 +96,9 @@
             :total="total"
             :page-sizes="[10, 20, 50, 100]"
             layout="total, sizes, prev, pager, next, jumper"
+            class="pagination"
             @size-change="handleSizeChange"
             @current-change="handlePageChange"
-            class="pagination"
           />
           </div>
         </el-tab-pane>
@@ -155,9 +155,9 @@
               :data="records"
               stripe
               border
-              @row-click="handleRowClick"
               class="records-table"
               height="400"
+              @row-click="handleRowClick"
             >
               <el-table-column type="selection" width="55" />
             <el-table-column prop="tool_name_display" :label="t('apiTesting.dataFactory.select.toolName')" min-width="150" />
@@ -198,9 +198,9 @@
               :total="total"
               :page-sizes="[10, 20, 50, 100]"
               layout="total, sizes, prev, pager, next, jumper"
+              class="pagination"
               @size-change="handleSizeChange"
               @current-change="handlePageChange"
-              class="pagination"
             />
           </div>
         </el-tab-pane>
@@ -209,7 +209,7 @@
 
     <template #footer>
       <el-button @click="handleClose">{{ t('apiTesting.dataFactory.select.cancel') }}</el-button>
-      <el-button type="primary" @click="handleConfirm" :disabled="!selectedRecord">
+      <el-button type="primary" :disabled="!selectedRecord" @click="handleConfirm">
         {{ t('apiTesting.dataFactory.select.confirmSelect') }}
       </el-button>
     </template>

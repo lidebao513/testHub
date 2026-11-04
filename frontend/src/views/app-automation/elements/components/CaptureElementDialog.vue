@@ -21,8 +21,8 @@
           <img
             ref="imageRef"
             :src="capturedImage"
-            @load="handleImageLoad"
             class="capture-image"
+            @load="handleImageLoad"
           />
           <!-- 选区框 -->
           <div
@@ -50,7 +50,7 @@
 
       <!-- 右侧：配置表单 -->
       <div class="capture-right">
-        <el-form :model="formData" ref="formRef" label-width="110px" size="small">
+        <el-form ref="formRef" :model="formData" label-width="110px" size="small">
           <!-- 设备选择和截图 -->
           <el-form-item :label="$t('appAutomation.element.capture.selectDevice')">
             <el-select v-model="selectedDevice" :placeholder="$t('appAutomation.element.capture.selectDevicePlaceholder')" style="width: 100%" :loading="devicesLoading">
@@ -70,11 +70,11 @@
           </el-form-item>
 
           <!-- Region和Pos值（根据元素类型显示） -->
-          <el-form-item :label="$t('appAutomation.element.capture.regionValue')" v-if="formData.element_type === 'region'">
+          <el-form-item v-if="formData.element_type === 'region'" :label="$t('appAutomation.element.capture.regionValue')">
             <el-input v-model="regionValue" readonly :placeholder="$t('appAutomation.element.capture.dragToSelectTip')" />
           </el-form-item>
 
-          <el-form-item :label="$t('appAutomation.element.capture.posValue')" v-if="formData.element_type === 'pos'">
+          <el-form-item v-if="formData.element_type === 'pos'" :label="$t('appAutomation.element.capture.posValue')">
             <el-input v-model="posValue" readonly :placeholder="$t('appAutomation.element.capture.clickToSelectTip')" />
           </el-form-item>
 
@@ -138,9 +138,9 @@
                         size="small"
                         link
                         :icon="Delete"
-                        @click.stop="handleDeleteCategory(cat.name || cat)"
                         :title="$t('appAutomation.element.capture.deleteCategory')"
                         style="padding: 0; margin-left: 8px;"
+                        @click.stop="handleDeleteCategory(cat.name || cat)"
                       />
                     </div>
                   </el-option>
@@ -148,8 +148,8 @@
                 <el-button
                   type="primary"
                   :icon="Plus"
-                  @click="showCreateCategoryDialog"
                   :title="$t('appAutomation.element.capture.createCategoryTitle')"
+                  @click="showCreateCategoryDialog"
                 />
               </div>
               <div style="color: #909399; font-size: 12px; margin-top: 5px;">
@@ -197,7 +197,7 @@
 
     <template #footer>
       <el-button @click="handleClose">{{ $t('appAutomation.common.cancel') }}</el-button>
-      <el-button type="primary" @click="handleSubmit" :loading="submitting" :disabled="!canSave">
+      <el-button type="primary" :loading="submitting" :disabled="!canSave" @click="handleSubmit">
         {{ $t('appAutomation.element.capture.saveElement') }}
       </el-button>
     </template>
@@ -223,7 +223,7 @@
     </el-form>
     <template #footer>
       <el-button @click="createCategoryVisible = false">{{ $t('appAutomation.common.cancel') }}</el-button>
-      <el-button type="primary" @click="handleCreateCategory" :loading="creatingCategory">{{ $t('appAutomation.element.capture.create') }}</el-button>
+      <el-button type="primary" :loading="creatingCategory" @click="handleCreateCategory">{{ $t('appAutomation.element.capture.create') }}</el-button>
     </template>
   </el-dialog>
 </template>

@@ -7,8 +7,8 @@
           v-if="selectedPlans.length > 0"
           type="danger"
           :icon="Delete"
-          @click="batchDeletePlans"
-          :disabled="isDeleting">
+          :disabled="isDeleting"
+          @click="batchDeletePlans">
           {{ $t('execution.batchDelete') }} ({{ selectedPlans.length }})
         </el-button>
         <el-button type="primary" @click="openCreatePlanDialog">
@@ -39,9 +39,9 @@
     </div>
 
     <el-table
+      v-loading="loading"
       :data="testPlans"
       style="width: 100%"
-      v-loading="loading"
       @selection-change="handleSelectionChange">
       <el-table-column type="selection" width="55" />
       <el-table-column
@@ -110,8 +110,8 @@
     </div>
 
     <!-- 创建测试计划对话框 -->
-    <el-dialog :title="$t('execution.createPlanDialog')" v-model="isCreatePlanDialogOpen" width="600px" :close-on-click-modal="false">
-      <el-form :model="newPlanForm" :rules="planRules" ref="planFormRef" label-width="100px">
+    <el-dialog v-model="isCreatePlanDialogOpen" :title="$t('execution.createPlanDialog')" width="600px" :close-on-click-modal="false">
+      <el-form ref="planFormRef" :model="newPlanForm" :rules="planRules" label-width="100px">
         <el-form-item :label="$t('execution.planName')" prop="name">
           <el-input v-model="newPlanForm.name" :placeholder="$t('execution.planNamePlaceholder')"></el-input>
         </el-form-item>
@@ -174,14 +174,14 @@
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="isCreatePlanDialogOpen = false">{{ $t('common.cancel') }}</el-button>
-          <el-button type="primary" @click="createPlan" :loading="creating">{{ $t('execution.createPlan') }}</el-button>
+          <el-button type="primary" :loading="creating" @click="createPlan">{{ $t('execution.createPlan') }}</el-button>
         </span>
       </template>
     </el-dialog>
 
     <!-- 编辑测试计划对话框 -->
-    <el-dialog :title="$t('execution.editPlanDialog')" v-model="isEditPlanDialogOpen" width="600px" :close-on-click-modal="false">
-      <el-form :model="editPlanForm" :rules="planRules" ref="editPlanFormRef" label-width="100px">
+    <el-dialog v-model="isEditPlanDialogOpen" :title="$t('execution.editPlanDialog')" width="600px" :close-on-click-modal="false">
+      <el-form ref="editPlanFormRef" :model="editPlanForm" :rules="planRules" label-width="100px">
         <el-form-item :label="$t('execution.planName')" prop="name">
           <el-input v-model="editPlanForm.name" :placeholder="$t('execution.planNamePlaceholder')"></el-input>
         </el-form-item>
@@ -246,7 +246,7 @@
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="isEditPlanDialogOpen = false">{{ $t('common.cancel') }}</el-button>
-          <el-button type="primary" @click="updatePlan" :loading="updating">{{ $t('execution.updatePlan') }}</el-button>
+          <el-button type="primary" :loading="updating" @click="updatePlan">{{ $t('execution.updatePlan') }}</el-button>
         </span>
       </template>
     </el-dialog>
@@ -297,11 +297,11 @@
 
         <el-table
           ref="testcaseSelectorTableRef"
-          :data="testcaseSelectorList"
           v-loading="loadingTestcases"
-          @selection-change="handleTestcaseSelectorSelectionChange"
+          :data="testcaseSelectorList"
           row-key="id"
           max-height="420"
+          @selection-change="handleTestcaseSelectorSelectionChange"
         >
           <el-table-column type="selection" width="55" :reserve-selection="true" />
           <el-table-column :label="$t('execution.testcaseCode')" width="90">

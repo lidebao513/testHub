@@ -4,7 +4,7 @@
       <div class="header-actions">
         <!-- PC：语言、用户分开 -->
         <div class="header-actions-pc">
-          <el-dropdown @command="handleLanguageChange" class="language-dropdown">
+          <el-dropdown class="language-dropdown" @command="handleLanguageChange">
             <span class="el-dropdown-link">
               <span class="language-icon">{{ currentLanguage === 'zh-cn' ? '🇨🇳' : '🇺🇸' }}</span>
               <span class="language-text">{{ $t('home.language.current') }}</span>
@@ -68,7 +68,7 @@
 
       <div class="cards-container">
         <!-- AI用例生成 -->
-        <div class="nav-card" @click="handleNavigate('ai')" role="button" tabindex="0">
+        <div class="nav-card" role="button" tabindex="0" @click="handleNavigate('ai')">
           <div class="card-icon ai-icon">
             <el-icon><MagicStick /></el-icon>
           </div>
@@ -77,7 +77,7 @@
         </div>
 
         <!-- 接口测试 -->
-        <div class="nav-card" @click="handleNavigate('api')" role="button" tabindex="0">
+        <div class="nav-card" role="button" tabindex="0" @click="handleNavigate('api')">
           <div class="card-icon api-icon">
             <el-icon><Link /></el-icon>
           </div>
@@ -86,7 +86,7 @@
         </div>
 
         <!-- UI自动化测试 -->
-        <div class="nav-card" @click="handleNavigate('ui')" role="button" tabindex="0">
+        <div class="nav-card" role="button" tabindex="0" @click="handleNavigate('ui')">
           <div class="card-icon ui-icon">
             <el-icon><Monitor /></el-icon>
           </div>
@@ -95,7 +95,7 @@
         </div>
 
         <!-- Bug缺陷管理 -->
-        <div class="nav-card" @click="handleNavigate('defects')" role="button" tabindex="0">
+        <div class="nav-card" role="button" tabindex="0" @click="handleNavigate('defects')">
           <div class="card-icon defects-icon">
             <el-icon><Tickets /></el-icon>
           </div>
@@ -104,7 +104,7 @@
         </div>
 
         <!-- 数据工厂 -->
-        <div class="nav-card" @click="handleNavigate('data')" role="button" tabindex="0">
+        <div class="nav-card" role="button" tabindex="0" @click="handleNavigate('data')">
           <div class="card-icon data-icon">
             <el-icon><DataLine /></el-icon>
           </div>
@@ -113,7 +113,7 @@
         </div>
 
         <!-- APP自动化测试 -->
-        <div class="nav-card" @click="handleNavigate('app')" role="button" tabindex="0">
+        <div class="nav-card" role="button" tabindex="0" @click="handleNavigate('app')">
           <div class="card-icon app-icon">
             <el-icon><Cellphone /></el-icon>
           </div>
@@ -122,7 +122,7 @@
         </div>
 
         <!-- AI 智能模式 -->
-        <div class="nav-card" @click="handleNavigate('ai-intelligent')" role="button" tabindex="0">
+        <div class="nav-card" role="button" tabindex="0" @click="handleNavigate('ai-intelligent')">
           <div class="card-icon ai-intelligent-icon">
             <el-icon><Cpu /></el-icon>
           </div>
@@ -130,7 +130,7 @@
           <p>{{ $t('home.aiIntelligentModeDesc') }}</p>
         </div>
         <!-- AI评测师 -->
-        <div class="nav-card" @click="handleNavigate('assistant')" role="button" tabindex="0">
+        <div class="nav-card" role="button" tabindex="0" @click="handleNavigate('assistant')">
           <div class="card-icon assistant-icon">
             <el-icon><ChatDotRound /></el-icon>
           </div>
@@ -138,7 +138,7 @@
           <p>{{ $t('home.aiEvaluatorDesc') }}</p>
         </div>
         <!-- 配置中心 -->
-        <div class="nav-card" @click="handleNavigate('config')" role="button" tabindex="0">
+        <div class="nav-card" role="button" tabindex="0" @click="handleNavigate('config')">
           <div class="card-icon config-icon">
             <el-icon><Setting /></el-icon>
           </div>
@@ -147,7 +147,7 @@
         </div>
 
         <!-- 智能评分器 -->
-        <div class="nav-card" @click="handleNavigate('judge')" role="button" tabindex="0">
+        <div class="nav-card" role="button" tabindex="0" @click="handleNavigate('judge')">
           <div class="card-icon judge-icon">
             <el-icon><Select /></el-icon>
           </div>
@@ -156,7 +156,7 @@
         </div>
 
         <!-- 性能测试 -->
-        <div class="nav-card" @click="handleNavigate('performance')" role="button" tabindex="0">
+        <div class="nav-card" role="button" tabindex="0" @click="handleNavigate('performance')">
           <div class="card-icon perf-icon">
             <el-icon><Odometer /></el-icon>
           </div>
@@ -165,7 +165,7 @@
         </div>
 
         <!-- 监控中心 -->
-        <div class="nav-card" @click="handleNavigate('monitor')" role="button" tabindex="0">
+        <div class="nav-card" role="button" tabindex="0" @click="handleNavigate('monitor')">
           <div class="card-icon monitor-icon">
             <el-icon><Odometer /></el-icon>
           </div>
@@ -174,7 +174,7 @@
         </div>
 
         <!-- MCP 管理端 -->
-        <div class="nav-card" @click="handleNavigate('mcp')" role="button" tabindex="0">
+        <div class="nav-card" role="button" tabindex="0" @click="handleNavigate('mcp')">
           <div class="card-icon mcp-icon">
             <el-icon><Connection /></el-icon>
           </div>
@@ -183,7 +183,7 @@
         </div>
 
         <!-- 文档中心 -->
-        <div class="nav-card" @click="handleNavigate('docs')" role="button" tabindex="0">
+        <div class="nav-card" role="button" tabindex="0" @click="handleNavigate('docs')">
           <div class="card-icon docs-icon">
             <el-icon><Document /></el-icon>
           </div>

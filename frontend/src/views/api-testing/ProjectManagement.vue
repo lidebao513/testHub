@@ -10,7 +10,7 @@
 
 
     <!-- 项目列表 -->
-    <el-table :data="projects" v-loading="loading" style="width: 100%">
+    <el-table v-loading="loading" :data="projects" style="width: 100%">
       <el-table-column prop="name" :label="$t('apiTesting.project.projectName')" min-width="200" />
       <el-table-column prop="project_type" :label="$t('apiTesting.project.projectType')" width="120">
         <template #default="scope">
@@ -52,9 +52,9 @@
       :page-sizes="[10, 20, 50, 100]"
       :total="total"
       layout="total, sizes, prev, pager, next, jumper"
+      class="pagination"
       @size-change="handleSizeChange"
       @current-change="handleCurrentChange"
-      class="pagination"
     />
 
     <!-- 新建/编辑项目对话框 -->
@@ -147,7 +147,7 @@
 
       <template #footer>
         <el-button @click="showCreateDialog = false">{{ $t('apiTesting.common.cancel') }}</el-button>
-        <el-button type="primary" @click="submitForm" :loading="submitting">
+        <el-button type="primary" :loading="submitting" @click="submitForm">
           {{ editingProject ? $t('apiTesting.common.update') : $t('apiTesting.common.create') }}
         </el-button>
       </template>

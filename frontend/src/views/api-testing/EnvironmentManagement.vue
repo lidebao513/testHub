@@ -25,8 +25,8 @@
           <el-select
             v-model="selectedProject"
             :placeholder="$t('apiTesting.common.selectProject')"
-            @change="loadLocalEnvironments"
             style="width: 200px;"
+            @change="loadLocalEnvironments"
           >
             <el-option
               v-for="project in projects"
@@ -134,8 +134,8 @@
                     size="small"
                     type="danger"
                     :icon="Delete"
-                    @click="removeVariable(index)"
                     :disabled="form.variables.length <= 1"
+                    @click="removeVariable(index)"
                   />
                 </div>
               </div>
@@ -153,7 +153,7 @@
 
       <template #footer>
         <el-button @click="showCreateDialog = false">{{ $t('apiTesting.common.cancel') }}</el-button>
-        <el-button type="primary" @click="submitForm" :loading="submitting">
+        <el-button type="primary" :loading="submitting" @click="submitForm">
           {{ editingEnvironment ? $t('apiTesting.common.update') : $t('apiTesting.common.create') }}
         </el-button>
       </template>

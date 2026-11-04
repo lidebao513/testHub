@@ -20,7 +20,7 @@
 
         <!-- 特性展示 -->
         <div class="features-grid">
-          <div class="feature-card" v-for="(feature, index) in features" :key="index">
+          <div v-for="(feature, index) in features" :key="index" class="feature-card">
             <div class="feature-icon" :style="{ backgroundColor: feature.color }">
               <component :is="feature.icon" />
             </div>
@@ -72,7 +72,7 @@
       <div class="floating-shapes">
         <!-- 语言切换 -->
         <div class="language-switcher">
-          <el-dropdown @command="handleLanguageChange" class="language-dropdown">
+          <el-dropdown class="language-dropdown" @command="handleLanguageChange">
             <span class="el-dropdown-link">
               <span class="language-icon">{{ currentLanguage === 'zh-cn' ? '🇨🇳' : '🇺🇸' }}</span>
               <span class="language-text">{{ currentLanguage === 'zh-cn' ? $t('auth.languageZhCN') : $t('auth.languageEn') }}</span>
@@ -129,8 +129,8 @@
           ref="formRef"
           :model="form"
           :rules="rules"
-          @submit.prevent="handleLogin"
           class="login-form"
+          @submit.prevent="handleLogin"
         >
           <!-- 密码登录 -->
           <template v-if="loginMode === 'password'">
@@ -185,8 +185,8 @@
                   :src="captchaImage"
                   alt="验证码"
                   class="captcha-img"
-                  @click="refreshCaptcha"
                   title="点击刷新验证码"
+                  @click="refreshCaptcha"
                 />
               </el-col>
             </el-row>
@@ -203,8 +203,8 @@
                   <el-button
                     :disabled="smsCountdown > 0 || !form.phone || !form.captcha_code"
                     :loading="sendingSms"
-                    @click="sendVerifyCode"
                     style="min-width: 110px"
+                    @click="sendVerifyCode"
                   >
                     {{ smsCountdown > 0 ? `${smsCountdown}s后重试` : '发送验证码' }}
                   </el-button>
@@ -218,8 +218,8 @@
               type="primary"
               size="large"
               :loading="loading"
-              @click="handleLogin"
               class="login-button"
+              @click="handleLogin"
             >
               <span v-if="!loading">{{ $t('auth.login') }}</span>
               <span v-else>{{ $t('auth.loggingIn') }}</span>

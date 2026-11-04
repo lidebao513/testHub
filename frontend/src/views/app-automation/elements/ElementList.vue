@@ -36,8 +36,8 @@
                   type="primary"
                   link
                   :icon="Search"
-                  @click="handleSearch"
                   style="padding: 0"
+                  @click="handleSearch"
                 />
               </template>
             </el-input>
@@ -59,9 +59,9 @@
     
       <!-- 元素列表 -->
       <el-table
+        v-loading="loading"
         :data="elements"
         border
-        v-loading="loading"
         @selection-change="handleSelectionChange"
       >
         <el-table-column type="selection" width="55" />
@@ -182,9 +182,9 @@
         :total="total"
         :page-sizes="[10, 20, 50, 100]"
         layout="total, sizes, prev, pager, next, jumper"
+        style="margin-top: 20px; justify-content: flex-end"
         @current-change="loadElements"
         @size-change="loadElements"
-        style="margin-top: 20px; justify-content: flex-end"
       />
     </el-card>
 
@@ -209,7 +209,7 @@
       :title="$t('appAutomation.element.elementDetail')"
       width="800px"
     >
-      <el-descriptions :column="2" border v-if="viewingElement">
+      <el-descriptions v-if="viewingElement" :column="2" border>
         <el-descriptions-item :label="$t('appAutomation.element.elementName')">{{ viewingElement.name }}</el-descriptions-item>
         <el-descriptions-item :label="$t('appAutomation.element.elementType')">
           <el-tag :type="getTypeColor(viewingElement.element_type)">

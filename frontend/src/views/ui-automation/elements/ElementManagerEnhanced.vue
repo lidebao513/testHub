@@ -13,10 +13,10 @@
             />
           </el-select>
           <div class="header-actions">
-            <el-button type="primary" size="small" @click="showCreatePageDialog = true" :title="$t('uiAutomation.element.createPage')">
+            <el-button type="primary" size="small" :title="$t('uiAutomation.element.createPage')" @click="showCreatePageDialog = true">
               <el-icon><Folder /></el-icon>
             </el-button>
-            <el-button type="success" size="small" @click="createEmptyElement" :title="$t('uiAutomation.element.addElement')">
+            <el-button type="success" size="small" :title="$t('uiAutomation.element.addElement')" @click="createEmptyElement">
               <el-icon><Plus /></el-icon>
             </el-button>
           </div>
@@ -48,12 +48,12 @@
                 <!-- 页面名称编辑 -->
                 <div v-if="data.type === 'page' && editingNodeId === data.id" class="node-edit">
                   <el-input
+                    ref="editInputRef"
                     v-model="editingNodeName"
                     size="small"
                     @blur="savePageName"
                     @keyup.enter="savePageName"
                     @keyup.esc="cancelEdit"
-                    ref="editInputRef"
                   />
                 </div>
 
@@ -106,7 +106,7 @@
                   </el-select>
                 </el-form-item>
                 <el-form-item>
-                  <el-button type="primary" @click="saveElement" :loading="saving" ref="saveButtonRef">
+                  <el-button ref="saveButtonRef" type="primary" :loading="saving" @click="saveElement">
                     {{ $t('uiAutomation.common.save') }}
                   </el-button>
                 </el-form-item>
@@ -141,8 +141,8 @@
                 <el-col :span="12">
                   <el-form-item :label="$t('uiAutomation.element.locatorStrategy')" prop="locator_strategy_id" required>
                     <el-select
-                      v-model="selectedElement.locator_strategy_id"
                       :key="`strategy-${formKey}-${selectedElement.locator_strategy_id || 'null'}`"
+                      v-model="selectedElement.locator_strategy_id"
                       :placeholder="$t('uiAutomation.element.rules.strategyRequired')"
                       value-key="id"
                       @blur="validateField('locator_strategy_id')"

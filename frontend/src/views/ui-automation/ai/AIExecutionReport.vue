@@ -64,7 +64,7 @@
         </div>
 
         <!-- #178 AI 用量归因：模型 / token / 成本 / 预探索 -->
-        <div class="report-section" v-if="reportData.ai_usage">
+        <div v-if="reportData.ai_usage" class="report-section">
           <h3 class="section-title">{{ $t('uiAutomation.ai.executionReport.aiUsage') }}</h3>
           <div class="performance-metrics usage-metrics">
             <div class="metric-card">
@@ -108,7 +108,7 @@
         </div>
 
         <!-- 任务统计 -->
-        <div class="report-section" v-if="reportData.statistics">
+        <div v-if="reportData.statistics" class="report-section">
           <h3 class="section-title">{{ $t('uiAutomation.ai.executionReport.taskStatistics') }}</h3>
           <div class="statistics-container">
             <div class="chart-wrapper">
@@ -216,7 +216,7 @@
       <!-- 性能分析报告 -->
       <div v-else-if="currentReportType === 'performance'" class="report-content">
         <!-- 性能指标 -->
-        <div class="report-section" v-if="reportData.metrics">
+        <div v-if="reportData.metrics" class="report-section">
           <h3 class="section-title">{{ $t('uiAutomation.ai.executionReport.performanceMetrics') }}</h3>
           <div class="performance-metrics">
             <div class="metric-card">
@@ -232,11 +232,11 @@
               <div class="metric-value">{{ reportData.metrics.min_step_duration }} {{ $t('uiAutomation.ai.executionReport.seconds') }}</div>
             </div>
             <!-- #178 性能页同时看成本：慢和贵经常是同一处 -->
-            <div class="metric-card" v-if="reportData.ai_usage">
+            <div v-if="reportData.ai_usage" class="metric-card">
               <div class="metric-label">{{ $t('uiAutomation.ai.executionReport.totalTokens') }}</div>
               <div class="metric-value">{{ formatTokens(reportData.ai_usage.total_tokens) }}</div>
             </div>
-            <div class="metric-card" v-if="reportData.ai_usage">
+            <div v-if="reportData.ai_usage" class="metric-card">
               <div class="metric-label">{{ $t('uiAutomation.ai.executionReport.cost') }}</div>
               <div class="metric-value">{{ formatCost(reportData.ai_usage) }}</div>
             </div>
@@ -244,7 +244,7 @@
         </div>
 
         <!-- 操作分布 -->
-        <div class="report-section" v-if="reportData.action_distribution">
+        <div v-if="reportData.action_distribution" class="report-section">
           <h3 class="section-title">{{ $t('uiAutomation.ai.executionReport.actionDistribution') }}</h3>
           <div ref="barChartRef" class="chart" style="height: 250px;"></div>
         </div>

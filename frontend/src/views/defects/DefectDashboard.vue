@@ -3,7 +3,7 @@
     <div class="page-header">
       <h1 class="page-title">缺陷看板</h1>
       <div class="header-actions">
-        <el-button @click="loadDashboard" :loading="loading">
+        <el-button :loading="loading" @click="loadDashboard">
           <el-icon><Refresh /></el-icon>
           刷新
         </el-button>

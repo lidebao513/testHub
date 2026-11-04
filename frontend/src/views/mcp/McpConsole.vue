@@ -44,7 +44,7 @@
             {{ $t('mcp.configBtn') }}
           </el-button>
         </div>
-        <el-table :data="filteredTools" v-loading="toolsLoading" stripe>
+        <el-table v-loading="toolsLoading" :data="filteredTools" stripe>
           <el-table-column :label="$t('mcp.colTool')" width="210">
             <template #default="{ row }"><span class="mono">{{ row.name }}</span></template>
           </el-table-column>
@@ -79,7 +79,7 @@
           </el-select>
           <el-button :icon="Refresh" @click="loadPending">{{ $t('common.refresh') }}</el-button>
         </div>
-        <el-table :data="pendingList" v-loading="pendingLoading" stripe>
+        <el-table v-loading="pendingLoading" :data="pendingList" stripe>
           <el-table-column prop="id" label="ID" width="60" />
           <el-table-column prop="username" :label="$t('mcp.colUser')" width="100" />
           <el-table-column prop="tool_name" :label="$t('mcp.colTool')" width="160" show-overflow-tooltip />
@@ -122,8 +122,8 @@
           :page-size="pendingPageSize"
           :total="pendingTotal"
           layout="prev, pager, next, total"
-          @current-change="loadPending"
           style="margin-top: 12px; justify-content: flex-end"
+          @current-change="loadPending"
         />
       </el-tab-pane>
 
@@ -144,7 +144,7 @@
           />
           <el-button :icon="Refresh" @click="loadLogs">{{ $t('common.refresh') }}</el-button>
         </div>
-        <el-table :data="logList" v-loading="logLoading" stripe>
+        <el-table v-loading="logLoading" :data="logList" stripe>
           <el-table-column prop="id" label="ID" width="60" />
           <el-table-column prop="username" :label="$t('mcp.colUser')" width="100" />
           <el-table-column prop="tool_name" :label="$t('mcp.colTool')" width="160" show-overflow-tooltip />
@@ -173,8 +173,8 @@
           :page-size="logPageSize"
           :total="logTotal"
           layout="prev, pager, next, total"
-          @current-change="loadLogs"
           style="margin-top: 12px; justify-content: flex-end"
+          @current-change="loadLogs"
         />
       </el-tab-pane>
     </el-tabs>

@@ -15,8 +15,8 @@
           <el-select
             v-model="selectedProject"
             :placeholder="$t('apiTesting.common.selectProject')"
-            @change="onProjectChange"
             style="width: 100%;"
+            @change="onProjectChange"
           >
             <el-option
               v-for="project in httpProjects"
@@ -49,7 +49,7 @@
                   {{ $t('apiTesting.automation.requestCount', { n: suite.suite_requests?.length || 0 }) }}
                 </div>
               </div>
-              <el-dropdown @command="handleSuiteAction" trigger="click">
+              <el-dropdown trigger="click" @command="handleSuiteAction">
                 <el-button size="small" text>
                   <el-icon><MoreFilled /></el-icon>
                 </el-button>
@@ -79,7 +79,7 @@
             <div class="suite-title">
               <h4>{{ selectedSuite.name }}</h4>
               <div class="suite-actions">
-                <el-button type="success" @click="runTestSuite(selectedSuite)" :loading="running">
+                <el-button type="success" :loading="running" @click="runTestSuite(selectedSuite)">
                   <el-icon><VideoPlay /></el-icon>
                   {{ $t('apiTesting.automation.runTest') }}
                 </el-button>
@@ -135,10 +135,10 @@
               </el-table-column>
               <el-table-column :label="$t('apiTesting.common.operation')" width="150">
                 <template #default="scope">
-                  <el-button link type="primary" @click="editAssertions(scope.row)" size="small">
+                  <el-button link type="primary" size="small" @click="editAssertions(scope.row)">
                     {{ $t('apiTesting.automation.editAssertions') }}
                   </el-button>
-                  <el-button link type="danger" @click="removeRequest(scope.row)" size="small">
+                  <el-button link type="danger" size="small" @click="removeRequest(scope.row)">
                     {{ $t('apiTesting.automation.remove') }}
                   </el-button>
                 </template>
@@ -156,7 +156,7 @@
               </el-button>
             </div>
 
-            <el-table :data="executions" v-loading="executionsLoading">
+            <el-table v-loading="executionsLoading" :data="executions">
               <el-table-column prop="status" :label="$t('apiTesting.common.status')" width="100">
                 <template #default="scope">
                   <el-tag :type="getStatusType(scope.row.status)">
@@ -188,7 +188,7 @@
               </el-table-column>
               <el-table-column :label="$t('apiTesting.common.operation')" width="120">
                 <template #default="scope">
-                  <el-button link type="primary" @click="viewExecutionDetail(scope.row)" size="small">
+                  <el-button link type="primary" size="small" @click="viewExecutionDetail(scope.row)">
                     {{ $t('apiTesting.automation.viewDetails') }}
                   </el-button>
                 </template>
@@ -251,7 +251,7 @@
 
       <template #footer>
         <el-button @click="showCreateSuiteDialog = false">{{ $t('apiTesting.common.cancel') }}</el-button>
-        <el-button type="primary" @click="submitSuiteForm" :loading="submittingSuite">
+        <el-button type="primary" :loading="submittingSuite" @click="submitSuiteForm">
           {{ editingSuite ? $t('apiTesting.common.update') : $t('apiTesting.common.create') }}
         </el-button>
       </template>
@@ -295,7 +295,7 @@
       
       <template #footer>
         <el-button @click="showAddRequestDialog = false">{{ $t('apiTesting.common.cancel') }}</el-button>
-        <el-button type="primary" @click="addSelectedRequests" :loading="addingRequests">
+        <el-button type="primary" :loading="addingRequests" @click="addSelectedRequests">
           {{ $t('apiTesting.automation.addSelectedRequests') }}
         </el-button>
       </template>
