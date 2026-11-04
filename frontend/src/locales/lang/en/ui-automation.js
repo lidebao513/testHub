@@ -955,6 +955,14 @@ export default {
     format: 'Format',
     clear: 'Clear',
     saveScript: 'Save Script',
+    aiGenerate: 'AI Generate',
+    aiGenerateTitle: 'AI Generate Script (Playwright MCP)',
+    targetUrl: 'Target URL',
+    targetUrlPlaceholder: 'https://example.com (validated by security policy)',
+    instruction: 'Instruction',
+    instructionPlaceholder: 'e.g. type a keyword into the search box and submit',
+    generate: 'Generate',
+    cancel: 'Cancel',
     clearLogs: 'Clear Logs',
     line: 'Ln',
     column: 'Col',
@@ -976,7 +984,11 @@ export default {
       saveFailed: 'Failed to save script',
       validatePassed: 'Element validation passed',
       validateFailed: 'Element validation failed',
-      switchLanguage: 'Switched to {lang} language'
+      switchLanguage: 'Switched to {lang} language',
+      targetUrlRequired: 'Please enter the target URL',
+      generateSuccess: 'Script generated and loaded into the editor (draft, pending review)',
+      generateEmpty: 'Generated content is empty',
+      generateFailed: 'Failed to generate script'
     }
   },
 

@@ -161,3 +161,37 @@
 - B2 前端入口：`ScriptEditorEnhanced.vue` 加「AI 生成脚本」面板。
 - B3 自测：MCP client 轻量连通性测试（mock）+ 白名单拦截 + 入库往返。
 - LLM agent loop 替换 `record_flow` 的确定性步骤（用 DeepSeek 决策调用 MCP 工具）。
+
+---
+
+## 阶段二 full build 实施记录（2026-11-04，已完成 ✅）
+
+### 交付清单
+
+| 批次 | 文件 | 内容 |
+|---|---|---|
+| B1 后端 | `apps/ui_automation/pw_mcp_client.py` | `record_flow` 改为返回结构化 `{content, steps, language}`；新增同步入口 `generate_script(target_url, instruction, language)`，**自行 connect/close**（修复漏 connect 导致 `not connected` 的缺陷） |
+| B1 后端 | `apps/ui_automation/models.py` | `TestScript.status` 新增（`draft`/`confirmed`，默认 `confirmed`）→ preview/confirm 两段式草稿态 |
+| B1 后端 | `apps/ui_automation/migrations/0009_testscript_status.py` | 对应迁移（默认值 `confirmed`，存量脚本不受影响） |
+| B1 后端 | `apps/ui_automation/serializers.py` | `TestScriptCreateSerializer` 纳入 `status`，并回传 `id` |
+| B1 后端 | `apps/ui_automation/views_script_generate.py` | `POST /ui-automation/scripts/generate/`：鉴权 + 参数校验 + `is_safe_target_url` 硬拦截 + 调 `GENERATE_FN`（可 patch）+ **instruction 凭据兜底打码**，产物为预览**不落库** |
+| B2 前端 | `frontend/src/api/ui_automation.js` | 新增 `generateScript` |
+| B2 前端 | `frontend/src/views/ui-automation/scripts/ScriptEditorEnhanced.vue` | 工具栏「AI 生成脚本」按钮 + 对话框（目标 URL / 指令 / 语言）→ 生成后填入编辑器并标记 `isAiGenerated` → 保存时以 `status='draft'` 落库；手动清空/切换项目自动复位 |
+| B2 前端 | `locales/lang/{zh-cn,en}/ui-automation.js` | `scriptEditor.aiGenerate*` 与 `messages.*` 文案 |
+| B3 自测 | `apps/ui_automation/tests/test_script_generate.py` | 10 例：鉴权、缺参、云元数据/内网拦截、公网放行、预览结构、凭据不回显明文、草稿态落库往返 |
+| B3 自测 | `tests/test_pw_mcp_client.py` | 追加 2 例：`generate_script` 必须 init→connect→record_flow→close（锁死本次修复）、unsafe URL 抛错 |
+
+### 阶段二验证证据
+
+- 后端单测：`pytest apps/ui_automation/tests/ tests/test_pw_mcp_client.py -q` → **338 passed**（含本批 12 例新增）。
+- **活体验证（真实 MCP + 真实浏览器）**：直接调 `generate_script("https://demo.playwright.dev/todomvc", "phase2 generate probe")`
+  - 返回 `{content, language: python, steps: [navigate, snapshot, type, press_key]}`
+  - 产出脚本语法合法，落盘后真实执行 **`rc=0`**
+- 前端：ESLint 0 error、`npm run build` 通过（18.54s）。
+- 迁移一致性：`makemigrations --check --dry-run` 无待生成迁移。
+
+### 与方案的差异（务实取舍）
+
+- **B1 安全 guard 未抽公共模块**：`ai_base.py` 顶层依赖 `langchain_openai`/`browser_use` 等重型库，纯 Python 调用链引入会拖慢/污染；沿用 `pw_mcp_client` 内的最小硬拦截（语义与 `ai_base` 一致，注释指向权威源）。抽公共模块留作后续债务。
+- **preview/confirm 用字段而非独立接口**：不加 `TestScript.status` 之外的状态机，前端生成→编辑器复核→保存即「确认」，`draft` 表示 AI 产物未复核。避免一次性引入过多模型改动。
+- **LLM agent loop 未落地**：`record_flow` 仍是确定性最小流程（navigate→snapshot→type→press），LLM 决策替换仍是后续增强项（需先有 LLM 调用预算与提示词工程）。

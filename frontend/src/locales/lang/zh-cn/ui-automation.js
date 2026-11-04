@@ -955,6 +955,14 @@ export default {
     format: '格式化',
     clear: '清空',
     saveScript: '保存脚本',
+    aiGenerate: 'AI 生成脚本',
+    aiGenerateTitle: 'AI 生成脚本（Playwright MCP）',
+    targetUrl: '目标 URL',
+    targetUrlPlaceholder: 'https://example.com（将通过安全策略校验）',
+    instruction: '执行意图',
+    instructionPlaceholder: '例如：在搜索框输入关键词并提交',
+    generate: '生成',
+    cancel: '取消',
     clearLogs: '清空日志',
     line: '行',
     column: '列',
@@ -976,7 +984,11 @@ export default {
       saveFailed: '脚本保存失败',
       validatePassed: '元素验证通过',
       validateFailed: '元素验证失败',
-      switchLanguage: '切换到{lang}语言'
+      switchLanguage: '切换到{lang}语言',
+      targetUrlRequired: '请输入目标 URL',
+      generateSuccess: '脚本生成成功，已载入编辑器（草稿态待复核）',
+      generateEmpty: '生成内容为空',
+      generateFailed: '脚本生成失败'
     }
   },
 

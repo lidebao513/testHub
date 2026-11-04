@@ -10,6 +10,8 @@ import ast
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "apps", "ui_automation"))
 import pw_mcp_client  # noqa: E402
 
@@ -78,3 +80,36 @@ def test_build_params_never_uses_unsafe():
     c = pw_mcp_client.PlaywrightMcpClient()
     params = c._build_params()
     assert "browser_run_code_unsafe" not in " ".join(params.args)
+
+
+def test_generate_script_connects_then_closes(monkeypatch):
+    """阶段二同步入口必须自行 connect/close（曾漏掉 connect 导致 "not connected"）。"""
+    calls = []
+
+    class _FakeClient:
+        def __init__(self, codegen_lang="python"):
+            calls.append(("init", codegen_lang))
+
+        async def connect(self):
+            calls.append(("connect",))
+            return self
+
+        async def record_flow(self, url, demo_text=""):
+            calls.append(("record_flow", url, demo_text))
+            return {"content": "print('x')\n", "steps": ["navigate"], "language": "python"}
+
+        async def close(self):
+            calls.append(("close",))
+
+    monkeypatch.setattr(pw_mcp_client, "PlaywrightMcpClient", _FakeClient)
+
+    out = pw_mcp_client.generate_script("https://example.com", "hello", "python")
+
+    assert out["steps"] == ["navigate"]
+    assert [c[0] for c in calls] == ["init", "connect", "record_flow", "close"]
+    assert calls[2][2] == "hello"  # instruction 作为填充文本透传
+
+
+def test_generate_script_rejects_unsafe_url():
+    with pytest.raises(ValueError):
+        pw_mcp_client.generate_script("http://169.254.169.254/latest/meta-data/")

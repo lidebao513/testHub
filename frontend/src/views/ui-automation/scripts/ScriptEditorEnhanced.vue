@@ -70,6 +70,10 @@
             </el-select>
           </div>
           <div class="toolbar-right">
+            <el-button size="small" @click="openGenerateDialog">
+              <el-icon><MagicStick /></el-icon>
+              {{ $t('uiAutomation.scriptEditor.aiGenerate') }}
+            </el-button>
             <el-button size="small" @click="formatCode">
               <el-icon><Operation /></el-icon>
               {{ $t('uiAutomation.scriptEditor.format') }}
@@ -168,6 +172,42 @@
         </el-tabs>
       </div>
     </div>
+
+    <!-- AI 生成脚本对话框（#185 阶段二） -->
+    <el-dialog
+      v-model="generateDialogVisible"
+      :title="$t('uiAutomation.scriptEditor.aiGenerateTitle')"
+      width="560px"
+    >
+      <el-form label-width="90px">
+        <el-form-item :label="$t('uiAutomation.scriptEditor.targetUrl')" required>
+          <el-input
+            v-model="genTargetUrl"
+            :placeholder="$t('uiAutomation.scriptEditor.targetUrlPlaceholder')"
+          />
+        </el-form-item>
+        <el-form-item :label="$t('uiAutomation.scriptEditor.instruction')">
+          <el-input
+            v-model="genInstruction"
+            type="textarea"
+            :rows="3"
+            :placeholder="$t('uiAutomation.scriptEditor.instructionPlaceholder')"
+          />
+        </el-form-item>
+        <el-form-item :label="$t('uiAutomation.scriptEditor.language')">
+          <el-select v-model="genLanguage" size="small" style="width: 160px">
+            <el-option label="Python" value="python" />
+            <el-option label="JavaScript" value="javascript" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button size="small" @click="generateDialogVisible = false">{{ $t('uiAutomation.scriptEditor.cancel') }}</el-button>
+          <el-button size="small" type="primary" :loading="generating" @click="doGenerate">{{ $t('uiAutomation.scriptEditor.generate') }}</el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -176,12 +216,13 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Search, Plus, View, Document, Check, Delete, Operation, Folder
+  Search, Plus, View, Document, Check, Delete, Operation, Folder, MagicStick
 } from '@element-plus/icons-vue'
 
 import {
   getUiProjects,
   createTestScript,
+  generateScript,
   getElementTree,
   getElementGroupTree,
   validateElementLocator
@@ -204,6 +245,14 @@ const executionLogs = ref([])
 
 const cursorPosition = reactive({ line: 1, column: 1 })
 const saving = ref(false)
+
+// AI 生成脚本对话框（#185 阶段二）
+const generateDialogVisible = ref(false)
+const generating = ref(false)
+const genTargetUrl = ref('')
+const genInstruction = ref('')
+const genLanguage = ref('python')
+const isAiGenerated = ref(false)
 
 // 标签页控制
 const rightActiveTab = ref('logs')
@@ -328,6 +377,7 @@ const onProjectChange = async () => {
   selectedElementDetail.value = null
   executionLogs.value = []
   scriptContent.value = ''
+  isAiGenerated.value = false
 
   await loadElementTree()
 
@@ -444,7 +494,8 @@ const saveScript = async () => {
       script_type: 'CODE',
       content: scriptContent.value,
       language: scriptLanguage.value,
-      framework: scriptFramework.value
+      framework: scriptFramework.value,
+      status: isAiGenerated.value ? 'draft' : 'confirmed'
     })
 
     ElMessage.success(`${t('uiAutomation.scriptEditor.messages.saveSuccess')}: ${scriptName}`)
@@ -455,6 +506,53 @@ const saveScript = async () => {
     addLog('error', t('uiAutomation.scriptEditor.messages.saveFailed'))
   } finally {
     saving.value = false
+  }
+}
+
+const openGenerateDialog = () => {
+  if (!projectId.value) {
+    ElMessage.warning(t('uiAutomation.scriptEditor.messages.selectProject'))
+    return
+  }
+  generateDialogVisible.value = true
+}
+
+const doGenerate = async () => {
+  if (!genTargetUrl.value.trim()) {
+    ElMessage.warning(t('uiAutomation.scriptEditor.messages.targetUrlRequired'))
+    return
+  }
+  try {
+    generating.value = true
+    const response = await generateScript({
+      project_id: projectId.value,
+      target_url: genTargetUrl.value.trim(),
+      instruction: genInstruction.value.trim(),
+      language: genLanguage.value
+    })
+    const data = response.data
+    if (data.content) {
+      scriptContent.value = data.content
+      if (data.language === 'javascript') {
+        scriptLanguage.value = 'javascript'
+      } else {
+        scriptLanguage.value = 'python'
+      }
+      scriptFramework.value = 'playwright'
+      isAiGenerated.value = true
+      generateDialogVisible.value = false
+      ElMessage.success(t('uiAutomation.scriptEditor.messages.generateSuccess'))
+      addLog('success', t('uiAutomation.scriptEditor.messages.generateSuccess'))
+    } else {
+      ElMessage.error(t('uiAutomation.scriptEditor.messages.generateEmpty'))
+    }
+  } catch (error) {
+    console.error('Failed to generate script:', error)
+    const msg = error?.response?.data?.error || t('uiAutomation.scriptEditor.messages.generateFailed')
+    ElMessage.error(msg)
+    addLog('error', t('uiAutomation.scriptEditor.messages.generateFailed'))
+  } finally {
+    generating.value = false
   }
 }
 
@@ -499,6 +597,7 @@ const formatCode = () => {
 
 const clearCode = () => {
   scriptContent.value = ''
+  isAiGenerated.value = false
   addLog('info', t('uiAutomation.scriptEditor.messages.codeCleared'))
 }
 

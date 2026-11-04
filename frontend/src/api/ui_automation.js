@@ -138,6 +138,15 @@ export function createTestScript(data) {
   })
 }
 
+// #185 阶段二：Playwright MCP 生成脚本（预览，不落库）
+export function generateScript(data) {
+  return request({
+    url: '/ui-automation/scripts/generate/',
+    method: 'post',
+    data
+  })
+}
+
 // 获取测试脚本详情
 export function getTestScriptDetail(id) {
   return request({
