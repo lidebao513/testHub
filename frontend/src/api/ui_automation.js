@@ -1023,6 +1023,15 @@ export function runAdhocAITask(data) {
   })
 }
 
+// #184 统一智能输入框：解析预览（只解析不执行，密码打码）
+export function parseSmartInput(text) {
+  return request({
+    url: '/ui-automation/smart-input/parse/',
+    method: 'post',
+    data: { text }
+  })
+}
+
 // 停止 AI 任务
 export function stopAITask(id) {
   return request({
