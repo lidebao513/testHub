@@ -117,3 +117,6 @@ build-multiplatform.sh
 # 测试产物：E2E / UI 截图（二进制、体积大、可随时重跑生成）
 services/testgen/scripts/ui_shots/
 logs/e2e_ui/
+# 闭环/巡检运行时报告（可随时重跑生成，不入库）
+data/closed_loop_reports/
+data/smoke_patrol_reports/
