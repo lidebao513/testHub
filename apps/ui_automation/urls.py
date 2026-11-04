@@ -1,29 +1,31 @@
-from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from django.urls import include, path
 from rest_framework.routers import DefaultRouter
+
 from .views import (
-    UiProjectViewSet,
-    LocatorStrategyViewSet,
+    AICaseViewSet,
+    AIExecutionRecordViewSet,
     ElementGroupViewSet,
     ElementViewSet,
-    TestScriptViewSet,
-    PageObjectViewSet,
-    ScriptStepViewSet,
-    TestSuiteViewSet,
-    TestExecutionViewSet,
-    ScreenshotViewSet,
-    TestCaseViewSet,
-    TestCaseStepViewSet,
-    TestCaseExecutionViewSet,
-    UiScheduledTaskViewSet,
-    AIExecutionRecordViewSet,
-    AICaseViewSet,
-    UiNotificationLogViewSet,
+    LocatorStrategyViewSet,
     OperationRecordViewSet,
-    UiDashboardViewSet
+    PageObjectViewSet,
+    ScreenshotViewSet,
+    ScriptStepViewSet,
+    TestCaseExecutionViewSet,
+    TestCaseStepViewSet,
+    TestCaseViewSet,
+    TestExecutionViewSet,
+    TestScriptViewSet,
+    TestSuiteViewSet,
+    UiDashboardViewSet,
+    UiNotificationLogViewSet,
+    UiProjectViewSet,
+    UiScheduledTaskViewSet,
 )
-from .views_config import EnvironmentConfigViewSet, AIIntelligentModeConfigViewSet
+from .views_closed_loop import ClosedLoopRunView, ClosedLoopStatusView
+from .views_config import AIIntelligentModeConfigViewSet, EnvironmentConfigViewSet
 
 router = DefaultRouter()
 router.register(r'dashboard', UiDashboardViewSet, basename='dashboard')
@@ -55,6 +57,9 @@ router.register(r'ai-models', AIIntelligentModeConfigViewSet, basename='ai-model
 
 urlpatterns = [
     path('', include(router.urls)),
+    # #200 闭环触发入口（异步）：UI 一键跑闭环 + 查状态
+    path('closed-loop/run/', ClosedLoopRunView.as_view()),
+    path('closed-loop/<str:task_id>/status/', ClosedLoopStatusView.as_view()),
 ]
 
 # 添加媒体文件路由

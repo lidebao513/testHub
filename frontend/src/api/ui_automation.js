@@ -1049,6 +1049,26 @@ export function getAIExecutionReport(id, params = {}) {
   })
 }
 
+// ==================== 闭环触发入口（#200）====================
+
+// 一键异步跑闭环（fire-and-forget，返回 task_id）
+export function runClosedLoop(data) {
+  return request({
+    url: '/ui-automation/closed-loop/run/',
+    method: 'post',
+    data,
+    timeout: 30000
+  })
+}
+
+// 查询闭环任务状态
+export function getClosedLoopStatus(taskId) {
+  return request({
+    url: `/ui-automation/closed-loop/${taskId}/status/`,
+    method: 'get'
+  })
+}
+
 // 导出 AI 执行报告为 PDF
 export function exportAIExecutionReportPDF(id, params = {}) {
   return request({

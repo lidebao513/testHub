@@ -5,7 +5,7 @@
     </div>
 
     <div class="card-container">
-      <div class="filter-bar">
+      <div class="filter-bar" style="display: flex; gap: 12px; align-items: center;">
         <el-input
           v-model="searchText"
           :placeholder="$t('uiAutomation.ai.caseList.searchPlaceholder')"
@@ -17,9 +17,18 @@
             <el-icon><Search /></el-icon>
           </template>
         </el-input>
+        <el-button
+          type="warning"
+          :disabled="selectedCases.length === 0"
+          :loading="loopRunning"
+          @click="runClosedLoopCases"
+        >
+          运行闭环（{{ selectedCases.length }}）
+        </el-button>
       </div>
 
-      <el-table v-loading="loading" :data="cases" style="width: 100%">
+      <el-table v-loading="loading" :data="cases" style="width: 100%" @selection-change="handleSelectionChange">
+        <el-table-column type="selection" width="55" />
         <el-table-column prop="name" :label="$t('uiAutomation.ai.caseList.caseName')" min-width="200" show-overflow-tooltip />
         <el-table-column prop="description" :label="$t('uiAutomation.common.description')" min-width="200" show-overflow-tooltip />
         <el-table-column prop="task_description" :label="$t('uiAutomation.ai.caseList.taskDescription')" min-width="300" show-overflow-tooltip />
@@ -84,7 +93,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, VideoPlay, Edit, Delete } from '@element-plus/icons-vue'
@@ -93,7 +102,9 @@ import {
   getAICases,
   updateAICase,
   deleteAICase,
-  runAICase
+  runAICase,
+  runClosedLoop,
+  getClosedLoopStatus
 } from '@/api/ui_automation'
 
 const { t } = useI18n()
@@ -233,8 +244,67 @@ const formatDate = (row, column, cellValue) => {
   return new Date(cellValue).toLocaleString()
 }
 
+// 多选 + 闭环触发（#200）
+const selectedCases = ref([])
+const loopRunning = ref(false)
+let loopTimer = null
+
+const handleSelectionChange = (rows) => {
+  selectedCases.value = rows
+}
+
+const runClosedLoopCases = async () => {
+  if (selectedCases.value.length === 0) return
+  const ids = selectedCases.value.map((c) => c.id)
+  loopRunning.value = true
+  try {
+    const resp = await runClosedLoop({ case_ids: ids, max_retries: 0 })
+    const taskId = resp.data.task_id
+    ElMessage.success(`已提交闭环任务，任务ID：${taskId}`)
+    pollLoopStatus(taskId)
+  } catch (error) {
+    console.error('提交闭环任务失败:', error)
+    ElMessage.error(t('uiAutomation.ai.caseList.messages.runFailed'))
+    loopRunning.value = false
+  }
+}
+
+const pollLoopStatus = (taskId) => {
+  if (loopTimer) clearInterval(loopTimer)
+  loopTimer = setInterval(async () => {
+    try {
+      const resp = await getClosedLoopStatus(taskId)
+      const state = resp.data.state
+      if (state === 'SUCCESS' || state === 'FAILURE') {
+        clearInterval(loopTimer)
+        loopTimer = null
+        loopRunning.value = false
+        if (state === 'SUCCESS') {
+          const summary = resp.data.result?.summary || {}
+          ElMessage.success(
+            `闭环完成：信号 ${summary.signal || '-'}（通过 ${summary.done || 0}/${summary.total || 0}）`
+          )
+          loadCases() // 刷新列表（AICase.last_loop 已更新）
+        } else {
+          ElMessage.error(`闭环失败：${resp.data.error || '未知错误'}`)
+        }
+      }
+    } catch (e) {
+      clearInterval(loopTimer)
+      loopTimer = null
+      loopRunning.value = false
+      console.error('查询闭环状态失败:', e)
+      ElMessage.error(t('uiAutomation.ai.caseList.messages.runFailed'))
+    }
+  }, 3000)
+}
+
 onMounted(() => {
   loadCases()
+})
+
+onUnmounted(() => {
+  if (loopTimer) clearInterval(loopTimer)
 })
 </script>
 
