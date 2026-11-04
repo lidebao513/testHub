@@ -7,6 +7,67 @@
     <div class="card-container">
       <el-row :gutter="20">
         <el-col :span="12">
+          <!-- #184 统一智能输入框：一句话混合文本（URL/账号/密码/权限/动作/验证）解析后一键执行 -->
+          <el-card shadow="never" class="smart-input-card" style="margin-bottom: 20px;">
+            <template #header>
+              <div class="section-title" style="margin: 0;">{{ $t('uiAutomation.ai.smartInput.title') }}</div>
+            </template>
+            <el-input
+              v-model="smartText"
+              type="textarea"
+              :rows="4"
+              :placeholder="$t('uiAutomation.ai.smartInput.placeholder')"
+            />
+            <div style="margin-top: 10px;">
+              <el-button :loading="parsing" :disabled="!smartText.trim()" @click="handleSmartParse">
+                <el-icon><MagicStick /></el-icon>
+                {{ $t('uiAutomation.ai.smartInput.parseBtn') }}
+              </el-button>
+              <el-button type="primary" :disabled="!smartParsed || running" :loading="running" @click="handleSmartRun">
+                <el-icon><VideoPlay /></el-icon>
+                {{ $t('uiAutomation.ai.smartInput.runBtn') }}
+              </el-button>
+              <el-button type="success" :disabled="!smartParsed" @click="handleSmartFillBack">
+                {{ $t('uiAutomation.ai.smartInput.fillBackBtn') }}
+              </el-button>
+            </div>
+            <div v-if="smartParsed" style="margin-top: 12px;">
+              <el-alert
+                v-if="smartParsed.warnings && smartParsed.warnings.length"
+                type="warning"
+                :closable="false"
+                style="margin-bottom: 8px;"
+              >
+                {{ smartParsed.warnings.join('；') }}
+              </el-alert>
+              <el-descriptions :column="2" size="small" border>
+                <el-descriptions-item :label="$t('uiAutomation.ai.smartInput.url')">
+                  {{ smartParsed.url || '-' }}
+                </el-descriptions-item>
+                <el-descriptions-item :label="$t('uiAutomation.ai.smartInput.confidence')">
+                  <el-tag :type="smartParsed.confidence === 'high' ? 'success' : 'warning'" size="small">
+                    {{ smartParsed.confidence === 'high' ? $t('uiAutomation.ai.smartInput.confHigh') : $t('uiAutomation.ai.smartInput.confLow') }}
+                  </el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item :label="$t('uiAutomation.ai.smartInput.username')">
+                  {{ smartParsed.username || '-' }}
+                </el-descriptions-item>
+                <el-descriptions-item :label="$t('uiAutomation.ai.smartInput.password')">
+                  {{ smartParsed.password_masked || '-' }}
+                </el-descriptions-item>
+                <el-descriptions-item :label="$t('uiAutomation.ai.smartInput.actions')" :span="2">
+                  {{ (smartParsed.actions || []).join('；') || '-' }}
+                </el-descriptions-item>
+                <el-descriptions-item :label="$t('uiAutomation.ai.smartInput.asserts')" :span="2">
+                  {{ (smartParsed.asserts || []).join('；') || '-' }}
+                </el-descriptions-item>
+                <el-descriptions-item v-if="(smartParsed.notes || []).length" :label="$t('uiAutomation.ai.smartInput.notes')" :span="2">
+                  {{ smartParsed.notes.join('；') }}
+                </el-descriptions-item>
+              </el-descriptions>
+            </div>
+          </el-card>
+
           <div class="section-title">{{ $t('uiAutomation.ai.taskInput') }}</div>
           <el-form :model="taskForm" label-position="top">
             <el-form-item :label="$t('uiAutomation.ai.taskDescription')" required>
@@ -138,13 +199,14 @@
 <script setup>
 import { ref, reactive, nextTick, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { VideoPlay, DocumentAdd, CircleCheckFilled, CircleCheck, Loading, SwitchButton } from '@element-plus/icons-vue'
+import { VideoPlay, DocumentAdd, CircleCheckFilled, CircleCheck, Loading, SwitchButton, MagicStick } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import {
   runAdhocAITask,
   createAICase,
   getAIExecutionRecordDetail,
-  stopAITask
+  stopAITask,
+  parseSmartInput
 } from '@/api/ui_automation'
 
 const { t } = useI18n()
@@ -168,6 +230,57 @@ const saveForm = reactive({
   description: ''
 })
 const saveFormRef = ref(null)
+
+// #184 统一智能输入框：解析预览 + 一键执行 + 拆分回填（只加不改，不动下方结构化入口）
+const smartText = ref('')
+const parsing = ref(false)
+const smartParsed = ref(null)
+
+// 智能解析：明文密码不出接口，仅回传打码值
+const handleSmartParse = async () => {
+  if (!smartText.value.trim()) return
+  parsing.value = true
+  try {
+    const response = await parseSmartInput(smartText.value)
+    smartParsed.value = response.data.parsed
+    ElMessage.success(t('uiAutomation.ai.smartInput.parseSuccess'))
+  } catch (error) {
+    console.error('解析失败:', error)
+    ElMessage.error(t('uiAutomation.ai.smartInput.parseFailed') + ': ' + (error.response?.data?.error || error.message))
+  } finally {
+    parsing.value = false
+  }
+}
+
+// 一键执行：把原始混合文本交给后端现解析（凭据只在服务端组装进执行线程，不落库）
+const handleSmartRun = async () => {
+  running.value = true
+  analyzing.value = true
+  logs.value = t('uiAutomation.ai.messages.initAgent')
+  plannedTasks.value = []
+  try {
+    const response = await runAdhocAITask({
+      smart_input: smartText.value,
+      execution_mode: 'text',
+      enable_gif: taskForm.enableGif
+    })
+    currentExecutionId.value = response.data.execution_id
+    ElMessage.success(t('uiAutomation.ai.messages.startSuccess'))
+    pollLogs()
+  } catch (error) {
+    console.error('执行失败:', error)
+    ElMessage.error(t('uiAutomation.ai.messages.startFailed') + ': ' + (error.response?.data?.error || error.message))
+    running.value = false
+    analyzing.value = false
+  }
+}
+
+// 拆分回填：解析出的任务描述（不含凭据）写回现有表单，走原结构化路径
+const handleSmartFillBack = () => {
+  if (!smartParsed.value) return
+  taskForm.description = smartParsed.value.task_description || ''
+  ElMessage.success(t('uiAutomation.ai.smartInput.fillBackSuccess'))
+}
 
 const saveRules = computed(() => ({
   name: [{ required: true, message: t('uiAutomation.ai.rules.nameRequired'), trigger: 'blur' }]

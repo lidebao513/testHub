@@ -3503,6 +3503,20 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
         execution_mode = request.data.get('execution_mode', 'text')  # 默认文本模式
         enable_gif = request.data.get('enable_gif', True)  # GIF录制开关，默认开启
 
+        # #184 统一智能输入框：parsed（前端修正后的结构化结果）优先，
+        # smart_input 为原始混合文本（服务端补解析缺失字段）。
+        # persisted 不含明文密码（落库）；agent 含凭据（仅传给执行线程）。
+        agent_task_description = task_description
+        if request.data.get('parsed') or request.data.get('smart_input'):
+            from .smart_input import compose_execution_input
+
+            composed = compose_execution_input(
+                request.data.get('parsed') or {},
+                str(request.data.get('smart_input') or ''),
+            )
+            task_description = composed['persisted']
+            agent_task_description = composed['agent']
+
         if not task_description:
             return Response({'error': '缺少任务描述参数'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -3654,7 +3668,7 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
 
                 # #178：交给 agent_holder 把 agent 带回，用于执行结束后的用量/成本归因
                 history = run_full_process_sync(
-                    task_description,
+                    agent_task_description,
                     analysis_callback=on_analysis_complete,
                     step_callback=on_step_update,
                     should_stop=should_stop_async,  # 传递异步版本
