@@ -27,6 +27,7 @@ from .views import (
 from .views_closed_loop import ClosedLoopRunView, ClosedLoopStatusView
 from .views_config import AIIntelligentModeConfigViewSet, EnvironmentConfigViewSet
 from .views_smart_input import SmartInputParseView
+from .views_script_generate import ScriptGenerateView
 
 router = DefaultRouter()
 router.register(r'dashboard', UiDashboardViewSet, basename='dashboard')
@@ -63,6 +64,8 @@ urlpatterns = [
     path('closed-loop/<str:task_id>/status/', ClosedLoopStatusView.as_view()),
     # #184 统一智能输入框：解析预览（只解析不执行）
     path('smart-input/parse/', SmartInputParseView.as_view()),
+    # #185 阶段二：Playwright MCP 脚本生成（预览，不落库）
+    path('scripts/generate/', ScriptGenerateView.as_view()),
 ]
 
 # 添加媒体文件路由

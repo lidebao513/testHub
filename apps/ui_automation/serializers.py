@@ -136,7 +136,7 @@ class TestScriptSerializer(serializers.ModelSerializer):
 class TestScriptCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = TestScript
-        fields = ('project', 'name', 'description', 'script_type', 'content', 'language', 'framework')
+        fields = ('id', 'project', 'name', 'description', 'script_type', 'content', 'language', 'framework', 'status')
 
 
 class TestScriptUpdateSerializer(serializers.ModelSerializer):

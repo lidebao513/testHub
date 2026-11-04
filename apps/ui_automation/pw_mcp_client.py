@@ -217,21 +217,27 @@ class PlaywrightMcpClient:
             self._session = None
 
     # ---- 高层：录制一个最小流程并产出脚本（spike 验证用）----
-    async def record_flow(self, url: str, demo_text: str = "spike demo task") -> str:
+    async def record_flow(
+        self, url: str, demo_text: str = "spike demo task"
+    ) -> dict[str, Any]:
         """对给定 URL 跑一个确定性最小流程（navigate -> snapshot -> 找到输入框则输入并回车），
         收集每一步的 codegen，组装为可运行 Playwright 脚本。
 
-        这是 spike 验证路径，不含 LLM 决策（LLM 决策 loop 在阶段二）。
+        spike 验证路径，不含 LLM 决策（LLM 决策 loop 是后续增强项）。
+        返回结构化结果：``{"content": <脚本源码>, "steps": [<动作名>...], "language": ...}``。
         """
         if not is_safe_target_url(url):
             raise ValueError(f"unsafe target url blocked by security guard: {url}")
 
         snippets: list[str] = []
+        steps: list[str] = []
         r = await self.call_tool("browser_navigate", {"url": url})
         snippets += extract_codegen(r)
+        steps.append("navigate")
 
         r = await self.call_tool("browser_snapshot", {})
         snippets += extract_codegen(r)
+        steps.append("snapshot")
 
         ref = _first_input_ref(r)
         if ref:
@@ -239,10 +245,42 @@ class PlaywrightMcpClient:
             # "Invalid arguments ... at target"。ref 来自 snapshot 的 [ref=eN]。
             r = await self.call_tool("browser_type", {"target": ref, "text": demo_text})
             snippets += extract_codegen(r)
+            steps.append("type")
             r = await self.call_tool("browser_press_key", {"key": "Enter"})
             snippets += extract_codegen(r)
+            steps.append("press_key")
 
-        return assemble_script(url, snippets, language=self.codegen_lang)
+        content = assemble_script(url, snippets, language=self.codegen_lang)
+        return {"content": content, "steps": steps, "language": self.codegen_lang}
+
+
+def generate_script(
+    target_url: str, instruction: str = "", language: str = "python"
+) -> dict[str, Any]:
+    """同步生成入口（阶段二后端调用点）。
+
+    拉起 MCP 子进程，对 ``target_url`` 跑确定性最小流程并产出脚本。
+    ``instruction`` 作为要填入输入框的演示文本（如为空则用占位文案）。
+    返回结构与 ``PlaywrightMcpClient.record_flow`` 一致。
+
+    测试可 patch 本函数，避免真实拉起 node/chromium。
+    """
+    if language not in ("python", "javascript"):
+        language = "python"
+    if not is_safe_target_url(target_url):
+        raise ValueError(f"unsafe target url blocked by security guard: {target_url}")
+
+    async def _run() -> dict[str, Any]:
+        client = PlaywrightMcpClient(codegen_lang=language)
+        try:
+            await client.connect()
+            return await client.record_flow(
+                target_url, demo_text=instruction or "AI 生成任务"
+            )
+        finally:
+            await client.close()
+
+    return asyncio.run(_run())
 
 
 def assemble_script(url: str, snippets: list[str], language: str = "python") -> str:

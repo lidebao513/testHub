@@ -182,6 +182,12 @@ class TestScript(models.Model):
         ('NO_CODE', '无代码'),
     ]
 
+    # 生成态：draft = AI 生成的草稿（需人工复核确认）；confirmed = 已确认可用
+    SCRIPT_STATUS_CHOICES = [
+        ('draft', '草稿'),
+        ('confirmed', '已确认'),
+    ]
+
     LANGUAGE_CHOICES = [
         ('python', 'Python'),
         ('javascript', 'JavaScript'),
@@ -199,6 +205,7 @@ class TestScript(models.Model):
     content = models.TextField(verbose_name='脚本内容')  # 可以是代码或JSON格式的低代码配置
     language = models.CharField(max_length=20, choices=LANGUAGE_CHOICES, verbose_name='脚本语言', default='python', blank=True)
     framework = models.CharField(max_length=20, choices=FRAMEWORK_CHOICES, verbose_name='执行框架', default='playwright', blank=True)
+    status = models.CharField(max_length=20, choices=SCRIPT_STATUS_CHOICES, verbose_name='生成状态', default='confirmed', blank=True)
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
