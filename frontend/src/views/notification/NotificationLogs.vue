@@ -59,8 +59,8 @@
     <!-- 通知列表 -->
     <div class="logs-table-container">
       <el-table
-          :data="logsData"
           v-loading="loading"
+          :data="logsData"
           :element-loading-text="$t('notification.logs.loading')"
           stripe
           style="width: 100%"
@@ -217,7 +217,7 @@
               <span>{{ selectedLog.sent_at ? formatDate(selectedLog.sent_at) : '-' }}</span>
             </el-form-item>
           </el-col>
-          <el-col :span="24" v-if="selectedLog.notification_target_display && selectedLog.notification_target_display.length > 0">
+          <el-col v-if="selectedLog.notification_target_display && selectedLog.notification_target_display.length > 0" :span="24">
             <el-form-item :label="$t('notification.logs.detailDialog.notificationTarget')">
               <div class="notification-targets">
                 <el-tag
@@ -237,7 +237,7 @@
             <el-form-item :label="$t('notification.logs.detailDialog.notificationContent')">
               <div class="notification-content">
                 <div v-if="parsedNotificationContent" class="notification-content-parsed">
-                  <div class="content-item" v-for="(item, index) in parsedNotificationContent" :key="index">
+                  <div v-for="(item, index) in parsedNotificationContent" :key="index" class="content-item">
                     <span class="content-label">{{ item.label }}:</span>
                     <span class="content-value">{{ item.value }}</span>
                   </div>
@@ -248,7 +248,7 @@
               </div>
             </el-form-item>
           </el-col>
-          <el-col :span="24" v-if="selectedLog.error_message">
+          <el-col v-if="selectedLog.error_message" :span="24">
             <el-form-item :label="$t('notification.logs.detailDialog.errorMessage')">
               <div class="error-message">
                 <el-alert

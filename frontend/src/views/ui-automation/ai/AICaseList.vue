@@ -10,8 +10,8 @@
           v-model="searchText"
           :placeholder="$t('uiAutomation.ai.caseList.searchPlaceholder')"
           clearable
-          @input="handleSearch"
           style="width: 300px;"
+          @input="handleSearch"
         >
           <template #prefix>
             <el-icon><Search /></el-icon>
@@ -19,7 +19,7 @@
         </el-input>
       </div>
 
-      <el-table :data="cases" v-loading="loading" style="width: 100%">
+      <el-table v-loading="loading" :data="cases" style="width: 100%">
         <el-table-column prop="name" :label="$t('uiAutomation.ai.caseList.caseName')" min-width="200" show-overflow-tooltip />
         <el-table-column prop="description" :label="$t('uiAutomation.common.description')" min-width="200" show-overflow-tooltip />
         <el-table-column prop="task_description" :label="$t('uiAutomation.ai.caseList.taskDescription')" min-width="300" show-overflow-tooltip />
@@ -57,7 +57,7 @@
 
     <!-- 编辑对话框 -->
     <el-dialog v-model="showEditDialog" :title="$t('uiAutomation.ai.caseList.editCase')" width="600px" :close-on-click-modal="false">
-      <el-form :model="editForm" :rules="formRules" ref="editFormRef" label-width="100px">
+      <el-form ref="editFormRef" :model="editForm" :rules="formRules" label-width="100px">
         <el-form-item :label="$t('uiAutomation.ai.caseList.caseName')" prop="name">
           <el-input v-model="editForm.name" :placeholder="$t('uiAutomation.ai.caseNamePlaceholder')" />
         </el-form-item>
@@ -76,7 +76,7 @@
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="showEditDialog = false">{{ $t('uiAutomation.common.cancel') }}</el-button>
-          <el-button type="primary" @click="confirmEdit" :loading="saving">{{ $t('uiAutomation.common.save') }}</el-button>
+          <el-button type="primary" :loading="saving" @click="confirmEdit">{{ $t('uiAutomation.common.save') }}</el-button>
         </span>
       </template>
     </el-dialog>

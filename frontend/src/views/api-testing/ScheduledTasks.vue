@@ -41,7 +41,7 @@
 
     <!-- 任务列表 -->
     <div class="task-list">
-      <el-table :data="tasks" v-loading="loading">
+      <el-table v-loading="loading" :data="tasks">
         <el-table-column prop="name" :label="$t('apiTesting.scheduledTask.taskName')" min-width="200" />
         <el-table-column prop="task_type" :label="$t('apiTesting.scheduledTask.taskType')" width="120">
           <template #default="scope">
@@ -86,7 +86,7 @@
         </el-table-column>
         <el-table-column :label="$t('apiTesting.common.operation')" width="200" fixed="right">
           <template #default="scope">
-            <el-button size="small" @click="runTaskNow(scope.row)" :loading="scope.row.running">
+            <el-button size="small" :loading="scope.row.running" @click="runTaskNow(scope.row)">
               {{ $t('apiTesting.scheduledTask.runNow') }}
             </el-button>
             <el-dropdown @command="(command) => handleTaskAction(command, scope.row)">
@@ -96,8 +96,8 @@
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item command="edit">{{ $t('apiTesting.common.edit') }}</el-dropdown-item>
-                  <el-dropdown-item command="pause" v-if="scope.row.status === 'ACTIVE'">{{ $t('apiTesting.scheduledTask.pause') }}</el-dropdown-item>
-                  <el-dropdown-item command="activate" v-if="scope.row.status === 'PAUSED'">{{ $t('apiTesting.scheduledTask.activate') }}</el-dropdown-item>
+                  <el-dropdown-item v-if="scope.row.status === 'ACTIVE'" command="pause">{{ $t('apiTesting.scheduledTask.pause') }}</el-dropdown-item>
+                  <el-dropdown-item v-if="scope.row.status === 'PAUSED'" command="activate">{{ $t('apiTesting.scheduledTask.activate') }}</el-dropdown-item>
                   <el-dropdown-item command="logs">{{ $t('apiTesting.scheduledTask.executionLogs') }}</el-dropdown-item>
                   <el-dropdown-item command="delete" divided>{{ $t('apiTesting.common.delete') }}</el-dropdown-item>
                 </el-dropdown-menu>
@@ -260,7 +260,7 @@
 
       <template #footer>
         <el-button @click="showCreateDialog = false">{{ $t('apiTesting.common.cancel') }}</el-button>
-        <el-button type="primary" @click="submitTaskForm" :loading="submitting">
+        <el-button type="primary" :loading="submitting" @click="submitTaskForm">
           {{ editingTask ? $t('apiTesting.common.update') : $t('apiTesting.common.create') }}
         </el-button>
       </template>
@@ -268,7 +268,7 @@
 
     <!-- 执行日志对话框 -->
     <el-dialog v-model="showLogsDialog" :title="$t('apiTesting.scheduledTask.executionLogs')" width="1000px">
-      <el-table :data="executionLogs" v-loading="logsLoading">
+      <el-table v-loading="logsLoading" :data="executionLogs">
         <el-table-column prop="start_time" :label="$t('apiTesting.scheduledTask.startTime')" width="180">
           <template #default="scope">
             <div class="time-cell">{{ formatDateTime(scope.row.start_time) }}</div>

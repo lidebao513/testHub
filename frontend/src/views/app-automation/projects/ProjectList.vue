@@ -31,7 +31,7 @@
       </div>
 
       <!-- 项目列表 -->
-      <el-table :data="projects" v-loading="loading" border stripe>
+      <el-table v-loading="loading" :data="projects" border stripe>
         <el-table-column prop="name" :label="$t('appAutomation.project.projectName')" min-width="160" show-overflow-tooltip />
         <el-table-column prop="description" :label="$t('appAutomation.common.description')" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">{{ row.description || '-' }}</template>

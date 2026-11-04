@@ -1,5 +1,5 @@
 <template>
-  <div class="perf-scenario-editor" v-loading="loading">
+  <div v-loading="loading" class="perf-scenario-editor">
     <!-- ---------- 顶栏 ---------- -->
     <div class="editor-header">
       <div class="header-left">
@@ -134,7 +134,7 @@
               :key="currentStep._uid"
               v-model="steps[activeIndex]"
               :upload-files="uploadFiles"
-              @update:modelValue="markDirty"
+              @update:model-value="markDirty"
               @upload-file="handleUploadFile"
             />
           </el-tab-pane>
@@ -151,7 +151,7 @@
               class="engine-model-alert"
               :title="t('performanceTesting.editor.engineModelMismatch', { engine: t('performanceTesting.engine.' + form.engine) })"
             />
-            <LoadProfileEditor v-model="form.load_config" :limits="limits" @update:modelValue="markDirty" />
+            <LoadProfileEditor v-model="form.load_config" :limits="limits" @update:model-value="markDirty" />
           </el-tab-pane>
 
           <!-- 变量与环境 -->
@@ -168,7 +168,7 @@
                   <div class="form-tip">{{ t('performanceTesting.editor.baseUrlTip') }}</div>
                 </el-form-item>
                 <el-form-item :label="t('performanceTesting.editor.globalHeaders')">
-                  <KeyValueEditor v-model="globalHeaders" @update:modelValue="onGlobalHeaders" />
+                  <KeyValueEditor v-model="globalHeaders" @update:model-value="onGlobalHeaders" />
                 </el-form-item>
                 <el-row :gutter="16">
                   <el-col :span="12">

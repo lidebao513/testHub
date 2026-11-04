@@ -34,10 +34,10 @@
         </el-row>
       </div>
       
-      <el-table :data="projects" v-loading="loading" style="width: 100%">
+      <el-table v-loading="loading" :data="projects" style="width: 100%">
         <el-table-column prop="name" :label="$t('project.projectName')" min-width="200">
           <template #default="{ row }">
-            <el-link @click="goToProject(row.id)" type="primary">
+            <el-link type="primary" @click="goToProject(row.id)">
               {{ row.name }}
             </el-link>
           </template>
@@ -75,8 +75,8 @@
     
     <!-- 创建/编辑项目对话框 -->
     <el-dialog
-      :title="isEdit ? $t('project.editProject') : $t('project.createProject')"
       v-model="showCreateDialog"
+      :title="isEdit ? $t('project.editProject') : $t('project.createProject')"
       :close-on-click-modal="false"
       :close-on-press-escape="false"
       :modal="true"
@@ -108,7 +108,7 @@
 
       <template #footer>
         <el-button @click="showCreateDialog = false">{{ $t('common.cancel') }}</el-button>
-        <el-button type="primary" @click="handleSubmit" :loading="submitting">
+        <el-button type="primary" :loading="submitting" @click="handleSubmit">
           {{ isEdit ? $t('project.update') : $t('project.create') }}
         </el-button>
       </template>

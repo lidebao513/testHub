@@ -25,24 +25,30 @@
               <div v-for="sub in field.fields" :key="field.key+'.'+sub.key" class="field-row">
                 <label class="field-label">{{ sub.label }}<span v-if="sub.required" class="required">*</span></label>
                 <div class="field-control">
-                  <el-input v-if="sub.type==='text'" :model-value="nestedRaw(field.key, sub.key)"
-                            @update:model-value="v => setNested(field.key, sub.key, v)"
-                            :placeholder="sub.placeholder||''" size="small" />
-                  <el-input v-else-if="sub.type==='password'" :model-value="nestedRaw(field.key, sub.key)"
-                            @update:model-value="v => setNested(field.key, sub.key, v)"
-                            show-password size="small" :placeholder="sub.placeholder||''" />
-                  <el-input-number v-else-if="sub.type==='number'" :model-value="nestedRaw(field.key, sub.key)"
-                                   @update:model-value="v => setNested(field.key, sub.key, v)"
-                                   :min="sub.min||0" :max="sub.max||99999" controls-position="right" size="small" style="width:140px" />
-                  <el-switch v-else-if="sub.type==='switch'" :model-value="nestedRaw(field.key, sub.key)"
+                  <el-input
+v-if="sub.type==='text'" :model-value="nestedRaw(field.key, sub.key)"
+                            :placeholder="sub.placeholder||''"
+                            size="small" @update:model-value="v => setNested(field.key, sub.key, v)" />
+                  <el-input
+v-else-if="sub.type==='password'" :model-value="nestedRaw(field.key, sub.key)"
+                            show-password
+                            size="small" :placeholder="sub.placeholder||''" @update:model-value="v => setNested(field.key, sub.key, v)" />
+                  <el-input-number
+v-else-if="sub.type==='number'" :model-value="nestedRaw(field.key, sub.key)"
+                                   :min="sub.min||0"
+                                   :max="sub.max||99999" controls-position="right" size="small" style="width:140px" @update:model-value="v => setNested(field.key, sub.key, v)" />
+                  <el-switch
+v-else-if="sub.type==='switch'" :model-value="nestedRaw(field.key, sub.key)"
                              @update:model-value="v => setNested(field.key, sub.key, v)" />
-                  <el-select v-else-if="sub.type==='select'" :model-value="nestedRaw(field.key, sub.key)"
-                             @update:model-value="v => setNested(field.key, sub.key, v)" size="small" style="width:140px">
+                  <el-select
+v-else-if="sub.type==='select'" :model-value="nestedRaw(field.key, sub.key)"
+                             size="small" style="width:140px" @update:model-value="v => setNested(field.key, sub.key, v)">
                     <el-option v-for="o in (sub.options||[])" :key="o.value||o" :label="o.label||o" :value="o.value||o" />
                   </el-select>
-                  <el-input v-else-if="sub.type==='textarea'" :model-value="nestedRaw(field.key, sub.key)"
-                            @update:model-value="v => setNested(field.key, sub.key, v)"
-                            type="textarea" :rows="3" size="small" />
+                  <el-input
+v-else-if="sub.type==='textarea'" :model-value="nestedRaw(field.key, sub.key)"
+                            type="textarea"
+                            :rows="3" size="small" @update:model-value="v => setNested(field.key, sub.key, v)" />
                   <div v-if="sub.hint" class="field-hint">{{ sub.hint }}</div>
                 </div>
               </div>
@@ -54,9 +60,9 @@
           <div v-else-if="field.type==='keyvalue'" class="kv-section">
             <label class="field-label">{{ field.label }}</label>
             <div v-for="(pair,idx) in kvPairs(field.key)" :key="field.key+'-kv-'+idx" class="kv-row">
-              <el-input :model-value="pair.key" @update:model-value="v => renameKv(field.key, idx, v)" placeholder="Key" size="small" style="width:160px" />
+              <el-input :model-value="pair.key" placeholder="Key" size="small" style="width:160px" @update:model-value="v => renameKv(field.key, idx, v)" />
               <span class="kv-eq">=</span>
-              <el-input :model-value="pair.value" @update:model-value="v => updateKv(field.key, idx, v)" placeholder="Value" size="small" style="width:240px" />
+              <el-input :model-value="pair.value" placeholder="Value" size="small" style="width:240px" @update:model-value="v => updateKv(field.key, idx, v)" />
               <el-button size="small" type="danger" link :icon="Remove" @click="removeKv(field.key, idx)" />
             </div>
             <el-button size="small" :icon="Plus" @click="addKv(field.key)">添加</el-button>
@@ -66,9 +72,9 @@
           <div v-else-if="field.type==='tags'" class="field-row">
             <label class="field-label">{{ field.label }}</label>
             <div class="field-control">
-              <el-input v-model="tagInput" :placeholder="field.placeholder||'输入后回车'" size="small" @keyup.enter="addTag(field.key)" style="width:200px" />
+              <el-input v-model="tagInput" :placeholder="field.placeholder||'输入后回车'" size="small" style="width:200px" @keyup.enter="addTag(field.key)" />
               <div v-if="getRaw(field.key) && getRaw(field.key).length" class="tag-list">
-                <el-tag v-for="(tag,ti) in getRaw(field.key)" :key="ti" closable @close="removeTag(field.key,ti)" size="small" style="margin:2px">{{ tag }}</el-tag>
+                <el-tag v-for="(tag,ti) in getRaw(field.key)" :key="ti" closable size="small" style="margin:2px" @close="removeTag(field.key,ti)">{{ tag }}</el-tag>
               </div>
             </div>
           </div>
@@ -77,14 +83,14 @@
           <div v-else class="field-row">
             <label class="field-label">{{ field.label }}<span v-if="field.required" class="required">*</span></label>
             <div class="field-control">
-              <el-input v-if="field.type==='text'" :model-value="getRaw(field.key)" @update:model-value="v => setRaw(field.key, v)" :placeholder="field.placeholder||''" size="small" />
-              <el-input v-else-if="field.type==='password'" :model-value="getRaw(field.key)" @update:model-value="v => setRaw(field.key, v)" show-password size="small" :placeholder="field.placeholder||''" />
-              <el-input-number v-else-if="field.type==='number'" :model-value="getRaw(field.key)" @update:model-value="v => setRaw(field.key, v)" :min="field.min||0" :max="field.max||99999" controls-position="right" size="small" style="width:140px" />
+              <el-input v-if="field.type==='text'" :model-value="getRaw(field.key)" :placeholder="field.placeholder||''" size="small" @update:model-value="v => setRaw(field.key, v)" />
+              <el-input v-else-if="field.type==='password'" :model-value="getRaw(field.key)" show-password size="small" :placeholder="field.placeholder||''" @update:model-value="v => setRaw(field.key, v)" />
+              <el-input-number v-else-if="field.type==='number'" :model-value="getRaw(field.key)" :min="field.min||0" :max="field.max||99999" controls-position="right" size="small" style="width:140px" @update:model-value="v => setRaw(field.key, v)" />
               <el-switch v-else-if="field.type==='switch'" :model-value="getRaw(field.key)" @update:model-value="v => setRaw(field.key, v)" />
-              <el-select v-else-if="field.type==='select'" :model-value="getRaw(field.key)" @update:model-value="v => setRaw(field.key, v)" size="small" style="width:160px">
+              <el-select v-else-if="field.type==='select'" :model-value="getRaw(field.key)" size="small" style="width:160px" @update:model-value="v => setRaw(field.key, v)">
                 <el-option v-for="o in (field.options||[])" :key="o.value||o" :label="o.label||o" :value="o.value||o" />
               </el-select>
-              <el-input v-else-if="field.type==='textarea'" :model-value="getRaw(field.key)" @update:model-value="v => setRaw(field.key, v)" type="textarea" :rows="field.rows||3" size="small" />
+              <el-input v-else-if="field.type==='textarea'" :model-value="getRaw(field.key)" type="textarea" :rows="field.rows||3" size="small" @update:model-value="v => setRaw(field.key, v)" />
               <div v-if="field.hint" class="field-hint">{{ field.hint }}</div>
             </div>
           </div>
@@ -145,17 +151,17 @@
           <span class="test-label">状态</span>
           <el-tag v-if="testResult.ok" type="success" size="large">&#x2714; 成功</el-tag>
           <el-tag v-else type="danger" size="large">&#x2716; 失败</el-tag>
-          <span class="test-latency" v-if="testResult.latency_ms != null">{{ testResult.latency_ms }} ms</span>
+          <span v-if="testResult.latency_ms != null" class="test-latency">{{ testResult.latency_ms }} ms</span>
         </div>
         <div class="test-detail-row">
           <span class="test-label">消息</span>
           <span class="test-value" :class="{ 'test-err': !testResult.ok }">{{ testResult.message }}</span>
         </div>
-        <div class="test-detail-row" v-if="testResult.http_status">
+        <div v-if="testResult.http_status" class="test-detail-row">
           <span class="test-label">HTTP 状态码</span>
           <span class="test-value">{{ testResult.http_status }}</span>
         </div>
-        <div class="test-detail-row" v-if="testResult.detail && Object.keys(testResult.detail).length">
+        <div v-if="testResult.detail && Object.keys(testResult.detail).length" class="test-detail-row">
           <span class="test-label">响应详情</span>
           <pre class="test-json">{{ JSON.stringify(testResult.detail, null, 2) }}</pre>
         </div>

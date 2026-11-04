@@ -29,11 +29,11 @@
         </el-row>
       </div>
 
-      <el-table :data="suites" v-loading="loading" style="width: 100%">
+      <el-table v-loading="loading" :data="suites" style="width: 100%">
         <el-table-column type="selection" width="55" />
         <el-table-column prop="name" :label="$t('uiAutomation.suite.suiteName')" min-width="200">
           <template #default="{ row }">
-            <el-link @click="editSuite(row.id)" type="primary">
+            <el-link type="primary" @click="editSuite(row.id)">
               {{ row.name }}
             </el-link>
           </template>
@@ -129,8 +129,8 @@
                 <el-table
                   :data="filteredAvailableTestCases"
                   height="300"
-                  @row-click="handleTestCaseRowClick"
                   :row-class-name="getTestCaseRowClassName"
+                  @row-click="handleTestCaseRowClick"
                 >
                   <el-table-column prop="name" :label="$t('uiAutomation.suite.caseName')" min-width="150" show-overflow-tooltip />
                   <el-table-column prop="priority" :label="$t('uiAutomation.suite.priority')" width="80">
@@ -180,16 +180,16 @@
                       <el-button
                         size="small"
                         text
-                        @click="moveUp($index)"
                         :disabled="$index === 0"
+                        @click="moveUp($index)"
                       >
                         <el-icon><Top /></el-icon>
                       </el-button>
                       <el-button
                         size="small"
                         text
-                        @click="moveDown($index)"
                         :disabled="$index === selectedTestCases.length - 1"
+                        @click="moveDown($index)"
                       >
                         <el-icon><Bottom /></el-icon>
                       </el-button>
@@ -212,7 +212,7 @@
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="cancelCreate">{{ $t('uiAutomation.common.cancel') }}</el-button>
-          <el-button type="primary" @click="handleCreate" :loading="saving">{{ $t('uiAutomation.common.confirm') }}</el-button>
+          <el-button type="primary" :loading="saving" @click="handleCreate">{{ $t('uiAutomation.common.confirm') }}</el-button>
         </span>
       </template>
     </el-dialog>
@@ -246,8 +246,8 @@
           <el-button @click="showRunDialog = false">{{ $t('uiAutomation.common.cancel') }}</el-button>
           <el-button
             type="primary"
-            @click="confirmRunSuite"
             :loading="running"
+            @click="confirmRunSuite"
           >
             {{ $t('uiAutomation.suite.startExecution') }}
           </el-button>

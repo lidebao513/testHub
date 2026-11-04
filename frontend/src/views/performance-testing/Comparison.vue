@@ -213,13 +213,16 @@
     </template>
 
     <!-- 保存为对照报告 -->
-    <el-dialog v-model="saveDialogVisible" :title="t('performanceTesting.comparison.saveAsReport')"
+    <el-dialog
+v-model="saveDialogVisible" :title="t('performanceTesting.comparison.saveAsReport')"
                width="480px" destroy-on-close>
-      <el-alert :title="t('performanceTesting.comparison.saveDialogTip')" type="info"
+      <el-alert
+:title="t('performanceTesting.comparison.saveDialogTip')" type="info"
                 :closable="false" show-icon class="save-tip" />
       <el-form label-width="90px">
         <el-form-item :label="t('performanceTesting.comparisonReport.reportTitle')">
-          <el-input v-model="saveForm.title"
+          <el-input
+v-model="saveForm.title"
                     :placeholder="t('performanceTesting.comparisonReport.titlePlaceholder')" />
         </el-form-item>
         <el-form-item :label="t('performanceTesting.comparisonReport.aiAnalysis')">

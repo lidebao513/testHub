@@ -4,12 +4,12 @@
       <h1 class="page-title">{{ isEdit ? $t('reviewForm.editTitle') : $t('reviewForm.createTitle') }}</h1>
       <div>
         <el-button @click="$router.back()">{{ $t('reviewForm.back') }}</el-button>
-        <el-button type="primary" @click="saveReview" :loading="saving">{{ $t('reviewForm.save') }}</el-button>
+        <el-button type="primary" :loading="saving" @click="saveReview">{{ $t('reviewForm.save') }}</el-button>
       </div>
     </div>
 
     <div class="form-container">
-      <el-form :model="form" :rules="rules" ref="formRef" label-width="120px">
+      <el-form ref="formRef" :model="form" :rules="rules" label-width="120px">
         <el-row :gutter="24">
           <el-col :span="12">
             <el-form-item :label="$t('reviewForm.reviewTitle')" prop="title">
@@ -133,8 +133,8 @@
         <el-input
           v-model="testcaseSearchInDialog"
           :placeholder="$t('reviewForm.searchTestcases')"
-          @input="onTestcaseSearch"
           clearable
+          @input="onTestcaseSearch"
         >
           <template #prefix>
             <el-icon><Search /></el-icon>
@@ -143,13 +143,13 @@
 
         <el-table
           ref="testcaseTableRef"
+          v-loading="testcaseLoading"
           :data="testcases"
           :row-key="row => row.id"
-          v-loading="testcaseLoading"
-          @select="onTestcaseSelect"
-          @select-all="onTestcaseSelectAll"
           max-height="400"
           class="testcase-table"
+          @select="onTestcaseSelect"
+          @select-all="onTestcaseSelectAll"
         >
           <el-table-column type="selection" width="55" reserve-selection />
           <el-table-column prop="title" :label="$t('reviewForm.testcaseTitle')" min-width="200" show-overflow-tooltip />

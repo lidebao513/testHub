@@ -45,8 +45,8 @@
 
           <!-- 通知列表 -->
           <el-table
-            :data="notifications"
             v-loading="loading"
+            :data="notifications"
             style="width: 100%"
           >
             <el-table-column prop="task_name" :label="$t('apiTesting.notification.taskName')" min-width="120" />
@@ -255,7 +255,7 @@
           <el-descriptions-item :label="$t('apiTesting.notification.content')">
             <pre class="content-pre">{{ currentNotification.content }}</pre>
           </el-descriptions-item>
-          <el-descriptions-item :label="$t('apiTesting.scheduledTask.errorMessage')" v-if="currentNotification.error_message">
+          <el-descriptions-item v-if="currentNotification.error_message" :label="$t('apiTesting.scheduledTask.errorMessage')">
             {{ currentNotification.error_message }}
           </el-descriptions-item>
         </el-descriptions>

@@ -229,7 +229,7 @@
                             </el-button>
                         </div>
                     </template>
-                    <div class="scene-hint" v-if="scenarioSteps.length === 0">
+                    <div v-if="scenarioSteps.length === 0" class="scene-hint">
                         {{ $t('appAutomation.sceneBuilder.steps.dragHint') }}
                     </div>
                     <draggable
@@ -416,8 +416,8 @@
                                         <el-button
                                             link
                                             type="danger"
-                                            @click="clearLinkedElement(group.key)"
                                             style="margin-left: 10px;"
+                                            @click="clearLinkedElement(group.key)"
                                         >
                                             {{ $t('appAutomation.sceneBuilder.config.clear') }}
                                         </el-button>
@@ -495,8 +495,8 @@
         />
 
         <el-dialog
-            :title="$t('appAutomation.sceneBuilder.dialog.importPackage')"
             v-model="packageDialogVisible"
+            :title="$t('appAutomation.sceneBuilder.dialog.importPackage')"
             width="520px"
             :close-on-click-modal="false"
             @close="resetPackageDialog"
@@ -521,7 +521,7 @@
                 </el-form-item>
                 <el-divider></el-divider>
                 <div class="package-title">{{ $t('appAutomation.sceneBuilder.dialog.importedPackages') }}</div>
-                <div class="package-list" v-loading="packageLoading">
+                <div v-loading="packageLoading" class="package-list">
                     <div v-for="item in packageList" :key="item.id" class="package-item">
                         <div class="package-name">{{ item.name }}</div>
                         <div class="package-meta">
@@ -540,8 +540,8 @@
         </el-dialog>
 
         <el-dialog
-            :title="$t('appAutomation.sceneBuilder.dialog.exportPackage')"
             v-model="exportDialogVisible"
+            :title="$t('appAutomation.sceneBuilder.dialog.exportPackage')"
             width="420px"
             :close-on-click-modal="false"
             @close="resetExportDialog"
@@ -561,8 +561,8 @@
         </el-dialog>
 
         <el-dialog
-            :title="customDialogTitle"
             v-model="customDialogVisible"
+            :title="customDialogTitle"
             width="50vw"
             :close-on-click-modal="false"
             @close="resetCustomDialog"
@@ -687,8 +687,8 @@
                                                 <el-button
                                                     link
                                                     type="danger"
-                                                    @click="clearLinkedElement(group.key)"
                                                     style="margin-left: 10px;"
+                                                    @click="clearLinkedElement(group.key)"
                                                 >
                                                     {{ $t('appAutomation.sceneBuilder.config.clear') }}
                                                 </el-button>
@@ -796,9 +796,9 @@
 
                 <!-- 元素列表 -->
                 <el-table
+                    v-loading="elementSelectorLoading"
                     :data="selectorElements"
                     border
-                    v-loading="elementSelectorLoading"
                     max-height="450px"
                     highlight-current-row
                     @row-click="handleElementRowClick"
@@ -885,9 +885,9 @@
                     :total="elementTotal"
                     :page-sizes="[10, 20, 50]"
                     layout="total, sizes, prev, pager, next"
+                    style="margin-top: 15px; justify-content: flex-end"
                     @current-change="loadElementsForSelector"
                     @size-change="loadElementsForSelector"
-                    style="margin-top: 15px; justify-content: flex-end"
                 />
             </div>
 

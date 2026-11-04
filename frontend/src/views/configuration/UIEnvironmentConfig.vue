@@ -7,7 +7,7 @@
 
     <div class="main-content">
       <div class="check-section">
-        <el-button type="primary" size="large" @click="checkEnvironment" :loading="checking">
+        <el-button type="primary" size="large" :loading="checking" @click="checkEnvironment">
           <el-icon><Refresh /></el-icon>
           {{ $t('configuration.uiEnv.checkEnvironment') }}
         </el-button>

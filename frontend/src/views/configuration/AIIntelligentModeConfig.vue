@@ -33,12 +33,12 @@
               <div class="config-actions">
                 <el-switch
                   v-model="config.is_active"
-                  @change="toggleActive(config)"
                   :active-text="$t('configuration.common.enabled')"
                   :inactive-text="$t('configuration.common.disabled')"
                   :loading="config.toggling"
+                  @change="toggleActive(config)"
                 />
-                <button class="test-btn" @click="testConnection(config)" :disabled="config.testing">
+                <button class="test-btn" :disabled="config.testing" @click="testConnection(config)">
                   {{ $t('configuration.aiMode.testConnection') }}
                 </button>
                 <button class="edit-btn" @click="editConfig(config)">✏️</button>
@@ -75,7 +75,7 @@
       <div class="modal-content" @click.stop>
         <div class="modal-header">
           <h3>{{ isEditing ? $t('configuration.aiMode.editConfig') : $t('configuration.aiMode.addConfigTitle') }}</h3>
-          <button class="close-btn" @click.stop="closeModals" type="button">×</button>
+          <button class="close-btn" type="button" @click.stop="closeModals">×</button>
         </div>
         <div class="modal-body">
           <form @submit.prevent="saveConfig">

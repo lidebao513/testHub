@@ -16,7 +16,7 @@
 
     <div class="card-container">
       <div class="table-container">
-        <el-table :data="records" v-loading="loading" style="width: 100%">
+        <el-table v-loading="loading" :data="records" style="width: 100%">
           <el-table-column prop="import_no" :label="$t('testcase.importNo')" min-width="220" />
           <el-table-column prop="project_name" :label="$t('testcase.importProject')" min-width="160" />
           <el-table-column prop="status" :label="$t('testcase.importStatus')" width="120">
@@ -80,7 +80,7 @@
       :title="currentRecord?.import_no || $t('testcase.importRecordTitle')"
       width="720px"
     >
-      <el-descriptions :column="2" border v-if="currentRecord">
+      <el-descriptions v-if="currentRecord" :column="2" border>
         <el-descriptions-item :label="$t('testcase.importProject')">{{ currentRecord.project_name }}</el-descriptions-item>
         <el-descriptions-item :label="$t('testcase.importStatus')">{{ getStatusText(currentRecord.status) }}</el-descriptions-item>
         <el-descriptions-item :label="$t('testcase.importProgress')">{{ currentRecord.progress }}%</el-descriptions-item>

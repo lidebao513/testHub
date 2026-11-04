@@ -10,11 +10,13 @@
 
       <el-form :model="form" label-position="top" class="single-form">
         <el-form-item :label="$t('llmJudge.common.question')">
-          <el-input v-model="form.question" type="textarea" :rows="2"
+          <el-input
+v-model="form.question" type="textarea" :rows="2"
             :placeholder="$t('llmJudge.single.inputQuestion')" />
         </el-form-item>
         <el-form-item :label="$t('llmJudge.common.answer')">
-          <el-input v-model="form.answer" type="textarea" :rows="5"
+          <el-input
+v-model="form.answer" type="textarea" :rows="5"
             :placeholder="$t('llmJudge.single.inputAnswer')" />
         </el-form-item>
         <el-form-item>
@@ -24,7 +26,8 @@
               <el-icon class="tip-icon"><InfoFilled /></el-icon>
             </el-tooltip>
           </div>
-          <el-input v-model="form.groundTruth" type="textarea" :rows="3" :disabled="form.autoGt"
+          <el-input
+v-model="form.groundTruth" type="textarea" :rows="3" :disabled="form.autoGt"
             :placeholder="$t('llmJudge.single.inputGroundTruth')" />
         </el-form-item>
         <el-form-item :label="$t('llmJudge.common.rubric')">
@@ -33,7 +36,8 @@
           </el-select>
         </el-form-item>
         <div class="form-actions">
-          <el-button type="primary" :loading="loading"
+          <el-button
+type="primary" :loading="loading"
             :disabled="!form.question.trim() || !form.answer.trim()" @click="handleSubmit">
             {{ $t('llmJudge.single.startScore') }}
           </el-button>
@@ -57,14 +61,14 @@
 
       <!-- 元信息 -->
       <div class="meta-line">
-        <span class="meta-item" v-if="result.request_id"><b>请求ID：</b><code>{{ result.request_id }}</code></span>
+        <span v-if="result.request_id" class="meta-item"><b>请求ID：</b><code>{{ result.request_id }}</code></span>
         <span class="meta-item"><b>自动匹配GT：</b>
           <el-tag size="small" :type="result.auto_gt ? 'success' : 'info'">{{ result.auto_gt ? '是' : '否' }}</el-tag>
         </span>
-        <span class="meta-item" v-if="result.ground_truth"><b>GT：</b>
+        <span v-if="result.ground_truth" class="meta-item"><b>GT：</b>
           <span class="gt-preview">{{ formatGt(result.ground_truth) }}</span>
         </span>
-        <span class="meta-item" v-if="result.created_at"><b>时间：</b>{{ fmtTime(result.created_at) }}</span>
+        <span v-if="result.created_at" class="meta-item"><b>时间：</b>{{ fmtTime(result.created_at) }}</span>
       </div>
 
       <!-- 核心分数 -->
@@ -129,7 +133,8 @@
               <span class="dim-name">{{ d.name || d.id }}</span>
               <span :class="['dim-score', scoreClass(d.score)]">{{ d.score }}</span>
             </div>
-            <el-progress :percentage="(d.score / 5) * 100" :show-text="false" :stroke-width="8"
+            <el-progress
+:percentage="(d.score / 5) * 100" :show-text="false" :stroke-width="8"
               :color="dimColor(d.score)" />
             <div v-if="d.reasoning" class="dim-reasoning">{{ d.reasoning }}</div>
           </div>

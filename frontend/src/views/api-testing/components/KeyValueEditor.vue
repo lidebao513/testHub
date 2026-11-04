@@ -36,9 +36,9 @@
               <el-button
                 size="small"
                 :icon="MagicStick"
-                @click="openDataFactorySelector(index)"
                 :title="$t('apiTesting.component.keyValueEditor.referDataFactory')"
                 class="data-factory-btn"
+                @click="openDataFactorySelector(index)"
               />
             </template>
           </el-input>
@@ -50,8 +50,8 @@
           >
             <el-button size="small">{{ $t('apiTesting.component.keyValueEditor.selectFile') }}</el-button>
           </el-upload>
-          <el-tooltip :content="$t('apiTesting.component.keyValueEditor.insertDynamicVariable')" placement="top" v-if="!showFile || row.type !== 'file'">
-            <el-button size="small" style="margin-left: 5px" @click="openVariableHelper(index)" class="variable-helper-btn">
+          <el-tooltip v-if="!showFile || row.type !== 'file'" :content="$t('apiTesting.component.keyValueEditor.insertDynamicVariable')" placement="top">
+            <el-button size="small" style="margin-left: 5px" class="variable-helper-btn" @click="openVariableHelper(index)">
               <el-icon><MagicStick /></el-icon>
             </el-button>
           </el-tooltip>
@@ -83,8 +83,8 @@
             size="small"
             type="danger"
             :icon="Delete"
-            @click="removeRow(index)"
             :disabled="rows.length <= 1"
+            @click="removeRow(index)"
           />
         </div>
       </div>
@@ -103,10 +103,10 @@
     />
 
     <el-dialog
+      v-model="showVariableHelper"
       :close-on-press-escape="false"
       :modal="true"
       :destroy-on-close="false"
-      v-model="showVariableHelper"
       :title="$t('apiTesting.component.keyValueEditor.variableHelper')"
       :close-on-click-modal="false"
       width="900px"
@@ -118,7 +118,7 @@
           :label="category.label"
         >
           <div style="height: 450px; overflow-y: auto; padding: 10px;">
-            <el-table :data="category.variables" style="width: 100%" @row-click="insertVariable" highlight-current-row>
+            <el-table :data="category.variables" style="width: 100%" highlight-current-row @row-click="insertVariable">
               <el-table-column prop="name" :label="$t('apiTesting.component.keyValueEditor.functionName')" width="150" show-overflow-tooltip>
                 <template #default="{ row }">
                   <el-tag size="small">{{ row.name }}</el-tag>

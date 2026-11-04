@@ -4,7 +4,7 @@
       <!-- 左侧集合树 -->
       <div class="sidebar">
         <div class="sidebar-header">
-          <el-select v-model="selectedProject" :placeholder="$t('apiTesting.common.selectProject')" @change="onProjectChange" style="width: 100%;">
+          <el-select v-model="selectedProject" :placeholder="$t('apiTesting.common.selectProject')" style="width: 100%;" @change="onProjectChange">
             <el-option
               v-for="project in projects"
               :key="project.id"
@@ -18,24 +18,24 @@
               :placeholder="$t('apiTesting.interface.searchInterface')"
               size="small"
               clearable
+              style="flex: 1; min-width: 0;"
               @input="onSearchDebounced"
               @keyup.enter="onSearch(searchKeyword)"
-              style="flex: 1; min-width: 0;"
             >
               <template #prefix>
                 <el-icon><Search /></el-icon>
               </template>
             </el-input>
-            <el-button type="primary" size="small" @click="openCreateCollectionDialog" :title="$t('apiTesting.interface.createCollection')">
+            <el-button type="primary" size="small" :title="$t('apiTesting.interface.createCollection')" @click="openCreateCollectionDialog">
               <el-icon><Folder /></el-icon>
             </el-button>
-            <el-button type="success" size="small" @click="createEmptyRequest" :title="$t('apiTesting.interface.addInterface')">
+            <el-button type="success" size="small" :title="$t('apiTesting.interface.addInterface')" @click="createEmptyRequest">
               <el-icon><Plus /></el-icon>
             </el-button>
           </div>
         </div>
 
-        <div class="collection-tree" v-show="!searchKeyword || searchKeyword.trim() === ''">
+        <div v-show="!searchKeyword || searchKeyword.trim() === ''" class="collection-tree">
           <el-tree
             ref="treeRef"
             :data="collections"
@@ -64,12 +64,12 @@
                 <!-- 集合名称编辑 -->
                 <div v-if="data.type === 'collection' && editingNodeId === data.id" class="node-edit">
                   <el-input
+                    ref="editInputRef"
                     v-model="editingNodeName"
                     size="small"
                     @blur="saveCollectionName"
                     @keyup.enter="saveCollectionName"
                     @keyup.esc="cancelEdit"
-                    ref="editInputRef"
                   />
                 </div>
 
@@ -174,8 +174,8 @@
                 v-if="selectedRequest && selectedRequest.request_type === 'WEBSOCKET'"
                 :type="websocketConnectionStatus === 'disconnected' ? 'primary' : 'info'"
                 :loading="websocketConnectionStatus === 'connecting'"
-                @click="toggleWebSocketConnection"
                 class="send-button"
+                @click="toggleWebSocketConnection"
               >
                 <span v-if="websocketConnectionStatus === 'disconnected'">{{ $t('apiTesting.interface.connect') }}</span>
                 <span v-else-if="websocketConnectionStatus === 'connecting'">{{ $t('apiTesting.interface.connecting') }}</span>
@@ -186,9 +186,9 @@
               <el-button
                 v-if="!selectedRequest || !selectedRequest.request_type || selectedRequest.request_type !== 'WEBSOCKET'"
                 type="primary"
-                @click="sendRequest"
                 :loading="sending"
                 class="send-button"
+                @click="sendRequest"
               >
                 {{ $t('apiTesting.interface.send') }}
               </el-button>
@@ -202,7 +202,7 @@
                 class="name-input"
               />
               <div class="action-buttons">
-                <el-button size="small" @click="saveRequest" :loading="saving" ref="saveButtonRef">
+                <el-button ref="saveButtonRef" size="small" :loading="saving" @click="saveRequest">
                   {{ $t('apiTesting.common.save') }}
                 </el-button>
                 <el-dropdown split-button type="default" size="small" @click="importCurl">
@@ -245,11 +245,11 @@
                 v-model="selectedRequest.headers"
                 :placeholder-key="$t('apiTesting.interface.headerName')"
                 :placeholder-value="$t('apiTesting.interface.headerValue')"
-                @update:modelValue="onHeadersUpdate"
+                @update:model-value="onHeadersUpdate"
               />
             </el-tab-pane>
 
-            <el-tab-pane label="Body" name="body" v-if="hasBody">
+            <el-tab-pane v-if="hasBody" label="Body" name="body">
               <div class="body-container">
                 <el-radio-group v-model="bodyType" @change="onBodyTypeChange">
                   <el-radio value="none">none</el-radio>
@@ -288,18 +288,18 @@
                     <el-button
                       size="small"
                       :icon="MagicStick"
-                      @click="openDataFactorySelectorForBody('rawBody')"
                       :title="$t('apiTesting.interface.referDataFactory')"
                       class="data-factory-btn"
+                      @click="openDataFactorySelectorForBody('rawBody')"
                     >
                       {{ $t('apiTesting.interface.referDataFactory') }}
                     </el-button>
                     <el-button
                       size="small"
                       :icon="MagicStick"
-                      @click="openVariableHelper('rawBody')"
                       :title="$t('apiTesting.interface.variableHelper')"
                       class="variable-helper-btn"
+                      @click="openVariableHelper('rawBody')"
                     >
                       {{ $t('apiTesting.interface.variableHelper') }}
                     </el-button>
@@ -330,18 +330,18 @@
                     <el-button
                       size="small"
                       :icon="MagicStick"
-                      @click="openDataFactorySelectorForScript('pre_request_script')"
                       :title="$t('apiTesting.interface.referDataFactory')"
                       class="script-factory-btn"
+                      @click="openDataFactorySelectorForScript('pre_request_script')"
                     >
                       {{ $t('apiTesting.interface.referDataFactory') }}
                     </el-button>
                     <el-button
                       size="small"
                       :icon="MagicStick"
-                      @click="openVariableHelper('pre_request_script')"
                       :title="$t('apiTesting.interface.variableHelper')"
                       class="script-variable-btn"
+                      @click="openVariableHelper('pre_request_script')"
                     >
                       {{ $t('apiTesting.interface.variableHelper') }}
                     </el-button>
@@ -361,18 +361,18 @@
                     <el-button
                       size="small"
                       :icon="MagicStick"
-                      @click="openDataFactorySelectorForScript('post_request_script')"
                       :title="$t('apiTesting.interface.referDataFactory')"
                       class="script-factory-btn"
+                      @click="openDataFactorySelectorForScript('post_request_script')"
                     >
                       {{ $t('apiTesting.interface.referDataFactory') }}
                     </el-button>
                     <el-button
                       size="small"
                       :icon="MagicStick"
-                      @click="openVariableHelper('post_request_script')"
                       :title="$t('apiTesting.interface.variableHelper')"
                       class="script-variable-btn"
+                      @click="openVariableHelper('post_request_script')"
                     >
                       {{ $t('apiTesting.interface.variableHelper') }}
                     </el-button>
@@ -405,8 +405,8 @@
                         <el-button
                           size="small"
                           type="danger"
-                          @click="removeAssertion(index)"
                           circle
+                          @click="removeAssertion(index)"
                         >
                           <el-icon><Delete /></el-icon>
                         </el-button>
@@ -427,7 +427,7 @@
                           <el-option :label="$t('apiTesting.interface.assertionTypes.equals')" value="equals" />
                         </el-select>
 
-                        <div class="assertion-params" v-if="assertion.type">
+                        <div v-if="assertion.type" class="assertion-params">
                           <!-- 状态码断言 -->
                           <div v-if="assertion.type === 'status_code'">
                             <el-input-number
@@ -462,14 +462,14 @@
                                   <el-button
                                     size="small"
                                     :icon="MagicStick"
-                                    @click="openDataFactorySelector(assertion, 'expected', index)"
                                     :title="$t('apiTesting.interface.referDataFactory')"
                                     class="data-factory-btn"
+                                    @click="openDataFactorySelector(assertion, 'expected', index)"
                                   />
                                 </template>
                               </el-input>
                               <el-tooltip :content="$t('apiTesting.interface.insertDynamicVariable')" placement="top">
-                                <el-button size="small" style="margin-left: 5px" @click="openVariableHelperForAssertion(assertion, 'expected', index)" class="variable-helper-btn">
+                                <el-button size="small" style="margin-left: 5px" class="variable-helper-btn" @click="openVariableHelperForAssertion(assertion, 'expected', index)">
                                   <el-icon><MagicStick /></el-icon>
                                 </el-button>
                               </el-tooltip>
@@ -495,14 +495,14 @@
                                   <el-button
                                     size="small"
                                     :icon="MagicStick"
-                                    @click="openDataFactorySelector(assertion, 'expected', index)"
                                     :title="$t('apiTesting.interface.referDataFactory')"
                                     class="data-factory-btn"
+                                    @click="openDataFactorySelector(assertion, 'expected', index)"
                                   />
                                 </template>
                               </el-input>
                               <el-tooltip :content="$t('apiTesting.interface.insertDynamicVariable')" placement="top">
-                                <el-button size="small" style="margin-left: 5px" @click="openVariableHelperForAssertion(assertion, 'expected', index)" class="variable-helper-btn">
+                                <el-button size="small" style="margin-left: 5px" class="variable-helper-btn" @click="openVariableHelperForAssertion(assertion, 'expected', index)">
                                   <el-icon><MagicStick /></el-icon>
                                 </el-button>
                               </el-tooltip>
@@ -528,14 +528,14 @@
                                   <el-button
                                     size="small"
                                     :icon="MagicStick"
-                                    @click="openDataFactorySelector(assertion, 'expected_value', index)"
                                     :title="$t('apiTesting.interface.referDataFactory')"
                                     class="data-factory-btn"
+                                    @click="openDataFactorySelector(assertion, 'expected_value', index)"
                                   />
                                 </template>
                               </el-input>
                               <el-tooltip :content="$t('apiTesting.interface.insertDynamicVariable')" placement="top">
-                                <el-button size="small" style="margin-left: 5px" @click="openVariableHelperForAssertion(assertion, 'expected_value', index)" class="variable-helper-btn">
+                                <el-button size="small" style="margin-left: 5px" class="variable-helper-btn" @click="openVariableHelperForAssertion(assertion, 'expected_value', index)">
                                   <el-icon><MagicStick /></el-icon>
                                 </el-button>
                               </el-tooltip>
@@ -555,14 +555,14 @@
                                   <el-button
                                     size="small"
                                     :icon="MagicStick"
-                                    @click="openDataFactorySelector(assertion, 'expected', index)"
                                     :title="$t('apiTesting.interface.referDataFactory')"
                                     class="data-factory-btn"
+                                    @click="openDataFactorySelector(assertion, 'expected', index)"
                                   />
                                 </template>
                               </el-input>
                               <el-tooltip :content="$t('apiTesting.interface.insertDynamicVariable')" placement="top">
-                                <el-button size="small" style="margin-left: 5px" @click="openVariableHelperForAssertion(assertion, 'expected', index)" class="variable-helper-btn">
+                                <el-button size="small" style="margin-left: 5px" class="variable-helper-btn" @click="openVariableHelperForAssertion(assertion, 'expected', index)">
                                   <el-icon><MagicStick /></el-icon>
                                 </el-button>
                               </el-tooltip>
@@ -638,7 +638,7 @@
                   </div>
 
                   <!-- WebSocket消息历史记录 -->
-                  <div class="websocket-response-section" v-if="websocketMessages.length > 0">
+                  <div v-if="websocketMessages.length > 0" class="websocket-response-section">
                     <h3>{{ $t('apiTesting.interface.messageHistory') }}</h3>
                     <div class="websocket-messages">
                       <div
@@ -728,7 +728,7 @@
                     </div>
                   </el-tab-pane>
 
-                  <el-tab-pane :label="$t('apiTesting.interface.assertionResults')" name="assertions" v-if="response.assertions_results && response.assertions_results.length > 0">
+                  <el-tab-pane v-if="response.assertions_results && response.assertions_results.length > 0" :label="$t('apiTesting.interface.assertionResults')" name="assertions">
                     <div class="assertions-results">
                       <div
                         v-for="(result, index) in response.assertions_results"
@@ -751,7 +751,7 @@
                             <span class="label">{{ $t('apiTesting.interface.actual') }}</span>
                             <span class="value">{{ formatAssertionValue(result.actual) }}</span>
                           </div>
-                          <div class="result-row" v-if="result.error">
+                          <div v-if="result.error" class="result-row">
                             <span class="label">{{ $t('apiTesting.interface.error') }}</span>
                             <span class="value error">{{ result.error }}</span>
                           </div>
@@ -860,10 +860,10 @@
 
     <!-- 变量助手对话框 -->
     <el-dialog
+      v-model="showVariableHelper"
       :close-on-press-escape="false"
       :modal="true"
       :destroy-on-close="false"
-      v-model="showVariableHelper"
       :title="$t('apiTesting.interface.variableHelper') + ' (点击插入)'"
       :close-on-click-modal="false"
       width="900px"
@@ -879,7 +879,7 @@
           :label="category.label"
         >
           <div style="height: 450px; overflow-y: auto; padding: 10px;">
-            <el-table :data="category.variables" style="width: 100%" @row-click="insertVariable" highlight-current-row>
+            <el-table :data="category.variables" style="width: 100%" highlight-current-row @row-click="insertVariable">
               <el-table-column prop="name" :label="$t('apiTesting.interface.functionName')" width="150">
                 <template #default="{ row }">
                   <el-tag size="small">{{ row.name }}</el-tag>

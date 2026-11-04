@@ -16,7 +16,7 @@
       <el-button :icon="Search" @click="load">{{ t('performanceTesting.common.search') }}</el-button>
     </div>
 
-    <el-table :data="list" v-loading="loading" size="small" border>
+    <el-table v-loading="loading" :data="list" size="small" border>
       <el-table-column :label="t('performanceTesting.scenario.name')" prop="name" min-width="160" show-overflow-tooltip />
       <el-table-column :label="t('performanceTesting.project.title')" prop="project_name" width="130" show-overflow-tooltip />
       <el-table-column :label="t('performanceTesting.scenario.loadSummary')" width="120">

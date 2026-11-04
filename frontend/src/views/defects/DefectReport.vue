@@ -3,7 +3,7 @@
     <div class="page-header">
       <h1 class="page-title">缺陷报表</h1>
       <div class="header-actions">
-        <el-button @click="loadReport" :loading="loading">
+        <el-button :loading="loading" @click="loadReport">
           <el-icon><Refresh /></el-icon>
           刷新
         </el-button>
@@ -15,7 +15,7 @@
     </div>
 
     <el-row :gutter="16" class="metric-grid">
-      <el-col :xs="24" :md="8" v-for="item in reportMetrics" :key="item.label">
+      <el-col v-for="item in reportMetrics" :key="item.label" :xs="24" :md="8">
         <el-card shadow="hover" class="report-metric" :class="item.className">
           <div class="metric-label">{{ item.label }}</div>
           <div class="metric-value">{{ item.value }}</div>

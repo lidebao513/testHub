@@ -7,7 +7,7 @@
         <span>{{ t('monitor.dashboard.title') }}</span>
       </div>
       <div class="dash-actions">
-        <span class="last-updated" v-if="lastUpdated">{{ t('monitor.dashboard.lastUpdated') }}: {{ lastUpdated }}</span>
+        <span v-if="lastUpdated" class="last-updated">{{ t('monitor.dashboard.lastUpdated') }}: {{ lastUpdated }}</span>
         <el-tag :type="schedTagType" effect="light" size="small" class="sched-badge">
           <span class="sched-dot" :class="'sched-dot-' + scheduler"></span>
           {{ t('monitor.targets.scheduler.label') }} · {{ t('monitor.targets.scheduler.' + scheduler) }}
@@ -21,7 +21,7 @@
 
     <!-- 概览卡片 -->
     <el-row :gutter="16" class="stat-row">
-      <el-col :span="4" v-for="card in statCards" :key="card.key">
+      <el-col v-for="card in statCards" :key="card.key" :span="4">
         <el-card shadow="hover" class="stat-card" :class="card.key">
           <div class="stat-inner">
             <div class="stat-icon">
@@ -62,7 +62,7 @@
       <el-col :span="14">
         <el-card shadow="hover" class="block-card">
           <template #header>{{ t('monitor.dashboard.recentFailuresTitle') }}</template>
-          <el-table :data="recentFailures" size="small" v-if="recentFailures.length">
+          <el-table v-if="recentFailures.length" :data="recentFailures" size="small">
             <el-table-column :label="t('monitor.dashboard.col.name')" prop="name" min-width="120" />
             <el-table-column :label="t('monitor.dashboard.col.type')" width="110">
               <template #default="{ row }">{{ typeLabel(row.type) }}</template>
@@ -82,7 +82,7 @@
     <!-- 目标状态表 -->
     <el-card shadow="hover" class="block-card">
       <template #header>{{ t('monitor.dashboard.targetsTitle') }}</template>
-      <el-table :data="targets" size="small" v-loading="loadingTargets">
+      <el-table v-loading="loadingTargets" :data="targets" size="small">
         <el-table-column :label="t('monitor.dashboard.col.name')" prop="name" min-width="160" />
         <el-table-column :label="t('monitor.dashboard.col.type')" width="130">
           <template #default="{ row }">{{ typeLabel(row.type) }}</template>

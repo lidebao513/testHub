@@ -54,7 +54,7 @@
               <span class="class-name">{{ pageObject.class_name }}</span>
               <el-tag size="small" type="info">{{ pageObject.elements_count || 0 }} {{ $t('uiAutomation.pageObject.elementsCount') }}</el-tag>
             </div>
-            <div class="item-description" v-if="pageObject.description">
+            <div v-if="pageObject.description" class="item-description">
               {{ pageObject.description }}
             </div>
           </div>
@@ -189,7 +189,7 @@
 
             <!-- 属性配置 -->
             <el-tab-pane :label="$t('uiAutomation.pageObject.propertiesConfig')" name="properties">
-              <div class="properties-panel" v-if="selectedCanvasElement">
+              <div v-if="selectedCanvasElement" class="properties-panel">
                 <h4>{{ $t('uiAutomation.pageObject.elementPropertiesConfig') }}</h4>
                 <el-form :model="selectedCanvasElement" label-width="100px">
                   <el-form-item :label="$t('uiAutomation.pageObject.methodName')">

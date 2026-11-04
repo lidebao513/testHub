@@ -12,8 +12,8 @@
           <h2>{{ $t('configuration.aiModel.configList') }}</h2>
           <button
             class="add-config-btn"
-            @click.stop="openAddModal"
-            type="button">
+            type="button"
+            @click.stop="openAddModal">
             {{ $t('configuration.aiModel.addConfig') }}
           </button>
         </div>
@@ -39,15 +39,15 @@
                 <div class="config-actions">
                   <el-switch
                     v-model="config.is_active"
-                    @change="toggleActive(config)"
                     :active-text="$t('configuration.common.enabled')"
                     :inactive-text="$t('configuration.common.disabled')"
                     :loading="config.toggling"
+                    @change="toggleActive(config)"
                   />
                   <button
                     class="test-btn"
-                    @click="testConnection(config)"
-                    :disabled="isTestingConnection">
+                    :disabled="isTestingConnection"
+                    @click="testConnection(config)">
                     {{ $t('configuration.aiModel.testConnection') }}
                   </button>
                   <button class="edit-btn" @click="editConfig(config)">{{ $t('configuration.common.edit') }}</button>
@@ -91,8 +91,8 @@
           <p>{{ $t('configuration.aiModel.emptyDescription') }}</p>
           <button
             class="add-first-config-btn"
-            @click.stop="openAddModal"
-            type="button">
+            type="button"
+            @click.stop="openAddModal">
             {{ $t('configuration.aiModel.addFirstConfig') }}
           </button>
         </div>
@@ -107,7 +107,7 @@
       <div class="modal-content" @click.stop>
         <div class="modal-header">
           <h3>{{ isEditing ? $t('configuration.aiModel.editConfig') : $t('configuration.aiModel.addConfigTitle') }}</h3>
-          <button class="close-btn" @click.stop="closeModals" type="button">x</button>
+          <button class="close-btn" type="button" @click.stop="closeModals">x</button>
         </div>
         <div class="modal-body">
           <form @submit.prevent="saveConfig">
@@ -190,8 +190,8 @@
                 <button
                   type="button"
                   class="fetch-models-btn"
-                  @click="fetchAvailableModelsInModal"
-                  :disabled="isFetchingModels">
+                  :disabled="isFetchingModels"
+                  @click="fetchAvailableModelsInModal">
                   <span v-if="isFetchingModels">{{ $t('configuration.aiModel.fetchingModels') }}</span>
                   <span v-else>{{ $t('configuration.aiModel.fetchModels') }}</span>
                 </button>
@@ -281,8 +281,8 @@
               <button
                 type="button"
                 class="test-btn-form"
-                @click="testConnectionInModal"
-                :disabled="isTestingInModal">
+                :disabled="isTestingInModal"
+                @click="testConnectionInModal">
                 <span v-if="isTestingInModal">{{ $t('configuration.aiModel.testing') }}</span>
                 <span v-else>{{ $t('configuration.aiModel.testConnection') }}</span>
               </button>

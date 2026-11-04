@@ -5,7 +5,7 @@
     width="700px"
     @close="handleClose"
   >
-    <el-form :model="formData" ref="formRef" label-width="120px" :rules="rules">
+    <el-form ref="formRef" :model="formData" label-width="120px" :rules="rules">
       <el-form-item :label="$t('appAutomation.element.manual.elementName')" prop="name" required>
         <el-input v-model="formData.name" :placeholder="$t('appAutomation.element.manual.elementNamePlaceholder')" />
       </el-form-item>
@@ -66,9 +66,9 @@
                     size="small"
                     link
                     :icon="Delete"
-                    @click.stop="handleDeleteCategory(cat)"
                     :title="$t('appAutomation.element.manual.deleteCategory')"
                     style="padding: 0; margin-left: 8px;"
+                    @click.stop="handleDeleteCategory(cat)"
                   />
                 </div>
               </el-option>
@@ -76,8 +76,8 @@
             <el-button
               type="primary"
               :icon="Plus"
-              @click="showCreateCategoryDialog"
               :title="$t('appAutomation.element.manual.createCategoryTitle')"
+              @click="showCreateCategoryDialog"
             />
           </div>
           <div style="color: #909399; font-size: 12px; margin-top: 5px;">
@@ -265,7 +265,7 @@
 
     <template #footer>
       <el-button @click="handleClose">{{ $t('appAutomation.common.cancel') }}</el-button>
-      <el-button type="primary" @click="handleSubmit" :loading="submitting">{{ $t('appAutomation.common.save') }}</el-button>
+      <el-button type="primary" :loading="submitting" @click="handleSubmit">{{ $t('appAutomation.common.save') }}</el-button>
     </template>
   </el-dialog>
 
@@ -289,7 +289,7 @@
     </el-form>
     <template #footer>
       <el-button @click="createCategoryVisible = false">{{ $t('appAutomation.common.cancel') }}</el-button>
-      <el-button type="primary" @click="handleCreateCategory" :loading="creatingCategory">{{ $t('appAutomation.element.manual.create') }}</el-button>
+      <el-button type="primary" :loading="creatingCategory" @click="handleCreateCategory">{{ $t('appAutomation.element.manual.create') }}</el-button>
     </template>
   </el-dialog>
 </template>

@@ -6,8 +6,8 @@
         <el-button
           v-if="selectedVersions.length > 0"
           type="danger"
-          @click="batchDeleteVersions"
-          :disabled="isDeleting">
+          :disabled="isDeleting"
+          @click="batchDeleteVersions">
           <el-icon><Delete /></el-icon>
           {{ $t('version.batchDelete') }} ({{ selectedVersions.length }})
         </el-button>
@@ -53,8 +53,8 @@
       </div>
       
       <el-table
-        :data="versions"
         v-loading="loading"
+        :data="versions"
         style="width: 100%"
         @selection-change="handleSelectionChange">
         <el-table-column type="selection" width="55" />
@@ -126,7 +126,7 @@
       width="600px"
       :close-on-click-modal="false"
     >
-      <el-form :model="versionForm" :rules="versionRules" ref="versionFormRef" label-width="120px">
+      <el-form ref="versionFormRef" :model="versionForm" :rules="versionRules" label-width="120px">
         <el-form-item :label="$t('version.versionName')" prop="name">
           <el-input v-model="versionForm.name" :placeholder="$t('version.versionNamePlaceholder')" />
         </el-form-item>
@@ -163,7 +163,7 @@
 
       <template #footer>
         <el-button @click="versionDialogVisible = false">{{ $t('common.cancel') }}</el-button>
-        <el-button type="primary" @click="saveVersion" :loading="saving">{{ $t('common.save') }}</el-button>
+        <el-button type="primary" :loading="saving" @click="saveVersion">{{ $t('common.save') }}</el-button>
       </template>
     </el-dialog>
   </div>

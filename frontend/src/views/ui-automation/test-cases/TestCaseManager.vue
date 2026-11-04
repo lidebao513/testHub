@@ -96,20 +96,20 @@
                 <el-option :label="t('uiAutomation.testCase.headedMode')" :value="false" />
                 <el-option :label="t('uiAutomation.testCase.headlessMode')" :value="true" />
               </el-select>
-              <el-button size="small" type="success" @click="runTestCase(selectedTestCase)" :loading="isRunning">
+              <el-button size="small" type="success" :loading="isRunning" @click="runTestCase(selectedTestCase)">
                 <el-icon v-if="!isRunning"><CaretRight /></el-icon>
                 {{ isRunning ? t('uiAutomation.testCase.running') : t('uiAutomation.testCase.runLabel') }}
               </el-button>
-              <el-button size="small" v-if="executionResult" @click="toggleView">
+              <el-button v-if="executionResult" size="small" @click="toggleView">
                 <el-icon><component :is="showSteps ? 'View' : 'Edit'" /></el-icon>
                 {{ showSteps ? t('uiAutomation.testCase.viewResult') : t('uiAutomation.testCase.editSteps') }}
               </el-button>
               <el-button
-                size="small"
                 v-if="executionResult && !showSteps"
+                size="small"
                 type="success"
-                @click="runTestCase(selectedTestCase)"
                 :loading="isRunning"
+                @click="runTestCase(selectedTestCase)"
               >
                 <el-icon v-if="!isRunning"><Refresh /></el-icon>
                 {{ t('uiAutomation.testCase.rerun') }}
@@ -118,7 +118,7 @@
           </div>
 
           <!-- 测试步骤编辑 -->
-          <div class="steps-container" v-show="showSteps">
+          <div v-show="showSteps" class="steps-container">
             <div class="steps-header">
               <h4>{{ t('uiAutomation.testCase.testSteps') }}</h4>
               <el-button size="small" text @click="expandAllSteps">
@@ -205,14 +205,14 @@
                                 <el-button
                                   size="small"
                                   :icon="MagicStick"
-                                  @click="openDataFactorySelector(element, 'input_value')"
                                   :title="t('uiAutomation.testCase.referenceDataFactory')"
                                   class="data-factory-btn"
+                                  @click="openDataFactorySelector(element, 'input_value')"
                                 />
                               </template>
                             </el-input>
-                            <el-tooltip :content="t('uiAutomation.testCase.insertVariable')" placement="top" v-if="element.action_type !== 'switchTab'">
-                              <el-button size="small" @click="openVariableHelper(element, 'input_value')" class="variable-helper-btn">
+                            <el-tooltip v-if="element.action_type !== 'switchTab'" :content="t('uiAutomation.testCase.insertVariable')" placement="top">
+                              <el-button size="small" class="variable-helper-btn" @click="openVariableHelper(element, 'input_value')">
                                 <el-icon><MagicStick /></el-icon>
                               </el-button>
                             </el-tooltip>
@@ -252,14 +252,14 @@
                                 <el-button
                                   size="small"
                                   :icon="MagicStick"
-                                  @click="openDataFactorySelector(element, 'assert_value')"
                                   :title="t('uiAutomation.testCase.referenceDataFactory')"
                                   class="data-factory-btn"
+                                  @click="openDataFactorySelector(element, 'assert_value')"
                                 />
                               </template>
                             </el-input>
                             <el-tooltip :content="t('uiAutomation.testCase.insertVariable')" placement="top">
-                              <el-button size="small" style="margin-left: 5px" @click="openVariableHelper(element, 'assert_value')" class="variable-helper-btn">
+                              <el-button size="small" style="margin-left: 5px" class="variable-helper-btn" @click="openVariableHelper(element, 'assert_value')">
                                 <el-icon><MagicStick /></el-icon>
                               </el-button>
                             </el-tooltip>
@@ -284,7 +284,7 @@
           </div>
 
           <!-- 执行结果 -->
-          <div v-if="executionResult" class="execution-result" v-show="!showSteps">
+          <div v-if="executionResult" v-show="!showSteps" class="execution-result">
             <div class="result-header">
               <h4>{{ t('uiAutomation.testCase.executionResult') }}</h4>
               <el-tag :type="executionResult.success ? 'success' : 'danger'">
@@ -313,7 +313,7 @@
                     <el-empty :description="t('uiAutomation.testCase.noLogs')" />
                   </div>
                 </el-tab-pane>
-                <el-tab-pane :label="t('uiAutomation.testCase.failedScreenshots')" name="screenshots" v-if="executionResult.screenshots && executionResult.screenshots.length > 0">
+                <el-tab-pane v-if="executionResult.screenshots && executionResult.screenshots.length > 0" :label="t('uiAutomation.testCase.failedScreenshots')" name="screenshots">
                   <div class="screenshots-container">
                     <div
                       v-for="(screenshot, index) in executionResult.screenshots"
@@ -329,11 +329,11 @@
                           @error="handleImageError"
                           @load="handleImageLoad"
                         />
-                        <div class="screenshot-placeholder" v-if="!screenshot.loaded">
+                        <div v-if="!screenshot.loaded" class="screenshot-placeholder">
                           <el-icon><Picture /></el-icon>
                           <span>{{ t('uiAutomation.testCase.loadingImage') }}</span>
                         </div>
-                        <div class="screenshot-error" v-if="screenshot.error">
+                        <div v-if="screenshot.error" class="screenshot-error">
                           <el-icon><Warning /></el-icon>
                           <span>{{ t('uiAutomation.testCase.imageLoadFailed') }}</span>
                         </div>
@@ -343,13 +343,13 @@
                       </div>
                       <div class="screenshot-info">
                         <p class="screenshot-description">{{ screenshot.description || t('uiAutomation.testCase.screenshot') + ' ' + (index + 1) }}</p>
-                        <p class="screenshot-meta" v-if="screenshot.step_number">{{ t('uiAutomation.testCase.step') }} {{ screenshot.step_number }}</p>
-                        <p class="screenshot-time" v-if="screenshot.timestamp">{{ formatTime(screenshot.timestamp) }}</p>
+                        <p v-if="screenshot.step_number" class="screenshot-meta">{{ t('uiAutomation.testCase.step') }} {{ screenshot.step_number }}</p>
+                        <p v-if="screenshot.timestamp" class="screenshot-time">{{ formatTime(screenshot.timestamp) }}</p>
                       </div>
                     </div>
                   </div>
                 </el-tab-pane>
-                <el-tab-pane :label="t('uiAutomation.testCase.errorInfo')" name="errors" v-if="executionResult.errors && executionResult.errors.length > 0">
+                <el-tab-pane v-if="executionResult.errors && executionResult.errors.length > 0" :label="t('uiAutomation.testCase.errorInfo')" name="errors">
                   <div class="errors-container">
                     <div
                       v-for="(error, index) in executionResult.errors"
@@ -458,10 +458,10 @@
 
     <!-- 变量助手对话框 -->
     <el-dialog
+      v-model="showVariableHelper"
       :close-on-press-escape="false"
       :modal="true"
       :destroy-on-close="false"
-      v-model="showVariableHelper"
       :title="t('uiAutomation.testCase.variableHelper')"
       :close-on-click-modal="false"
       width="900px"
@@ -473,7 +473,7 @@
           :label="category.label"
         >
           <div style="height: 450px; overflow-y: auto; padding: 10px;">
-            <el-table :data="category.variables" style="width: 100%" @row-click="insertVariable" highlight-current-row>
+            <el-table :data="category.variables" style="width: 100%" highlight-current-row @row-click="insertVariable">
               <el-table-column prop="name" :label="t('uiAutomation.testCase.functionName')" width="150" show-overflow-tooltip>
                 <template #default="{ row }">
                   <el-tag size="small">{{ row.name }}</el-tag>

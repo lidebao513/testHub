@@ -119,7 +119,8 @@
               <div class="trend-chart">
                 <div v-for="(d, i) in trendBars" :key="i" class="trend-col">
                   <div class="trend-bar-wrap">
-                    <div class="trend-bar" :style="{ height: d.height + '%' }"
+                    <div
+class="trend-bar" :style="{ height: d.height + '%' }"
                       :title="`${d.day}: ${fmtNum(d.mean_score)}`"></div>
                   </div>
                   <span class="trend-day">{{ d.shortDay }}</span>

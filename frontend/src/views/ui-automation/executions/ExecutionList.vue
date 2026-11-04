@@ -53,12 +53,12 @@
         </el-form>
       </div>
 
-      <el-table :data="executions" v-loading="loading" style="width: 100%" @selection-change="handleSelectionChange">
+      <el-table v-loading="loading" :data="executions" style="width: 100%" @selection-change="handleSelectionChange">
         <el-table-column type="selection" width="55" align="center" />
         <el-table-column prop="id" label="ID" width="80" align="center" />
         <el-table-column prop="test_case_name" :label="$t('uiAutomation.execution.caseName')" min-width="200">
           <template #default="{ row }">
-            <el-link @click="viewExecutionDetail(row)" type="primary">
+            <el-link type="primary" @click="viewExecutionDetail(row)">
               {{ row.test_case_name }}
             </el-link>
           </template>
@@ -186,7 +186,7 @@
           </el-tab-pane>
 
           <!-- 失败截图 - 仅失败或错误状态显示 -->
-          <el-tab-pane :label="$t('uiAutomation.execution.failedScreenshots')" name="screenshots" v-if="currentExecution.status === 'failed' || currentExecution.status === 'error'">
+          <el-tab-pane v-if="currentExecution.status === 'failed' || currentExecution.status === 'error'" :label="$t('uiAutomation.execution.failedScreenshots')" name="screenshots">
             <div class="screenshots-container">
               <div v-if="currentExecution.screenshots && currentExecution.screenshots.length > 0">
                 <div v-for="(screenshot, index) in currentExecution.screenshots" :key="index" class="screenshot-item">
@@ -212,7 +212,7 @@
           </el-tab-pane>
 
           <!-- 错误信息 - 仅失败或错误状态显示 -->
-          <el-tab-pane :label="$t('uiAutomation.execution.errorInfo')" name="error" v-if="currentExecution.status === 'failed' || currentExecution.status === 'error'">
+          <el-tab-pane v-if="currentExecution.status === 'failed' || currentExecution.status === 'error'" :label="$t('uiAutomation.execution.errorInfo')" name="error">
             <div class="errors-container">
               <div v-if="currentExecution.error_message" class="error-item">
                 <div class="error-content">
@@ -255,7 +255,7 @@
       </el-form>
       <template #footer>
         <el-button @click="showRerunDialogVisible = false">{{ $t('uiAutomation.common.cancel') }}</el-button>
-        <el-button type="primary" @click="handleRerun" :loading="rerunning">{{ $t('uiAutomation.execution.confirmRerun') }}</el-button>
+        <el-button type="primary" :loading="rerunning" @click="handleRerun">{{ $t('uiAutomation.execution.confirmRerun') }}</el-button>
       </template>
     </el-dialog>
   </div>

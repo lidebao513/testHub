@@ -6,8 +6,8 @@
         <el-button
           type="danger"
           :disabled="selectedRecords.length === 0"
-          @click="batchDeleteRecords"
           :loading="isDeleting"
+          @click="batchDeleteRecords"
         >
           <el-icon><Delete /></el-icon>
           {{ $t('uiAutomation.common.batchDelete') }}
@@ -17,11 +17,11 @@
 
     <div class="card-container">
       <el-table
-        :data="records"
+        ref="tableRef"
         v-loading="loading"
+        :data="records"
         style="width: 100%"
         @selection-change="handleSelectionChange"
-        ref="tableRef"
       >
         <el-table-column type="selection" width="55" />
         <el-table-column :label="$t('uiAutomation.ai.executionRecords.serialNumber')" width="80">

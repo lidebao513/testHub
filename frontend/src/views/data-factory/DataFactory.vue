@@ -50,8 +50,8 @@
               <el-button
                 v-if="currentScenario"
                 size="small"
-                @click.stop="clearScenario"
                 style="margin-left: auto;"
+                @click.stop="clearScenario"
               >
                 {{ $t('dataFactory.actions.clearFilter') }}
               </el-button>
@@ -81,7 +81,7 @@
     <!-- 场景视图 -->
     <div v-else class="scenario-view">
       <el-row :gutter="20">
-        <el-col :span="8" v-for="scenario in scenarios" :key="scenario.scenario">
+        <el-col v-for="scenario in scenarios" :key="scenario.scenario" :span="8">
           <el-card class="scenario-card" @click="filterByScenario(scenario)">
             <div class="scenario-content">
               <el-icon class="scenario-icon">
@@ -674,10 +674,10 @@
                     :expand-on-click-node="false"
                     :default-expand-all="false"
                     :default-expanded-keys="jsonExpandedKeys"
-                    @node-expand="handleNodeExpand"
-                    @node-collapse="handleNodeCollapse"
                     node-key="key"
                     class="json-tree"
+                    @node-expand="handleNodeExpand"
+                    @node-collapse="handleNodeCollapse"
                   >
                     <template #default="{ data }">
                       <span class="json-tree-node" :class="`json-type-${data.type}`">
@@ -921,9 +921,9 @@
               :page-sizes="[10, 20, 50, 100]"
               :total="historyTotal"
               layout="total, sizes, prev, pager, next, jumper"
+              class="history-pagination"
               @size-change="handleHistorySizeChange"
               @current-change="handleHistoryPageChange"
-              class="history-pagination"
             />
           </div>
         </el-tab-pane>
@@ -931,7 +931,7 @@
           <div class="stats-container">
             <el-row :gutter="20">
               <el-col :span="24">
-                <el-card class="total-stats-card" v-loading="statsLoading">
+                <el-card v-loading="statsLoading" class="total-stats-card">
                   <div class="total-stats">
                     <div class="total-stat-item">
                       <div class="total-stat-value">{{ statistics.total_records || 0 }}</div>

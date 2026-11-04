@@ -42,8 +42,8 @@
                   <component :is="getTreeNodeIcon(data.type)" />
                 </el-icon>
                 <span class="node-label">{{ data.name }}</span>
-                <div class="node-actions" v-if="data.type === 'element'">
-                  <el-button size="small" text @click.stop="insertElementCode(data)" :title="$t('uiAutomation.scriptEditor.clickToInsert')">
+                <div v-if="data.type === 'element'" class="node-actions">
+                  <el-button size="small" text :title="$t('uiAutomation.scriptEditor.clickToInsert')" @click.stop="insertElementCode(data)">
                     <el-icon><Plus /></el-icon>
                   </el-button>
                   <el-button size="small" text @click.stop="showElementDetail(data)">
@@ -78,7 +78,7 @@
               <el-icon><Delete /></el-icon>
               {{ $t('uiAutomation.scriptEditor.clear') }}
             </el-button>
-            <el-button size="small" type="primary" @click="saveScript" :loading="saving">
+            <el-button size="small" type="primary" :loading="saving" @click="saveScript">
               <el-icon><Check /></el-icon>
               {{ $t('uiAutomation.scriptEditor.saveScript') }}
             </el-button>
@@ -132,7 +132,7 @@
           </el-tab-pane>
 
           <!-- 元素详情 -->
-          <el-tab-pane :label="$t('uiAutomation.scriptEditor.elementDetail')" name="elementDetail" v-if="selectedElementDetail">
+          <el-tab-pane v-if="selectedElementDetail" :label="$t('uiAutomation.scriptEditor.elementDetail')" name="elementDetail">
             <div class="panel-content">
               <div class="element-detail">
                 <h4>{{ selectedElementDetail.name }}</h4>

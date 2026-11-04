@@ -12,8 +12,8 @@
         <button
           v-if="testCases.length > 0"
           class="export-btn"
-          @click="exportToExcel"
-          :disabled="isExporting">
+          :disabled="isExporting"
+          @click="exportToExcel">
           <span v-if="isExporting">{{ $t('taskDetail.exporting') }}</span>
           <span v-else>{{ $t('taskDetail.exportBtn') }}</span>
         </button>
@@ -56,7 +56,7 @@
 
     <div v-else class="task-content">
       <!-- 批量操作区域 -->
-      <div class="batch-actions" v-if="testCases.length > 0">
+      <div v-if="testCases.length > 0" class="batch-actions">
         <div class="selection-info">
           <label class="select-all">
             <input
@@ -65,7 +65,7 @@
               @change="toggleSelectAll">
             {{ $t('taskDetail.selectAll') }}
           </label>
-          <span class="selected-count" v-if="selectedCases.length > 0">
+          <span v-if="selectedCases.length > 0" class="selected-count">
             {{ $t('taskDetail.selectedCount', { count: selectedCases.length }) }}
           </span>
         </div>
@@ -86,7 +86,7 @@
       </div>
 
       <!-- 测试用例列表 -->
-      <div class="testcases-table" v-if="testCases.length > 0">
+      <div v-if="testCases.length > 0" class="testcases-table">
         <div class="table-header">
           <div class="header-cell checkbox-cell">{{ $t('taskDetail.tableSelect') }}</div>
           <div class="header-cell">{{ $t('taskDetail.tableCaseId') }}</div>
@@ -105,9 +105,9 @@
             class="table-row">
             <div class="body-cell checkbox-cell">
               <input 
-                type="checkbox" 
+                v-model="selectedCases" 
+                type="checkbox"
                 :value="testCase"
-                v-model="selectedCases"
                 @change="updateSelectAll">
             </div>
             <div class="body-cell">{{ testCase.caseId || `TC${String(index + 1).padStart(3, '0')}` }}</div>
@@ -241,11 +241,11 @@
             <button class="action-btn close-btn-footer" @click="closeCaseDetail">{{ $t('taskDetail.btnClose') }}</button>
           </template>
           <template v-else>
-            <button class="action-btn save-btn" @click="saveEdit" :disabled="isSaving">
+            <button class="action-btn save-btn" :disabled="isSaving" @click="saveEdit">
               <span v-if="isSaving">{{ $t('taskDetail.btnSaveing') }}</span>
               <span v-else>{{ $t('taskDetail.btnSave') }}</span>
             </button>
-            <button class="action-btn cancel-btn" @click="cancelEdit" :disabled="isSaving">{{ $t('taskDetail.btnCancel') }}</button>
+            <button class="action-btn cancel-btn" :disabled="isSaving" @click="cancelEdit">{{ $t('taskDetail.btnCancel') }}</button>
           </template>
         </div>
       </div>

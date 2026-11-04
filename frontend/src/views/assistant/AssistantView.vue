@@ -3,7 +3,7 @@
     <!-- 左侧侧边栏 -->
     <div class="sidebar">
       <div class="new-chat-btn-wrapper">
-        <el-button type="primary" class="new-chat-btn" @click="startNewChat" :icon="Plus">
+        <el-button type="primary" class="new-chat-btn" :icon="Plus" @click="startNewChat">
           {{ $t('assistant.newChat') }}
         </el-button>
       </div>
@@ -96,10 +96,10 @@
       <div v-else class="chat-screen">
         <div class="chat-header">
           <span class="chat-title">{{ currentSession?.title || $t('assistant.newChat') }}</span>
-          <span class="chat-time" v-if="currentSession">{{ formatDate(currentSession.updated_at) }}</span>
+          <span v-if="currentSession" class="chat-time">{{ formatDate(currentSession.updated_at) }}</span>
         </div>
         
-        <div class="messages-container" ref="messagesContainer">
+        <div ref="messagesContainer" class="messages-container">
           <div 
             v-for="(message, index) in messages" 
             :key="message.id || index"
@@ -111,7 +111,7 @@
             </div>
             <div class="message-bubble">
               <div class="message-content" v-html="formatMessageContent(message.content)"></div>
-              <div class="message-status" v-if="message.isPending">
+              <div v-if="message.isPending" class="message-status">
                 <el-icon class="is-loading"><Loading /></el-icon> {{ $t('assistant.thinking') }}
               </div>
             </div>

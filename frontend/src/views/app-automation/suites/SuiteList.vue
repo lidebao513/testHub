@@ -242,7 +242,7 @@
       width="900px"
       destroy-on-close
     >
-      <el-table :data="suiteExecutions" v-loading="historyLoading" :empty-text="$t('appAutomation.suite.noExecutionRecords')">
+      <el-table v-loading="historyLoading" :data="suiteExecutions" :empty-text="$t('appAutomation.suite.noExecutionRecords')">
         <el-table-column prop="case_name" :label="$t('appAutomation.suite.testCase')" min-width="180" />
         <el-table-column prop="device_name" :label="$t('appAutomation.suite.device')" width="150" />
         <el-table-column prop="status" :label="$t('appAutomation.common.status')" width="100" align="center">

@@ -14,7 +14,7 @@
     </div>
 
     <div class="content">
-      <el-table :data="reports" v-loading="loading" style="width: 100%">
+      <el-table v-loading="loading" :data="reports" style="width: 100%">
         <el-table-column prop="id" label="ID" width="80" />
         <el-table-column prop="test_suite_name" :label="$t('uiAutomation.report.testSuite')" min-width="200" />
         <el-table-column prop="status" :label="$t('uiAutomation.common.status')" width="120">
@@ -191,7 +191,7 @@
           </el-table>
         </div>
 
-        <div class="error-section" v-if="currentReport.error_message">
+        <div v-if="currentReport.error_message" class="error-section">
           <h4>{{ $t('uiAutomation.report.errorInfo') }}</h4>
           <div class="errors-container">
             <div class="error-item">

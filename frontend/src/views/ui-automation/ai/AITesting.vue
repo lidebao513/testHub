@@ -34,26 +34,26 @@
             <el-form-item>
               <el-button
                 type="primary"
-                @click="handleRun"
                 :loading="running"
                 :disabled="!taskForm.description"
+                @click="handleRun"
               >
                 <el-icon><VideoPlay /></el-icon>
                 {{ $t('uiAutomation.ai.startExecution') }}
               </el-button>
               <el-button
-                type="danger"
-                @click="handleStop"
-                :disabled="!running || analyzing"
                 v-if="running"
+                type="danger"
+                :disabled="!running || analyzing"
+                @click="handleStop"
               >
                 <el-icon><SwitchButton /></el-icon>
                 {{ $t('uiAutomation.ai.stopExecution') }}
               </el-button>
               <el-button
                 type="success"
-                @click="handleSaveAsCase"
                 :disabled="!taskForm.description"
+                @click="handleSaveAsCase"
               >
                 <el-icon><DocumentAdd /></el-icon>
                 {{ $t('uiAutomation.ai.saveAsCase') }}
@@ -74,7 +74,7 @@
           </el-alert>
 
           <div class="section-title" style="margin-top: 20px;">{{ $t('uiAutomation.ai.executionLogs') }}</div>
-          <div class="log-container" ref="logContainer">
+          <div ref="logContainer" class="log-container">
             <div v-if="!logs && !running" class="empty-logs">
               {{ $t('uiAutomation.ai.noLogs') }}
             </div>
@@ -117,7 +117,7 @@
 
     <!-- 保存为用例对话框 -->
     <el-dialog v-model="showSaveDialog" :title="$t('uiAutomation.ai.saveAsCaseTitle')" width="500px" :close-on-click-modal="false">
-      <el-form :model="saveForm" :rules="saveRules" ref="saveFormRef" label-width="80px">
+      <el-form ref="saveFormRef" :model="saveForm" :rules="saveRules" label-width="80px">
         <el-form-item :label="$t('uiAutomation.ai.caseName')" prop="name">
           <el-input v-model="saveForm.name" :placeholder="$t('uiAutomation.ai.caseNamePlaceholder')" />
         </el-form-item>
@@ -128,7 +128,7 @@
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="showSaveDialog = false">{{ $t('uiAutomation.common.cancel') }}</el-button>
-          <el-button type="primary" @click="confirmSaveCase" :loading="saving">{{ $t('uiAutomation.common.save') }}</el-button>
+          <el-button type="primary" :loading="saving" @click="confirmSaveCase">{{ $t('uiAutomation.common.save') }}</el-button>
         </span>
       </template>
     </el-dialog>

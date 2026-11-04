@@ -39,11 +39,11 @@
         </el-row>
       </div>
       
-      <el-table :data="elements" v-loading="loading" style="width: 100%">
+      <el-table v-loading="loading" :data="elements" style="width: 100%">
         <el-table-column type="selection" width="55" />
         <el-table-column prop="name" :label="$t('uiAutomation.element.elementName')" min-width="150">
           <template #default="{ row }">
-            <el-link @click="showElementDetail(row.id)" type="primary">
+            <el-link type="primary" @click="showElementDetail(row.id)">
               {{ row.name }}
             </el-link>
           </template>

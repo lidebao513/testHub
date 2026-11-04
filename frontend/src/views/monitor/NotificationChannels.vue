@@ -35,10 +35,11 @@
       <el-table-column prop="created_at" :label="t('monitor.channels.col.createdAt')" width="180" :formatter="formatDateTime" />
       <el-table-column :label="t('monitor.channels.col.actions')" width="200" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" :icon="Promotion" :loading="row._testing"
+          <el-button
+link type="primary" :icon="Promotion" :loading="row._testing"
                      @click="testChannel(row)">{{ t('monitor.channels.test') }}</el-button>
           <el-button link type="primary" :icon="Edit" @click="openEdit(row)">{{ t('monitor.channels.edit') }}</el-button>
-          <el-button link type="danger" :icon="Delete" @click="remove(row)" :title="t('monitor.channels.deleteSuccess')" />
+          <el-button link type="danger" :icon="Delete" :title="t('monitor.channels.deleteSuccess')" @click="remove(row)" />
         </template>
       </el-table-column>
       <template #empty>{{ t('monitor.channels.empty') }}</template>
@@ -58,7 +59,8 @@
     </div>
 
     <!-- 新增 / 编辑 对话框 -->
-    <el-dialog v-model="dialogVisible" :title="editingId ? t('monitor.channels.edit') : t('monitor.channels.add')"
+    <el-dialog
+v-model="dialogVisible" :title="editingId ? t('monitor.channels.edit') : t('monitor.channels.add')"
                width="560px" @closed="resetForm">
       <el-form :model="form" label-width="120px">
         <el-form-item :label="t('monitor.channels.form.name')" required>

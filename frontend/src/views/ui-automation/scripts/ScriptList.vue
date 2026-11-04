@@ -137,7 +137,7 @@
       </div>
       <template #footer>
         <el-button @click="showEditDialog = false">{{ $t('uiAutomation.common.cancel') }}</el-button>
-        <el-button type="primary" @click="saveEditedScript" :loading="saving">{{ $t('uiAutomation.script.save') }}</el-button>
+        <el-button type="primary" :loading="saving" @click="saveEditedScript">{{ $t('uiAutomation.script.save') }}</el-button>
       </template>
     </el-dialog>
   </div>

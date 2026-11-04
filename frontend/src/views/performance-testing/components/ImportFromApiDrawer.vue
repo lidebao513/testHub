@@ -18,7 +18,7 @@
         </el-form-item>
       </el-form>
 
-      <div class="request-list" v-loading="loading">
+      <div v-loading="loading" class="request-list">
         <el-checkbox-group v-model="selectedIds">
           <template v-for="r in filteredRequests" :key="r.id">
             <div class="request-item" :class="{ active: selectedIds.includes(r.id) }">

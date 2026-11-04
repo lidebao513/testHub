@@ -45,7 +45,7 @@
     </div>
 
     <div class="table-container">
-      <el-table :data="reviews" v-loading="loading" stripe>
+      <el-table v-loading="loading" :data="reviews" stripe>
         <el-table-column prop="title" :label="$t('reviewList.reviewTitle')" min-width="200" show-overflow-tooltip />
         <el-table-column :label="$t('reviewList.reviewProject')" width="200">
           <template #default="{ row }">

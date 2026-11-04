@@ -4,7 +4,7 @@
       <h1 class="page-title">{{ $t('testcase.edit') }}</h1>
     </div>
 
-    <div class="card-container" v-if="!loading">
+    <div v-if="!loading" class="card-container">
       <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
         <el-form-item :label="$t('testcase.caseTitle')" prop="title">
           <el-input v-model="form.title" :placeholder="$t('testcase.caseTitlePlaceholder')" />
@@ -114,7 +114,7 @@
         </el-form-item>
 
         <el-form-item>
-          <el-button type="primary" @click="handleSubmit" :loading="submitting">
+          <el-button type="primary" :loading="submitting" @click="handleSubmit">
             {{ $t('testcase.saveChanges') }}
           </el-button>
           <el-button @click="$router.back()">{{ $t('common.cancel') }}</el-button>
@@ -122,7 +122,7 @@
       </el-form>
     </div>
 
-    <div class="card-container" v-else>
+    <div v-else class="card-container">
       <el-skeleton :rows="10" animated />
     </div>
   </div>

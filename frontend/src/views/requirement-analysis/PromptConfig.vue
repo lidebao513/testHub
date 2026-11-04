@@ -227,8 +227,8 @@
             <button class="cancel-btn" @click="closeDefaultsModal">{{ $t('promptConfig.cancel') }}</button>
             <button
               class="confirm-btn"
-              @click="confirmLoadDefaults"
-              :disabled="isLoadingDefaults">
+              :disabled="isLoadingDefaults"
+              @click="confirmLoadDefaults">
               <span v-if="isLoadingDefaults">{{ $t('promptConfig.loading') }}</span>
               <span v-else>{{ $t('promptConfig.confirmLoad') }}</span>
             </button>

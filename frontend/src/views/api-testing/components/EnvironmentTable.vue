@@ -1,6 +1,6 @@
 <template>
   <div class="environment-table">
-    <el-table :data="data" v-loading="loading" style="width: 100%">
+    <el-table v-loading="loading" :data="data" style="width: 100%">
       <el-table-column prop="name" :label="$t('apiTesting.component.environmentTable.environmentName')" min-width="200" />
       <el-table-column prop="scope" :label="$t('apiTesting.component.environmentTable.scope')" width="120">
         <template #default="scope">
@@ -34,21 +34,21 @@
               v-if="!scope.row.is_active"
               link
               type="success"
-              @click="$emit('activate', scope.row)"
               size="small"
+              @click="$emit('activate', scope.row)"
             >
               {{ $t('apiTesting.component.environmentTable.activate') }}
             </el-button>
-            <el-button link type="primary" @click="viewVariables(scope.row)" size="small">
+            <el-button link type="primary" size="small" @click="viewVariables(scope.row)">
               {{ $t('apiTesting.component.environmentTable.viewVariables') }}
             </el-button>
-            <el-button link type="primary" @click="$emit('edit', scope.row)" size="small">
+            <el-button link type="primary" size="small" @click="$emit('edit', scope.row)">
               {{ $t('apiTesting.component.environmentTable.edit') }}
             </el-button>
-            <el-button link type="primary" @click="$emit('duplicate', scope.row)" size="small">
+            <el-button link type="primary" size="small" @click="$emit('duplicate', scope.row)">
               {{ $t('apiTesting.component.environmentTable.copy') }}
             </el-button>
-            <el-button link type="danger" @click="$emit('delete', scope.row)" size="small">
+            <el-button link type="danger" size="small" @click="$emit('delete', scope.row)">
               {{ $t('apiTesting.component.environmentTable.delete') }}
             </el-button>
           </el-button-group>

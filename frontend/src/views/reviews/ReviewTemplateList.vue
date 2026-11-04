@@ -118,7 +118,7 @@
       width="800px"
       :close-on-click-modal="false"
     >
-      <el-form :model="templateForm" :rules="templateRules" ref="templateFormRef" label-width="120px">
+      <el-form ref="templateFormRef" :model="templateForm" :rules="templateRules" label-width="120px">
         <el-row :gutter="24">
           <el-col :span="12">
             <el-form-item :label="$t('reviewTemplate.templateName')" prop="name">
@@ -162,8 +162,8 @@
               <el-button
                 type="danger"
                 size="small"
-                @click="removeChecklistItem(index)"
                 :icon="Delete"
+                @click="removeChecklistItem(index)"
               />
             </div>
             <el-button type="primary" size="small" @click="addChecklistItem">
@@ -191,7 +191,7 @@
 
       <template #footer>
         <el-button @click="templateDialogVisible = false">{{ $t('reviewTemplate.cancel') }}</el-button>
-        <el-button type="primary" @click="saveTemplate" :loading="saving">{{ $t('reviewTemplate.save') }}</el-button>
+        <el-button type="primary" :loading="saving" @click="saveTemplate">{{ $t('reviewTemplate.save') }}</el-button>
       </template>
     </el-dialog>
   </div>
