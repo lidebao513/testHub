@@ -26,6 +26,7 @@ from .views import (
 )
 from .views_closed_loop import ClosedLoopRunView, ClosedLoopStatusView
 from .views_config import AIIntelligentModeConfigViewSet, EnvironmentConfigViewSet
+from .views_smart_input import SmartInputParseView
 
 router = DefaultRouter()
 router.register(r'dashboard', UiDashboardViewSet, basename='dashboard')
@@ -60,6 +61,8 @@ urlpatterns = [
     # #200 闭环触发入口（异步）：UI 一键跑闭环 + 查状态
     path('closed-loop/run/', ClosedLoopRunView.as_view()),
     path('closed-loop/<str:task_id>/status/', ClosedLoopStatusView.as_view()),
+    # #184 统一智能输入框：解析预览（只解析不执行）
+    path('smart-input/parse/', SmartInputParseView.as_view()),
 ]
 
 # 添加媒体文件路由
