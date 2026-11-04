@@ -83,9 +83,16 @@ class ScriptGenerateView(APIView):
                 status=drf_status.HTTP_400_BAD_REQUEST,
             )
 
+        # 凭据防线一（生成前）：instruction 里的密码/令牌先打码，再交给引擎。
+        # 否则引擎会把明文当作填充文本写进生成脚本的 fill(...)，进而被落库
+        # （2026-11-04 真实栈 E2E 实测缺陷：instruction 已打码但 content 仍带明文）。
+        safe_instruction = _mask_secret_in_text(instruction)
+        if instruction and instruction != safe_instruction:
+            logger.warning("ScriptGenerateView: instruction 含疑似凭据，生成前已打码")
+
         try:
             result = GENERATE_FN(
-                target_url=target_url, instruction=instruction, language=language
+                target_url=target_url, instruction=safe_instruction, language=language
             )
         except Exception as exc:  # 生成失败明确报错，不静默（fail-open 但可见）
             logger.exception("Playwright MCP 脚本生成失败 target_url=%s", target_url)
@@ -95,13 +102,14 @@ class ScriptGenerateView(APIView):
             )
 
         content = str(result.get("content") or "")
+        # 凭据防线二（生成后兜底）：content 同样过打码，防止凭据从页面/指令等
+        # 其它来源混入脚本正文。
+        safe_content = _mask_secret_in_text(content)
+        if content != safe_content:
+            logger.warning("ScriptGenerateView: 生成脚本含疑似凭据，已打码")
+        content = safe_content
         steps = result.get("steps") or []
         out_language = result.get("language") or language
-
-        # 凭据兜底：instruction 回显打码；内容本身为代码，若有残留凭据同法处理
-        safe_instruction = _mask_secret_in_text(instruction)
-        if instruction and instruction != safe_instruction:
-            logger.warning("ScriptGenerateView: instruction 含疑似凭据，已打码回显")
 
         return Response(
             {

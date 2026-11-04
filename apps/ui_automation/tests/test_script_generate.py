@@ -100,8 +100,16 @@ def test_generate_success_returns_preview(monkeypatch):
 
 
 def test_generate_scrubs_secret_in_instruction(monkeypatch):
+    seen = {}
+
     def fake_generate(target_url, instruction, language):
-        return {'content': 'print("noop")\n', 'steps': ['navigate'], 'language': 'python'}
+        # 引擎收到的必须是已打码的指令（否则会写进脚本的 fill(...)）
+        seen['instruction'] = instruction
+        return {
+            'content': 'print("noop")\n',
+            'steps': ['navigate'],
+            'language': 'python',
+        }
 
     monkeypatch.setattr(
         'apps.ui_automation.views_script_generate.GENERATE_FN', fake_generate
@@ -120,6 +128,43 @@ def test_generate_scrubs_secret_in_instruction(monkeypatch):
     # 凭据绝不回显明文
     assert 'SuperSecret9' not in resp.content.decode()
     assert 'SuperSecret9' not in resp.json()['instruction']
+    # 生成前已打码：引擎拿到的指令不含明文
+    assert 'SuperSecret9' not in seen['instruction']
+    assert 'admin' in seen['instruction']
+
+
+def test_generate_scrubs_secret_in_generated_content(monkeypatch):
+    """真实栈 E2E 实测缺陷回归：指令打码了，但脚本正文里的 fill(...) 仍带明文。"""
+
+    def fake_generate(target_url, instruction, language):
+        return {
+            'content': (
+                'page.get_by_role("textbox").fill("密码 SuperSecret9 登录")\n'
+                "page.keyboard.press('Enter')\n"
+            ),
+            'steps': ['navigate', 'type'],
+            'language': 'python',
+        }
+
+    monkeypatch.setattr(
+        'apps.ui_automation.views_script_generate.GENERATE_FN', fake_generate
+    )
+    client, user = _api_client()
+    resp = client.post(
+        URL,
+        {
+            'target_url': 'https://example.com',
+            'instruction': '正常指令',
+            'project_id': _project(user).id,
+        },
+        format='json',
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # content 必须已打码，明文不能进响应（否则会被前端落库）
+    assert 'SuperSecret9' not in body['content']
+    assert 'Su***9' in body['content']
+    assert 'page.get_by_role("textbox").fill(' in body['content']
 
 
 def test_script_create_accepts_draft_status(monkeypatch):
