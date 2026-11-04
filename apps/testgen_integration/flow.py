@@ -12,7 +12,8 @@
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .mapping import case_spec_to_testcase, testgen_id_of
 
@@ -67,6 +68,52 @@ def sync_cases(
 
 
 # ============================================================================
+# 桥接：testgen UI 用例 → AICase（闭环作业来源，与 sync_cases 平级、可选附加步骤）
+# ============================================================================
+
+
+def bridge_aicases(
+    cases: list[dict[str, Any]],
+    *,
+    project_id: int,
+    author_id: int,
+    bridge: Callable[[str, dict[str, Any]], str],
+) -> dict[str, int]:
+    """把 testgen UI 用例桥接为 AICase（闭环作业来源）。
+
+    过滤：仅桥接 ``_is_ui_layer(cs)`` 命中的用例，避免把 API/性能用例塞进浏览器闭环。
+    映射：AICase.task_description = 步骤自然语言 + 预期（结构化 → 浏览器任务）。
+    幂等：以 ``tg:<tc_no>`` 作为 source_ref（与 TestCase 同源），bridge 内部 update_or_create。
+    """
+    from .mapping import TESTGEN_ID_TAG_PREFIX, _is_ui_layer, case_spec_to_aicase
+
+    created = updated = skipped = 0
+    for cs in cases:
+        tg_id = testgen_id_of(cs)
+        if not tg_id:
+            skipped += 1
+            continue
+        if not _is_ui_layer(cs):
+            skipped += 1  # 非 UI 用例不进浏览器闭环
+            continue
+        payload = case_spec_to_aicase(cs, project_id=project_id, author_id=author_id)
+        ref = f"{TESTGEN_ID_TAG_PREFIX}{tg_id}"  # 与 TestCase 的 tg 标签同源
+        result = bridge(ref, payload)
+        if result == CREATED:
+            created += 1
+        elif result == UPDATED:
+            updated += 1
+        else:
+            skipped += 1
+    return {
+        "total": len(cases),
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+    }
+
+
+# ============================================================================
 # M2：安全语义裁判编排（security 用例执行后 → 调 testgen /verdict → 应拒却放通自动建缺陷）
 # ============================================================================
 SEVERITY_FOR_UNSAFE = "critical"  # 应拒却放通 = 高危
@@ -100,8 +147,8 @@ def build_verdict_facts(case: dict[str, Any]) -> dict[str, Any]:
 def run_security_verdict(
     observations: list[dict[str, Any]],
     *,
-    verdict_fn: "Callable[[dict[str, Any]], dict[str, Any]] | None" = None,
-    create_defect: "Callable[[dict[str, Any]], Any] | None" = None,
+    verdict_fn: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    create_defect: Callable[[dict[str, Any]], Any] | None = None,
     reporter_id: int | None = None,
 ) -> dict[str, Any]:
     """对 security 用例执行观测做安全语义裁判，应拒却放通时自动建缺陷。
