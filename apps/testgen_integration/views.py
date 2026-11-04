@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, ClassVar
 
 from django.db import transaction
@@ -22,6 +23,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.testcases.models import TestCase
+from apps.ui_automation.bridge import bridge_aicase_real
 
 from . import flow
 from .client import (
@@ -43,6 +45,8 @@ from .client import (
 )
 from .defects import create_security_defect_orm
 from .mapping import TESTGEN_ID_TAG_PREFIX
+
+logger = logging.getLogger(__name__)
 
 # 用 testhub 约定解析请求体（标题/步骤最大长度等由模型约束兜底）
 _PARSERS = [JSONParser]
@@ -136,7 +140,26 @@ class TestgenSyncView(APIView):
             upsert=_upsert,
             suite_id=suite_id,
         )
-        return Response({"ok": True, **result})
+
+        # #199 桥接：testgen UI 用例 → AICase（闭环作业来源）；project 保持 null 避免 FK 错配。
+        # 桥接是附加步骤，失败不应拖垮主回流（fail-open）。
+        try:
+            bridge_result = flow.bridge_aicases(
+                cases,
+                project_id=int(project_id),
+                author_id=author_id,
+                bridge=bridge_aicase_real,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("testgen→AICase 桥接失败（忽略，不阻断主回流）: %s", exc)
+            bridge_result = {
+                "total": len(cases),
+                "created": 0,
+                "updated": 0,
+                "skipped": 0,
+            }
+
+        return Response({"ok": True, **result, "bridge": bridge_result})
 
 
 def _sidecar_error_response(exc: Exception) -> Response:

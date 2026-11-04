@@ -253,3 +253,24 @@ def case_spec_to_testcase(
         "tags": build_tags(cs),
         "status": "active",
     }
+
+
+def case_spec_to_aicase(cs: dict, *, project_id: int, author_id: int) -> dict:
+    """testgen 用例 → AICase payload（结构化 → 自然语言浏览器任务）。
+
+    闭环消费 AICase 只看 ``task_description``（自然语言浏览器任务），因此把结构化步骤
+    渲染为人类可读文本 + 预期结果。``project`` 不在此（AICase.project 是 UiProject，
+    与 testgen 回流的通用 Project 是两套模型，桥接保持 project=null，靠 source_ref 溯源）。
+    """
+    doc_text = render_doc_steps(cs.get("doc_steps"))
+    expected = _extract_expected(cs)
+    task = (doc_text or "").strip()
+    if expected:
+        task = f"{task}\n预期结果：{expected}".strip() if task else expected
+    title = (cs.get("title") or "").strip() or f"testgen {testgen_id_of(cs)}"
+    return {
+        "name": title,
+        "task_description": task or title,
+        "description": (cs.get("description") or ""),
+        "created_by_id": int(author_id),
+    }

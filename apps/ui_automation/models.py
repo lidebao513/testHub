@@ -1020,6 +1020,14 @@ class AICase(models.Model):
         default=dict, blank=True, verbose_name='闭环回流标记',
         help_text='{state, exec_status, assertion_signal, last_record_id, updated_at}；空表示尚未进入闭环',
     )
+    # #199 testgen→AICase 桥接溯源指纹：值为 tg:<tc_no>，与 testcases.TestCase 的 tg 标签同源。
+    # 仅桥接产生的 AICase 填此字段；手工 AICase 为 null。作幂等 update_or_create 键，避免重复生成。
+    # 注：testgen 回流的 project 是通用 Project，与 AICase.project(UiProject) 是两套模型，
+    # 桥接不强行绑定 UiProject（保持 project=null），靠 source_ref 溯源即可，避免 FK 错配。
+    source_ref = models.CharField(
+        max_length=128, null=True, blank=True, db_index=True, verbose_name='来源指纹',
+        help_text='testgen 桥接溯源：tg:<tc_no>；空表示手工创建',
+    )
 
     class Meta:
         db_table = 'ui_ai_cases'
