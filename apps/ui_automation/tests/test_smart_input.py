@@ -260,3 +260,47 @@ def test_run_adhoc_legacy_path_unchanged(monkeypatch):
     record = AIExecutionRecord.objects.get(id=resp.json()['execution_id'])
     assert record.task_description == '打开 http://a.com 检查标题'
     assert captured['task_description'] == record.task_description
+
+
+def test_run_adhoc_scrubs_password_in_callbacks(monkeypatch):
+    """冒烟实测缺陷回归：LLM 分析拆解的 planned_tasks 与流式日志会回显
+    agent 描述里的明文密码，落库前必须打码（#184 凭据红线）。"""
+    import asyncio
+    import json as _json
+
+    from apps.ui_automation.models import AIExecutionRecord
+
+    def fake_run(task_description, **kwargs):
+        # 模拟 LLM 从含凭据描述拆解出带明文密码的子任务 + 流式日志回显
+        asyncio.run(kwargs['analysis_callback']([
+            {'id': 1, 'status': 'pending', 'description': '打开 http://demo.com'},
+            {'id': 2, 'status': 'pending', 'description': '使用登录密码：SuperSecret1 登录'},
+        ]))
+        asyncio.run(kwargs['step_callback']({'type': 'log', 'content': '正在输入 SuperSecret1\n'}))
+
+    monkeypatch.setattr('apps.ui_automation.ai_agent.run_full_process_sync', fake_run)
+    monkeypatch.setattr(threading, 'Thread', _SyncThread)
+
+    client = _api_client()
+    payload = {
+        'parsed': {
+            'url': 'http://demo.com',
+            'username': 'admin',
+            'password': 'SuperSecret1',
+            'actions': ['登录并下单'],
+            'asserts': [],
+            'notes': [],
+        },
+        'enable_gif': False,
+    }
+    resp = client.post(
+        '/api/ui-automation/ai-execution-records/run_adhoc/', payload, format='json'
+    )
+    assert resp.status_code == 200
+    record = AIExecutionRecord.objects.get(id=resp.json()['execution_id'])
+    blob = (_json.dumps(record.planned_tasks, ensure_ascii=False) or '') + (record.logs or '')
+    assert 'SuperSecret1' not in blob
+    assert any(
+        '******' in (t.get('description') or '')
+        for t in (record.planned_tasks or [])
+    )
