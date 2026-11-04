@@ -3507,8 +3507,11 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
         # smart_input 为原始混合文本（服务端补解析缺失字段）。
         # persisted 不含明文密码（落库）；agent 含凭据（仅传给执行线程）。
         agent_task_description = task_description
+        # 凭据脱敏器（默认无操作）：含凭据的 agent 描述经 LLM 分析/执行后，
+        # 密码会进入 planned_tasks 与流式日志——冒烟实测泄露，落库前统一打码。
+        _scrub_secret = None
         if request.data.get('parsed') or request.data.get('smart_input'):
-            from .smart_input import compose_execution_input
+            from .smart_input import compose_execution_input, mask_password
 
             composed = compose_execution_input(
                 request.data.get('parsed') or {},
@@ -3516,6 +3519,12 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
             )
             task_description = composed['persisted']
             agent_task_description = composed['agent']
+            _pwd = composed['parsed'].get('password') or ''
+
+            def _scrub_secret(text):
+                if _pwd and text:
+                    return str(text).replace(_pwd, mask_password(_pwd))
+                return text
 
         if not task_description:
             return Response({'error': '缺少任务描述参数'}, status=status.HTTP_400_BAD_REQUEST)
@@ -3608,6 +3617,12 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                     return execution_record.status == 'stopped'
 
                 async def on_analysis_complete(planned_tasks):
+                    # #184 凭据脱敏：LLM 从含凭据任务描述拆解的子任务可能带明文密码
+                    if _scrub_secret is not None:
+                        for task in planned_tasks or []:
+                            for k, v in list(task.items()):
+                                if isinstance(v, str):
+                                    task[k] = _scrub_secret(v)
                     execution_record.planned_tasks = planned_tasks
                     execution_record.logs += "任务分析完成，开始执行...\n"
                     await sync_to_async(safe_save)(execution_record, update_fields=['planned_tasks', 'logs'])
@@ -3618,6 +3633,9 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                         if step_info.get('type') == 'log':
                             content = step_info.get('content')
                             if content:
+                                # #184 凭据脱敏：流式日志同样可能回显明文密码
+                                if _scrub_secret is not None:
+                                    content = _scrub_secret(content)
                                 execution_record.logs += content
                                 # 立即保存到数据库，确保前端轮询能看到最新日志
                                 await sync_to_async(safe_save)(execution_record, update_fields=['logs'])
