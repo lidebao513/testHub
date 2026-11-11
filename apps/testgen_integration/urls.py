@@ -9,6 +9,7 @@ from .views import (
     TestgenCommitsView,
     TestgenDescribeView,
     TestgenGenerateView,
+    TestgenHealthView,
     TestgenQualityView,
     TestgenScanView,
     TestgenStageAnalyzeView,
@@ -17,6 +18,7 @@ from .views import (
     TestgenSyncView,
     TestgenTaskCancelView,
     TestgenTaskCasesView,
+    TestgenTaskStatusView,
 )
 
 app_name = "testgen_integration"
@@ -29,6 +31,7 @@ urlpatterns = [
     path("commits", TestgenCommitsView.as_view(), name="commits"),
     path("describe", TestgenDescribeView.as_view(), name="describe"),
     path("sync", TestgenSyncView.as_view(), name="sync"),
+    path("health", TestgenHealthView.as_view(), name="health"),
     path(
         "tasks/<str:task_id>/cancel",
         TestgenTaskCancelView.as_view(),
@@ -36,6 +39,11 @@ urlpatterns = [
     ),
     path(
         "tasks/<str:task_id>/cases", TestgenTaskCasesView.as_view(), name="task_cases"
+    ),
+    path(
+        "tasks/<str:task_id>",
+        TestgenTaskStatusView.as_view(),
+        name="task_status",
     ),
     path("stages", TestgenStageListView.as_view(), name="stage_list"),
     path("stage-analyze", TestgenStageAnalyzeView.as_view(), name="stage_analyze"),

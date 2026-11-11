@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, ClassVar
 
@@ -22,11 +23,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.projects.models import Project
 from apps.testcases.models import TestCase
 from apps.ui_automation.bridge import bridge_aicase_real
 
 from . import flow
 from .client import (
+    base_url,
     cancel_task,
     classify_sidecar_error,
     describe,
@@ -36,6 +39,7 @@ from .client import (
     list_branches,
     list_commits,
     list_stages,
+    poll,
     quality_summary,
     scan,
     stage_analyze,
@@ -69,8 +73,58 @@ class TestgenGenerateView(APIView):
         body = request.data or {}
         local_path = body.get("local_path", "") or ""
         repo_url = body.get("repo_url", "") or ""
+        project_id = body.get("project_id")
+        code_source = body.get("code_source") or {}
         scopes = body.get("scopes") or None
         changed_files = body.get("changed_files") or None
+        gen_range = body.get("gen_range") or ""
+
+        # ---- G2 残留：project_id 校验（触达 sidecar 前拒绝）----
+        project = None
+        if project_id not in (None, ""):
+            try:
+                pid = int(project_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {"ok": False, "error": "project_id 须为整数"}, status=400
+                )
+            project = Project.objects.filter(id=pid).first()
+            if project is None:
+                return Response({"ok": False, "error": "project_id 不存在"}, status=400)
+
+        # ---- G2 残留：code_source 只读码凭据校验（掩码不落明文）----
+        if code_source:
+            ct = code_source.get("credential_type")
+            if not ct:
+                return Response(
+                    {"ok": False, "error": "code_source 须指定 credential_type"},
+                    status=400,
+                )
+            if ct == "pat":
+                if not code_source.get("org_id") or not code_source.get("access_key"):
+                    return Response(
+                        {"ok": False, "error": "pat 凭据须含 org_id 与 access_key"},
+                        status=400,
+                    )
+            elif ct == "ak_sk":
+                if not (
+                    code_source.get("org_id")
+                    and code_source.get("access_key")
+                    and code_source.get("secret")
+                ):
+                    return Response(
+                        {
+                            "ok": False,
+                            "error": "ak_sk 凭据须含 org_id、access_key 与 secret",
+                        },
+                        status=400,
+                    )
+            else:
+                return Response(
+                    {"ok": False, "error": f"不支持的 credential_type: {ct}"},
+                    status=400,
+                )
+
         try:
             resp = generate(
                 local_path=local_path,
@@ -82,14 +136,66 @@ class TestgenGenerateView(APIView):
             return Response({"ok": False, "error": str(exc)}, status=400)
         except Exception as exc:  # noqa: BLE001 - 网络/服务异常：不可达 503、其它 502
             return _sidecar_error_response(exc)
+
+        task_id = resp.get("task_id")
+        self._record_generate_task(
+            request, resp, project, code_source, repo_url, gen_range
+        )
         return Response(
             {
                 "ok": True,
-                "task_id": resp.get("task_id"),
+                "task_id": task_id,
                 "poll_url": resp.get("poll_url"),
                 "state": resp.get("state") or resp.get("status"),
             }
         )
+
+    @staticmethod
+    def _record_generate_task(
+        request: Any,
+        resp: dict,
+        project,
+        code_source: dict,
+        repo_url: str,
+        gen_range: str,
+    ) -> None:
+        """G2 残留：生成成功后落后台任务中心（掩码凭据，绝不存明文）。
+
+        与 apps/taskcenter 约定一致：source 记 sidecar task_id，payload_summary 仅存掩码摘要。
+        落库失败属附加动作，fail-open 不阻断主生成流程。
+        """
+        try:
+            from apps.taskcenter.models import BackgroundTask
+
+            tid = resp.get("task_id") or ""
+            name = f"[{project.name}] 代码生成" if project else "代码生成"
+            summary_src = dict(code_source or {})
+            ak = summary_src.get("access_key")
+            if ak:
+                summary_src["access_key"] = (
+                    f"{ak[:4]}****{ak[-2:]}" if len(ak) > 6 else "****"
+                )
+            if summary_src.get("secret"):
+                summary_src["secret"] = "****"
+            payload: dict = {
+                "local_path": (request.data or {}).get("local_path", ""),
+                "repo_url": repo_url,
+                "project_id": project.id if project else None,
+                "gen_range": gen_range,
+            }
+            if code_source:
+                payload["code_source"] = summary_src
+            BackgroundTask.objects.create(
+                name=name,
+                task_type="generate",
+                source=str(tid),
+                status="pending",
+                created_by=getattr(request.user, "id", None),
+                created_by_username=getattr(request.user, "username", "") or "",
+                payload_summary=json.dumps(payload, ensure_ascii=False),
+            )
+        except Exception as exc:  # noqa: BLE001 - 落库失败不阻断主生成流程
+            logger.warning("生成任务落库后台任务中心失败（忽略）: %s", exc)
 
 
 class TestgenSyncView(APIView):
@@ -177,7 +283,9 @@ def _sidecar_error_response(exc: Exception) -> Response:
     return Response({"ok": False, "error": message}, status=status_code)
 
 
-def execute_security_verdict(body: dict[str, Any], *, user_id: int) -> tuple[dict[str, Any], int]:
+def execute_security_verdict(
+    body: dict[str, Any], *, user_id: int
+) -> tuple[dict[str, Any], int]:
     """对一批用例观测执行安全裁决，应拒却放通时自动建缺陷（G3/G4/G5 编排）。
 
     返回 ``(payload, http_status)``，便于端点与执行钩子复用同一套编排：
@@ -411,5 +519,35 @@ class TestgenStageCompareView(APIView):
                 repo_path=body.get("repo_path") or "",
             )
         except Exception as exc:  # noqa: BLE001 - 连接/超时→502
+            return _sidecar_error_response(exc)
+        return Response({"ok": True, **data})
+
+
+class TestgenHealthView(APIView):
+    """sidecar 存活探针（G7 残留）：聚合 is_sidecar_available 与 base_url。"""
+
+    permission_classes: ClassVar[list] = [IsAuthenticated]
+
+    def get(self, request: Any) -> Response:
+        ok, detail = is_sidecar_available()
+        return Response(
+            {
+                "ok": ok,
+                "available": ok,
+                "detail": detail,
+                "base_url": base_url(),
+            }
+        )
+
+
+class TestgenTaskStatusView(APIView):
+    """轮询某生成任务状态（G7 残留）：代理 sidecar /api/v1/tasks/<task_id>。"""
+
+    permission_classes: ClassVar[list] = [IsAuthenticated]
+
+    def get(self, request: Any, task_id: str) -> Response:
+        try:
+            data = poll(task_id)
+        except Exception as exc:  # noqa: BLE001 - 不可达 503、其它 502
             return _sidecar_error_response(exc)
         return Response({"ok": True, **data})
