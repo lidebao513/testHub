@@ -12,6 +12,7 @@
 import os
 
 import django
+import pytest
 from django.conf import settings
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.settings')
@@ -149,6 +150,7 @@ class TestM9ConsumerAuth(IsolatedAsyncioTestCase):
         c.close.assert_not_awaited()
 
 
+@pytest.mark.django_db
 class TestM9OwnsExecution:
     def test_owns_execution_owner(self):
         import asyncio

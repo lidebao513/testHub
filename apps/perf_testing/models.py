@@ -4,6 +4,7 @@
 显式 db_table + db_table_comment + verbose_name + ordering，
 所有字段带 db_comment，JSONField 必带 default。
 """
+import uuid
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
@@ -295,12 +296,14 @@ class PerfExecution(models.Model):
 
     @staticmethod
     def generate_execution_no():
-        """生成人可读的执行编号：PERF + 年月日时分秒 + 3 位序号。"""
+        """生成人可读的执行编号：PERF + 年月日时分秒 + 短 uuid 后缀。
+
+        弃用原先的 count()+1 序号：在并发写入或测试库残留场景下易撞号，
+        改为追加 6 位 uuid 后缀，碰撞概率趋零，且仍保持人可读。
+        """
         now = timezone.localtime()
         prefix = f"PERF{now.strftime('%Y%m%d%H%M%S')}"
-        # 同秒内可能并发，用当日计数补足序号
-        seq = PerfExecution.objects.filter(execution_no__startswith=prefix).count() + 1
-        return f'{prefix}{seq:03d}'
+        return f'{prefix}{uuid.uuid4().hex[:6]}'
 
     @property
     def is_active(self):

@@ -107,6 +107,7 @@ LOCAL_APPS = [
     'apps.perf_testing.apps.PerfTestingConfig',  # 性能测试
     'apps.mcp.apps.McpConfig',  # MCP Server（外部 Agent 驱动）
     'apps.testgen_integration',  # testgen 代码生成 sidecar 集成
+    'apps.taskcenter.apps.TaskcenterConfig',  # 后台任务中心
 ]
 
 if ANALYTICS_ENABLED or REGISTRATION_STATS_ENABLED:

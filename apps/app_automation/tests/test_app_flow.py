@@ -4,6 +4,8 @@ APP UI Flow 测试
 """
 import os
 import logging
+import shutil
+import subprocess
 import pytest
 import allure
 from apps.app_automation.models import AppTestCase, AppTestExecution
@@ -11,6 +13,25 @@ from apps.app_automation.utils.airtest_base import AirtestBase
 from apps.app_automation.runners.ui_flow_runner import UiFlowRunner
 
 logger = logging.getLogger(__name__)
+
+
+def _has_android_device():
+    """探测本机是否可达 Android 设备（需 adb 且在 devices 列表中出现 device）。"""
+    adb = shutil.which("adb")
+    if not adb:
+        return False
+    try:
+        out = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=10)
+        return any(l.strip().endswith("device") for l in out.stdout.splitlines()[1:])
+    except Exception:
+        return False
+
+
+# 该文件所有用例均依赖真机/ADB，无设备机器上优雅跳过而非报错。
+pytestmark = pytest.mark.skipif(
+    not _has_android_device(),
+    reason="需要 Android 设备/ADB，本机缺失则跳过",
+)
 
 
 def _make_progress_callback(execution_id):

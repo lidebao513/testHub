@@ -117,34 +117,37 @@ class TestJmeterEngine(unittest.TestCase):
             engine.prepare()
 
     def test_temp_files_reside_in_project_not_system_tmp(self):
-        """硬性约束：所有临时产物必须落在项目内（F 盘），绝不落到系统 TMP（C 盘）。"""
+        """硬性约束：所有临时产物必须落在项目内（workspace_root），绝不落到系统 TMP。"""
         from apps.perf_testing.engines.jmeter_engine import JmeterEngine
         from apps.perf_testing.engines.workspace import project_root, workspace_root
 
         engine = JmeterEngine(_sample_snapshot(), jmeter_bin=['/no/such/jmeter'])
         root = project_root()
         self.assertTrue(engine.work_dir.startswith(root),
-                        'work_dir 必须位于项目根目录内（F 盘），实际：%s' % engine.work_dir)
+                        'work_dir 必须位于项目根目录内，实际：%s' % engine.work_dir)
         self.assertTrue(engine.work_dir.startswith(workspace_root()),
                         'work_dir 必须位于 perf_workspace 下')
-        # 绝不能是系统 TMP（典型 C 盘路径）
-        self.assertNotIn('\\AppData\\Local\\Temp', engine.work_dir)
-        self.assertNotIn('\\Temp\\', engine.work_dir)
-        self.assertFalse(engine.work_dir.startswith('C:\\'), 'work_dir 不应位于 C 盘')
+        # 绝不能落到系统 TMP（盘符无关，用 tempfile.gettempdir 判定）
+        sys_tmp = tempfile.gettempdir()
+        self.assertFalse(engine.work_dir.startswith(sys_tmp),
+                         'work_dir 不应位于系统临时目录 %s' % sys_tmp)
 
     def test_non_c_env_redirects_tmp_and_java_tmpdir(self):
-        """non_c_env 必须把 TMP/TEMP/TMPDIR 与 java.io.tmpdir 指向非 C 目录。"""
-        from apps.perf_testing.engines.workspace import non_c_env
+        """non_c_env 必须把 TMP/TEMP/TMPDIR 与 java.io.tmpdir 指向项目内 workspace。"""
+        from apps.perf_testing.engines.workspace import non_c_env, workspace_root, project_root
 
-        target = 'F:\\TJC-Work\\PythonProject\\testhub_platform\\perf_workspace\\demo'
+        target = os.path.join(workspace_root(), 'demo')
         try:
             env = non_c_env(target)
             self.assertEqual(env['TMP'], target)
             self.assertEqual(env['TEMP'], target)
             self.assertEqual(env['TMPDIR'], target)
             self.assertIn('-Djava.io.tmpdir=' + target, env.get('_JAVA_OPTIONS', ''))
-            # 不污染 C 盘临时路径
-            self.assertNotIn('C:\\', env['TMP'])
+            # 指向项目内、且区别于系统 TMP（不再依赖具体盘符）
+            self.assertTrue(target.startswith(project_root()),
+                            'target 必须位于项目根目录内')
+            self.assertNotEqual(target, tempfile.gettempdir(),
+                                'target 不应等于系统临时目录')
         finally:
             shutil.rmtree(target, ignore_errors=True)
 
