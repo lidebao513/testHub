@@ -24,6 +24,7 @@ import threading
 import time
 
 import requests
+from django.conf import settings
 from django.http import HttpResponse, HttpResponseForbidden, JsonResponse
 from django.shortcuts import redirect
 from django.urls import get_resolver
@@ -39,7 +40,15 @@ SIDECAR_BASE = os.environ.get("TESTGEN_SIDECAR_URL", "http://127.0.0.1:8910").rs
 # M1：代理→sidecar 应使用服务端配置的共享令牌鉴权（H8 要求 sidecar 必须校验
 # X-Auth-Token），而非依赖 sidecar 本地的 AUTH_DISABLED 逃逸开关。生产环境务必在
 # Django 进程环境中设置 TESTGEN_AUTH_TOKEN，并与 sidecar 的 AUTH_TOKEN 保持一致。
-TESTGEN_AUTH_TOKEN = os.environ.get("TESTGEN_AUTH_TOKEN", "")
+#
+# 取令牌优先级（修复：项目使用 python-decouple 的 config() 读取 .env，但 decouple
+# 不会把值写回 os.environ；若只查 os.environ 会恒为空，导致代理始终不注入令牌、
+# sidecar 返回 401，testgen 控制台 API 全部不可用）。故优先读 Django settings
+# （已由 decouple 填充），再回退 os.environ。
+def _sidecar_token() -> str:
+    return getattr(settings, "TESTGEN_AUTH_TOKEN", "") or os.environ.get(
+        "TESTGEN_AUTH_TOKEN", ""
+    )
 
 # 不向下游透传的逐跳头/敏感头
 _HOP_BY_HOP = {
@@ -246,8 +255,9 @@ def _do_proxy(
 
     # M1：显式注入服务端共享令牌，使 sidecar 的 H8 鉴权通过（以正确凭据代替
     # AUTH_DISABLED 本地逃逸）。始终覆盖请求中自带的 X-Auth-Token，避免被伪造。
-    if TESTGEN_AUTH_TOKEN:
-        headers["X-Auth-Token"] = TESTGEN_AUTH_TOKEN
+    _token = _sidecar_token()
+    if _token:
+        headers["X-Auth-Token"] = _token
 
     body = request.body if request.method in ("POST", "PUT", "PATCH") else None
 
