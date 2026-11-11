@@ -67,6 +67,12 @@ def _headers() -> dict[str, str]:
     return headers
 
 
+# 让复用该 Session 的直接调用（如集成测试里的 client._session.post）也默认携带鉴权头。
+# sidecar 配置 AUTH_TOKEN 后走 fail-closed，漏带 token 会被 401 拒绝；把鉴权头钉在 Session 上，
+# 与所有 client.* 辅助函数（均显式传 _headers()）保持一致，避免「直接裸用 _session」漏鉴权。
+_session.headers.update(_headers())
+
+
 def health() -> dict[str, Any]:
     """存活探针（无鉴权）。返回 {"status":"ok","service":"testgen-service",...}。"""
     resp = _session.get(f"{base_url()}/health", timeout=10)
