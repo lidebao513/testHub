@@ -23,7 +23,7 @@ class PassThroughRenderer(BaseRenderer):
         return data
 
 
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.http import JsonResponse, StreamingHttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
@@ -55,7 +55,7 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
     """需求文档视图集"""
     queryset = RequirementDocument.objects.all()
     serializer_class = RequirementDocumentSerializer
-    parser_classes = [MultiPartParser, FormParser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_serializer_class(self):
         if self.action == 'create':
