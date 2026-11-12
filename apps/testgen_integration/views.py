@@ -523,6 +523,26 @@ class TestgenStageCompareView(APIView):
         return Response({"ok": True, **data})
 
 
+class TestgenSecurityVerdictView(APIView):
+    """安全裁判端点（G3）：对一批用例执行观测发起安全裁决，应拒却放通时自动建缺陷。
+
+    POST /api/testgen/security-verdict
+    body: {"observations": [...], "project_id": <可选默认项目>}
+      - observations 每项含 tags(含 "security" 才裁决) / project_id / case_id / title /
+        observed_status / expected_denied / dimension / tenant_identity 等（不含凭证明文）。
+      - 复用 execute_security_verdict 编排：注入 verdict_fn=client.verdict +
+        create_defect=create_security_defect_orm（ORM 直写 Defect，绕过自环 HTTP）。
+    """
+
+    permission_classes: ClassVar[list] = [IsAuthenticated]
+    parser_classes = _PARSERS
+
+    def post(self, request: Any) -> Response:
+        body = request.data or {}
+        payload, status_code = execute_security_verdict(body, user_id=request.user.id)
+        return Response(payload, status=status_code)
+
+
 class TestgenHealthView(APIView):
     """sidecar 存活探针（G7 残留）：聚合 is_sidecar_available 与 base_url。"""
 

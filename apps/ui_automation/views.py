@@ -1829,6 +1829,20 @@ class TestCaseViewSet(viewsets.ModelViewSet):
             execution.save()
             logger.info(f"[调试] 执行结果已保存: execution.status = {execution.status}")
 
+            # G4：单用例执行完成后，对 security 标记用例触发安全裁判（best-effort，
+            # 绝不中断主执行流程；sidecar 不可达/建单缺规范项目均被钩子内部吸收）。
+            try:
+                from apps.testgen_integration.hooks import (
+                    trigger_security_verdict_after_execution,
+                )
+
+                trigger_security_verdict_after_execution(
+                    [(test_case, execution_result["status"] == "passed")],
+                    reporter=request.user,
+                )
+            except Exception as _g4_exc:  # noqa: BLE001
+                logger.warning("G4 安全裁判钩子异常（忽略）: %s", _g4_exc)
+
             serializer = TestCaseExecutionSerializer(execution)
             # 格式化错误信息为统一的对象格式
             errors = []

@@ -192,11 +192,16 @@ class TestM9OwnsExecution:
 class TestProxyAuthAndCookie:
     def setup_method(self):
         self.factory = RequestFactory()
-        self._orig_token = proxy_mod.TESTGEN_AUTH_TOKEN
-        proxy_mod.TESTGEN_AUTH_TOKEN = "svc-secret-xyz"
+        # 代理令牌现由 proxy._sidecar_token() 读取（Django settings / os.environ），
+        # 不再暴露模块级 TESTGEN_AUTH_TOKEN 常量。此处以 patch 模拟「已配置服务端
+        # 共享令牌」场景，验证 _do_proxy 注入 X-Auth-Token 且不透传 cookies。
+        self._token_patch = patch.object(
+            proxy_mod, "_sidecar_token", return_value="svc-secret-xyz"
+        )
+        self._token_patch.start()
 
     def teardown_method(self):
-        proxy_mod.TESTGEN_AUTH_TOKEN = self._orig_token
+        self._token_patch.stop()
 
     def _authed_request(self, path="/testgen/x", user=None, method="get"):
         req = getattr(self.factory, method)(path)

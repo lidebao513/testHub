@@ -12,6 +12,7 @@ from .views import (
     TestgenHealthView,
     TestgenQualityView,
     TestgenScanView,
+    TestgenSecurityVerdictView,
     TestgenStageAnalyzeView,
     TestgenStageCompareView,
     TestgenStageListView,
@@ -31,6 +32,7 @@ urlpatterns = [
     path("commits", TestgenCommitsView.as_view(), name="commits"),
     path("describe", TestgenDescribeView.as_view(), name="describe"),
     path("sync", TestgenSyncView.as_view(), name="sync"),
+    path("security-verdict", TestgenSecurityVerdictView.as_view(), name="security_verdict"),
     path("health", TestgenHealthView.as_view(), name="health"),
     path(
         "tasks/<str:task_id>/cancel",
