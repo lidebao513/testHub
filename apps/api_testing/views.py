@@ -769,6 +769,7 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
             execution.save()
             
             results = []
+            executed_items = []  # G4：收集 (ApiRequest, passed) 供安全裁判钩子使用
             passed_count = 0
             failed_count = 0
             
@@ -890,6 +891,7 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
                         'error': error_message,
                         'assertions_results': assertions_results
                     })
+                    executed_items.append((api_request, passed))  # G4
                     
                     # 保存请求历史
                     RequestHistory.objects.create(
@@ -923,6 +925,7 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
                         'passed': False,
                         'error': str(e)
                     })
+                    executed_items.append((api_request, False))  # G4
             
             # 更新执行结果
             execution.end_time = timezone.now()
@@ -931,7 +934,21 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
             execution.status = 'COMPLETED' if failed_count == 0 else 'FAILED'
             execution.results = results
             execution.save()
-            
+
+            # G4：套件执行完成后，对 security 标记用例触发安全裁判（best-effort，
+            # 绝不中断主执行流程；sidecar 不可达/建单缺规范项目均被钩子内部吸收）。
+            try:
+                from apps.testgen_integration.hooks import (
+                    trigger_security_verdict_after_execution,
+                )
+
+                trigger_security_verdict_after_execution(
+                    executed_items,
+                    reporter=request.user,
+                )
+            except Exception as _g4_exc:  # noqa: BLE001
+                logger.warning("G4 安全裁判钩子异常（忽略）: %s", _g4_exc)
+
             # 记录执行操作
             log_operation(
                 operation_type='execute',

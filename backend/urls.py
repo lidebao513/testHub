@@ -43,6 +43,7 @@ urlpatterns = [
     # MCP 管理端 REST（日志/待确认）；协议端点 /api/mcp/ 在 ASGI 层分流
     path('api/mcp/', include('apps.mcp.urls')),
     path('api/testgen/', include('apps.testgen_integration.urls')),  # testgen 代码生成 sidecar 集成
+    path('api/taskcenter/', include('apps.taskcenter.urls')),  # 后台任务中心
     # testgen 控制台反向代理（同源嵌入）
     #   页面：/testgen/              → sidecar 根（转发时注入 X-Testhub-Api-Prefix）
     #   API ：/testgen-api/v1/       → sidecar /api/v1/（专属命名空间，不与平台 /api/* 冲突）
