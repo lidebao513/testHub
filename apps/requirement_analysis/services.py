@@ -19,7 +19,11 @@ except ImportError:
 from django.conf import settings
 from django.core.files.storage import default_storage
 
-from .models import RequirementDocument, RequirementAnalysis, BusinessRequirement, GeneratedTestCase, AnalysisTask
+from .models import (
+    RequirementDocument, RequirementAnalysis, BusinessRequirement, GeneratedTestCase, AnalysisTask,
+    AIModelConfig, PromptConfig, FunctionalInventory, UIElementDescription, ClarificationItem,
+    AIModelService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -486,3 +490,315 @@ class RequirementAnalysisService:
                 continue
         
         return review_result
+
+
+def _extract_json(content: str) -> Dict[str, Any]:
+    """从 LLM 返回文本中稳健地解析 JSON（兼容 ```json 围栏与多余前后文本）。"""
+    if content is None:
+        return {}
+    text = content.strip()
+    # 去掉可能的 ```json ... ``` 围栏
+    if '```' in text:
+        start = text.find('```')
+        end = text.rfind('```')
+        if start != end:
+            inner = text[start + 3:end]
+            # 去掉首行可能的语言标识
+            if inner.lstrip().lower().startswith('json'):
+                inner = inner.lstrip()[4:]
+            text = inner.strip()
+    # 截取第一个 { 到最后一个 } 之间的内容
+    first_brace = text.find('{')
+    last_brace = text.rfind('}')
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        text = text[first_brace:last_brace + 1]
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("三件套 LLM 返回无法解析为 JSON")
+        return None
+
+
+def _default_system_prompt(product: str) -> str:
+    """三件套各类产物的兜底系统提示词（当 PromptConfig 未配置时使用）。"""
+    base = (
+        "你是一名资深需求分析师与测试架构师。请严格基于给定的需求文档内容进行分析，"
+        "只输出与文档内容相符、可验证的结论，不要臆造文档中不存在的功能。"
+        "你必须只返回一个 JSON 对象，不要输出任何解释性文字或 Markdown 之外的格式。"
+    )
+    mapping = {
+        'functional_inventory': base + (
+            " 输出字段 functional_inventory：数组，每个元素含 seq(整数序号,从1开始)、"
+            "name(功能名称)、summary(一句话功能摘要)、source_ref(文档来源章节/页码,可留空字符串)。"
+        ),
+        'ui_description': base + (
+            " 输出字段 ui_descriptions：数组，每个元素含 page(页面/界面名称)、"
+            "element(元素名称)、desc(元素描述)、interaction(交互行为,可留空字符串)。"
+        ),
+        'clarification': base + (
+            " 输出字段 clarifications：数组，每个元素含 question(待澄清问题)、"
+            "impact(该问题未澄清的影响)、suggestion(给产品/开发的建议)。"
+        ),
+    }
+    return mapping.get(product, base)
+
+
+def _system_prompt_for(product: str) -> str:
+    """优先取 PromptConfig 中该类型 active 提示词，否则走兜底。"""
+    cfg = PromptConfig.objects.filter(prompt_type=product, is_active=True).first()
+    if cfg and cfg.content and cfg.content.strip():
+        return cfg.content.strip()
+    return _default_system_prompt(product)
+
+
+def _get_active_llm_config() -> AIModelConfig:
+    """选取一个可用的 AI 模型配置（优先 writer 角色，其次任意 active）。"""
+    cfg = AIModelConfig.objects.filter(is_active=True, role='writer').first()
+    if not cfg:
+        cfg = AIModelConfig.objects.filter(is_active=True).first()
+    if not cfg:
+        raise RuntimeError('未配置可用的 AI 模型，请先在「AI模型配置」中添加并启用一个配置')
+    return cfg
+
+
+def _build_user_prompt(document: RequirementDocument, scope: str) -> str:
+    text = document.extracted_text or ''
+    if len(text) > 12000:
+        text = text[:12000] + '\n...（文档已截断）'
+    return (
+        f"需求文档标题：{document.title}\n\n"
+        f"需求文档内容：\n{text}\n\n"
+        f"请针对「{scope}」生成结构化结果，严格按系统提示要求的 JSON 字段输出。"
+    )
+
+
+class RequirementThreeProductsService:
+    """需求三件套（功能清单 / 界面描述 / 待澄清项）+ 对话修订闭环服务"""
+
+    PRODUCT_SYSTEM_PROMPT = (
+        "你是一名资深需求分析师。请基于给定的需求文档，一次性产出三套结构化产物，"
+        "只返回 JSON，不要任何额外说明。JSON 结构必须包含三个数组字段："
+        "1) functional_inventory：元素含 seq(int,从1递增)、name(功能名称)、summary(功能摘要)、source_ref(来源章节,可空串)；"
+        "2) ui_descriptions：元素含 page(页面/界面)、element(元素名称)、desc(元素描述)、interaction(交互行为,可空串)；"
+        "3) clarifications：元素含 question(待澄清问题)、impact(未澄清的影响)、suggestion(建议)。"
+        "所有结论必须基于文档内容，不臆造。"
+    )
+
+    @classmethod
+    def generate_three_products(cls, document: RequirementDocument) -> Dict[str, int]:
+        """调用 LLM 生成三件套并落库（先清旧再落新，保证幂等）。
+
+        Returns: 各产物的创建数量字典。
+        """
+        if not document.extracted_text:
+            document.extracted_text = DocumentProcessor.extract_text(document)
+            document.save()
+
+        config = _get_active_llm_config()
+        messages = [
+            {"role": "system", "content": cls.PRODUCT_SYSTEM_PROMPT},
+            {"role": "user", "content": _build_user_prompt(document, '需求三件套（功能清单/界面描述/待澄清项）')},
+        ]
+
+        content = cls._call_llm(config, messages, timeout=120.0)
+        data = _extract_json(content) or {}
+
+        fi_list = data.get('functional_inventory') or []
+        ui_list = data.get('ui_descriptions') or []
+        cl_list = data.get('clarifications') or []
+
+        # 幂等落库：清掉该文档旧的三件套，再写入
+        FunctionalInventory.objects.filter(document=document).delete()
+        UIElementDescription.objects.filter(document=document).delete()
+        ClarificationItem.objects.filter(document=document).delete()
+
+        fi_count = 0
+        for idx, item in enumerate(fi_list, start=1):
+            if not isinstance(item, dict):
+                continue
+            FunctionalInventory.objects.create(
+                document=document,
+                seq=int(item.get('seq') or idx),
+                name=str(item.get('name') or f'功能{idx}'),
+                summary=str(item.get('summary') or ''),
+                source_ref=str(item.get('source_ref') or ''),
+            )
+            fi_count += 1
+
+        ui_count = 0
+        for item in ui_list:
+            if not isinstance(item, dict):
+                continue
+            UIElementDescription.objects.create(
+                document=document,
+                page=str(item.get('page') or ''),
+                element=str(item.get('element') or ''),
+                desc=str(item.get('desc') or ''),
+                interaction=str(item.get('interaction') or ''),
+            )
+            ui_count += 1
+
+        cl_count = 0
+        for item in cl_list:
+            if not isinstance(item, dict):
+                continue
+            ClarificationItem.objects.create(
+                document=document,
+                question=str(item.get('question') or ''),
+                impact=str(item.get('impact') or ''),
+                suggestion=str(item.get('suggestion') or ''),
+                status='open',
+            )
+            cl_count += 1
+
+        return {
+            'functional_inventory': fi_count,
+            'ui_descriptions': ui_count,
+            'clarifications': cl_count,
+        }
+
+    @classmethod
+    def _call_llm(cls, config: AIModelConfig, messages: List[Dict[str, str]], timeout: float = 120.0) -> str:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(
+                asyncio.wait_for(
+                    AIModelService.call_openai_compatible_api(config, messages, max_tokens=4096),
+                    timeout=timeout,
+                )
+            )
+        finally:
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            loop.close()
+        return (result or {}).get('choices', [{}])[0].get('message', {}).get('content', '')
+
+    @classmethod
+    def revise_with_clarification(
+        cls, document: RequirementDocument, clarification_id: int, answer: str
+    ) -> Dict[str, Any]:
+        """把澄清回答喂回，修订原三件套产物。
+
+        流程：
+        1. 定位 ClarificationItem，写入 answer 并置为 answered；
+        2. 将现有三件套 + 该澄清问答交给 LLM，产出修订后的三件套；
+        3. 幂等替换三件套，并把本次修订记入 revision_log，澄清项置 resolved。
+        """
+        clarification = ClarificationItem.objects.get(id=clarification_id, document=document)
+        captured_question = clarification.question
+
+        config = _get_active_llm_config()
+
+        # 组装现有产物上下文
+        existing_fi = [
+            {'seq': fi.seq, 'name': fi.name, 'summary': fi.summary, 'source_ref': fi.source_ref}
+            for fi in FunctionalInventory.objects.filter(document=document).order_by('seq')
+        ]
+        existing_ui = [
+            {'page': ui.page, 'element': ui.element, 'desc': ui.desc, 'interaction': ui.interaction}
+            for ui in UIElementDescription.objects.filter(document=document)
+        ]
+        existing_cl = [
+            {'question': c.question, 'impact': c.impact, 'suggestion': c.suggestion, 'status': c.status, 'answer': c.answer}
+            for c in ClarificationItem.objects.filter(document=document)
+        ]
+        context = json.dumps(
+            {'functional_inventory': existing_fi, 'ui_descriptions': existing_ui, 'clarifications': existing_cl},
+            ensure_ascii=False,
+        )
+
+        user_prompt = (
+            f"需求文档标题：{document.title}\n\n"
+            f"当前已有的三件套产物：\n{context}\n\n"
+            f"刚刚澄清的问题：{captured_question}\n"
+            f"用户的澄清回答：{answer}\n\n"
+            f"请根据该澄清回答，修订并更新三件套产物，修正受影响的条目、补充遗漏、消除歧义。"
+            f"仍只返回包含 functional_inventory / ui_descriptions / clarifications 三个数组的 JSON，"
+            f"字段要求与生成时一致；clarifications 中该条应保留 question/answer，并体现最新状态。"
+        )
+
+        content = cls._call_llm(
+            config,
+            [
+                {"role": "system", "content": cls.PRODUCT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        data = _extract_json(content) or {}
+
+        fi_list = data.get('functional_inventory') or existing_fi
+        ui_list = data.get('ui_descriptions') or existing_ui
+        cl_list = data.get('clarifications') or existing_cl
+
+        # 幂等替换
+        FunctionalInventory.objects.filter(document=document).delete()
+        for idx, item in enumerate(fi_list, start=1):
+            if not isinstance(item, dict):
+                continue
+            FunctionalInventory.objects.create(
+                document=document,
+                seq=int(item.get('seq') or idx),
+                name=str(item.get('name') or ''),
+                summary=str(item.get('summary') or ''),
+                source_ref=str(item.get('source_ref') or ''),
+            )
+
+        UIElementDescription.objects.filter(document=document).delete()
+        for item in ui_list:
+            if not isinstance(item, dict):
+                continue
+            UIElementDescription.objects.create(
+                document=document,
+                page=str(item.get('page') or ''),
+                element=str(item.get('element') or ''),
+                desc=str(item.get('desc') or ''),
+                interaction=str(item.get('interaction') or ''),
+            )
+
+        ClarificationItem.objects.filter(document=document).delete()
+        for item in cl_list:
+            if not isinstance(item, dict):
+                continue
+            c_status = str(item.get('status') or 'open')
+            if c_status not in ('open', 'answered', 'resolved'):
+                c_status = 'open'
+            ClarificationItem.objects.create(
+                document=document,
+                question=str(item.get('question') or ''),
+                impact=str(item.get('impact') or ''),
+                suggestion=str(item.get('suggestion') or ''),
+                status=c_status,
+                answer=str(item.get('answer') or ''),
+            )
+
+        # 记录修订日志，并标记被澄清项 resolved
+        log_entry = {
+            'clarification_id': clarification_id,
+            'question': captured_question,
+            'answer': answer,
+            'revised_at': datetime.now().isoformat(timespec='seconds'),
+        }
+        # 被澄清项已被上面的重建覆盖，按问题文本定位并挂上修订记录
+        target = ClarificationItem.objects.filter(
+            document=document, question__exact=captured_question
+        ).first()
+        if target:
+            logs = target.revision_log or []
+            if not isinstance(logs, list):
+                logs = []
+            logs.append(log_entry)
+            target.revision_log = logs
+            target.status = 'resolved'
+            target.answer = answer
+            target.save(update_fields=['answer', 'status', 'revision_log', 'updated_at'])
+
+        return {
+            'clarification_id': clarification_id,
+            'status': target.status if target else 'open',
+            'functional_inventory': len(fi_list),
+            'ui_descriptions': len(ui_list),
+            'clarifications': len(cl_list),
+        }

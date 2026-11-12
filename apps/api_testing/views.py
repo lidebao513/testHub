@@ -28,6 +28,7 @@ from .models import (
     RequestHistory, TestSuite, TestExecution, TestSuiteRequest,
     ScheduledTask, TaskExecutionLog, NotificationLog,
     TaskNotificationSetting, OperationLog, AIServiceConfig,
+    ApiSpecImport, GeneratedApiTestCase,
 )
 
 from .serializers import (
@@ -55,6 +56,12 @@ from .variable_resolver import VariableResolver
 from .ssrf_guard import SsrfBlocked, mask_webhook_url, safe_request
 from .serializers import (
     AIServiceConfigSerializer
+)
+from .services import (
+    OpenApiImportService, ApiTestCaseAgent, FailureAttributionService,
+)
+from .serializers import (
+    ApiSpecImportSerializer, GeneratedApiTestCaseSerializer,
 )
 
 # ---------------------------------------------------------------------------
@@ -617,6 +624,32 @@ class ApiRequestViewSet(viewsets.ModelViewSet):
         else:
             return data
 
+    @action(detail=True, methods=['post'], url_path='generate-cases')
+    def generate_cases(self, request, pk=None):
+        """P0-2：单接口用例生成 Agent。
+
+        调用 LLM 为该接口生成 正常/边界/异常 三类草稿用例，落 ``GeneratedApiTestCase(draft)``，
+        不直接作为正式用例执行，需前端确认（adopt）后才采纳。
+        """
+        api_request = get_object_or_404(ApiRequest, id=pk)
+        config_id = request.data.get('config_id')
+        try:
+            cases = ApiTestCaseAgent.generate_cases_for_request(
+                api_request, config_id=config_id, user=request.user,
+            )
+        except SsrfBlocked as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception('单接口用例生成失败')
+            return Response({'error': f'生成失败: {e}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        serializer = GeneratedApiTestCaseSerializer(cases, many=True)
+        return Response({'count': len(cases), 'cases': serializer.data},
+                        status=status.HTTP_201_CREATED)
+
 
 class EnvironmentViewSet(viewsets.ModelViewSet):
     queryset = Environment.objects.all()
@@ -1058,6 +1091,49 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
             return resolver.resolve(data)
         else:
             return data
+
+    @action(detail=False, methods=['post'], url_path='scenario/generate')
+    def scenario_generate(self, request):
+        """P0-2：场景用例生成 Agent。
+
+        接收多个 ApiRequest id，AI 串联业务流，生成 ``TestSuite(is_draft=True)`` + 顺序请求草稿。
+        """
+        request_ids = request.data.get('request_ids') or []
+        if not isinstance(request_ids, list) or not request_ids:
+            return Response({'error': '请提供 request_ids 列表'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        project_id = request.data.get('project_id')
+        project = None
+        if project_id:
+            project = ApiProject.objects.filter(id=project_id).first()
+        try:
+            suite = ApiTestCaseAgent.generate_scenario(
+                request_ids=request_ids, project=project,
+                config_id=request.data.get('config_id'), user=request.user,
+                name=request.data.get('name'),
+            )
+        except SsrfBlocked as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception('场景用例生成失败')
+            return Response({'error': f'生成失败: {e}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        serializer = TestSuiteSerializer(suite, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='adopt')
+    def adopt(self, request, pk=None):
+        """将 AI 生成的草稿套件转为正式套件（is_draft=False）。"""
+        suite = get_object_or_404(TestSuite, id=pk)
+        if not suite.is_draft:
+            return Response({'error': '该套件不是草稿'}, status=status.HTTP_400_BAD_REQUEST)
+        suite.is_draft = False
+        suite.save(update_fields=['is_draft', 'updated_at'])
+        serializer = TestSuiteSerializer(suite, context={'request': request})
+        return Response(serializer.data)
 
 
 class TestSuiteRequestViewSet(viewsets.ModelViewSet):
@@ -1644,6 +1720,52 @@ class TestExecutionViewSet(viewsets.ReadOnlyModelViewSet):
             import traceback
             logger.error(f"生成测试结果文件失败: {str(e)}\n{traceback.format_exc()}")
             raise
+
+
+    @action(detail=True, methods=['post'], url_path='attribution')
+    def attribution(self, request, pk=None):
+        """P0-2：失败执行 AI 归因。
+
+        仅对状态为 FAILED 的执行记录生效；基于请求/响应/断言/日志产出根因与修复建议，
+        写回 ``execution.attribution``。SSRF 守卫拦截属用户输入非法（400）。
+        """
+        execution = get_object_or_404(TestExecution, id=pk)
+        if execution.status != 'FAILED':
+            return Response({'error': '仅失败的执行记录可触发归因', 'status': execution.status},
+                            status=status.HTTP_400_BAD_REQUEST)
+        config_id = request.data.get('config_id')
+        try:
+            attribution = FailureAttributionService.attribute(
+                execution, config_id=config_id,
+            )
+        except SsrfBlocked as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception('失败归因失败')
+            return Response({'error': f'归因失败: {e}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({'execution_id': pk, 'attribution': attribution})
+
+    @action(detail=True, methods=['post'], url_path='regenerate-attribution')
+    def regenerate_attribution(self, request, pk=None):
+        """对已归因过的执行重新归因（覆盖原 attribution）。"""
+        execution = get_object_or_404(TestExecution, id=pk)
+        config_id = request.data.get('config_id')
+        try:
+            attribution = FailureAttributionService.attribute(
+                execution, config_id=config_id,
+            )
+        except SsrfBlocked as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception('重新归因失败')
+            return Response({'error': f'归因失败: {e}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({'execution_id': pk, 'attribution': attribution})
 
 
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
@@ -2932,3 +3054,92 @@ URL参数: {json.dumps(request_data['params'], ensure_ascii=False)}
             return Response({'error': f'AI服务调用失败: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception as e:
             return Response({'error': f'未知错误: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ApiSpecImportViewSet(viewsets.ModelViewSet):
+    """P0-2：OpenAPI 规格导入视图集"""
+
+    queryset = ApiSpecImport.objects.all()
+    serializer_class = ApiSpecImportSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['project', 'status', 'source']
+    search_fields = ['name', 'base_url']
+    ordering_fields = ['created_at', 'name']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        return ApiSpecImport.objects.filter(created_by=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    @action(detail=False, methods=['post'], url_path='import-openapi')
+    def import_openapi(self, request):
+        """解析 swagger/openapi 并落库为接口资产；server URL 经 SSRF 守卫校验。"""
+        raw_spec = request.data.get('raw_spec') or request.data.get('spec')
+        if not raw_spec:
+            return Response({'error': '请提供 raw_spec（规格内容）'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        spec_format = (request.data.get('spec_format') or 'json').lower()
+        name = request.data.get('name')
+        source = request.data.get('source') or 'paste'
+        project_id = request.data.get('project_id')
+        project = None
+        if project_id:
+            project = ApiProject.objects.filter(id=project_id, owner=request.user).first()
+        if not project:
+            project = ApiProject.objects.filter(owner=request.user).first()
+        if not project:
+            return Response({'error': '未找到可用项目，请先创建 API 项目'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            spec_import = OpenApiImportService.import_openapi(
+                raw_spec=raw_spec, spec_format=spec_format, project=project,
+                user=request.user, name=name, source=source,
+            )
+        except Exception as e:
+            logger.exception('OpenAPI 导入失败')
+            return Response({'error': f'导入失败: {e}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        serializer = ApiSpecImportSerializer(spec_import)
+        if spec_import.status == 'failed':
+            return Response(serializer.data, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class GeneratedApiTestCaseViewSet(viewsets.ModelViewSet):
+    """P0-2：AI 生成的接口用例草稿视图集（确认闸门）"""
+
+    serializer_class = GeneratedApiTestCaseSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['api_request', 'category', 'status']
+    ordering_fields = ['created_at', 'category']
+    ordering = ['category', 'created_at']
+
+    def get_queryset(self):
+        return GeneratedApiTestCase.objects.filter(created_by=self.request.user)
+
+    @action(detail=True, methods=['post'], url_path='adopt')
+    def adopt(self, request, pk=None):
+        """确认采纳一条草稿用例（status: draft → adopted）。"""
+        case = get_object_or_404(GeneratedApiTestCase, id=pk, created_by=request.user)
+        if case.status != 'draft':
+            return Response({'error': '该用例已处理'}, status=status.HTTP_400_BAD_REQUEST)
+        case.status = 'adopted'
+        case.save(update_fields=['status', 'updated_at'])
+        serializer = GeneratedApiTestCaseSerializer(case)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='discard')
+    def discard(self, request, pk=None):
+        """丢弃一条草稿用例（status: draft → discarded）。"""
+        case = get_object_or_404(GeneratedApiTestCase, id=pk, created_by=request.user)
+        if case.status != 'draft':
+            return Response({'error': '该用例已处理'}, status=status.HTTP_400_BAD_REQUEST)
+        case.status = 'discarded'
+        case.save(update_fields=['status', 'updated_at'])
+        serializer = GeneratedApiTestCaseSerializer(case)
+        return Response(serializer.data)

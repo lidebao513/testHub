@@ -34,7 +34,7 @@ from django.db import models
 from .models import (
     RequirementDocument, RequirementAnalysis, BusinessRequirement,
     GeneratedTestCase, AnalysisTask, AIModelConfig, PromptConfig, TestCaseGenerationTask,
-    GenerationConfig, AIModelService
+    GenerationConfig, AIModelService, FunctionalInventory, UIElementDescription, ClarificationItem
 )
 from .serializers import (
     RequirementDocumentSerializer, RequirementAnalysisSerializer,
@@ -42,9 +42,11 @@ from .serializers import (
     AnalysisTaskSerializer, DocumentUploadSerializer,
     TestCaseGenerationRequestSerializer, TestCaseReviewRequestSerializer,
     AIModelConfigSerializer, PromptConfigSerializer, TestCaseGenerationTaskSerializer,
-    GenerateTaskRequestSerializer, GenerationConfigSerializer
+    GenerateTaskRequestSerializer, GenerationConfigSerializer,
+    FunctionalInventorySerializer, UIElementDescriptionSerializer,
+    ClarificationItemSerializer, RequirementThreeProductsSerializer, ClarifyRequestSerializer
 )
-from .services import RequirementAnalysisService, DocumentProcessor
+from .services import RequirementAnalysisService, DocumentProcessor, RequirementThreeProductsService
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +183,70 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
             logger.error(f"提取文本时出错: {e}")
             return Response(
                 {'error': f'提取文本失败: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=True, methods=['post'], url_path='generate-products')
+    def generate_products(self, request, pk=None):
+        """针对文档生成需求三件套（功能清单/界面描述/待澄清项）。"""
+        document = self.get_object()
+        try:
+            counts = RequirementThreeProductsService.generate_three_products(document)
+            return Response({
+                'success': True,
+                'message': '需求三件套生成完成',
+                'counts': counts,
+            }, status=status.HTTP_200_OK)
+        except RuntimeError as e:
+            return Response({'success': False, 'message': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"生成需求三件套失败: {e}")
+            return Response(
+                {'success': False, 'message': f'生成失败: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=True, methods=['get'], url_path='products')
+    def products(self, request, pk=None):
+        """获取文档的需求三件套（功能清单/界面描述/待澄清项）。"""
+        document = self.get_object()
+        data = {
+            'document_id': document.id,
+            'functional_inventory': FunctionalInventorySerializer(
+                FunctionalInventory.objects.filter(document=document).order_by('seq'), many=True).data,
+            'ui_descriptions': UIElementDescriptionSerializer(
+                UIElementDescription.objects.filter(document=document), many=True).data,
+            'clarifications': ClarificationItemSerializer(
+                ClarificationItem.objects.filter(document=document).order_by('-created_at'), many=True).data,
+        }
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='clarify')
+    def clarify(self, request, pk=None):
+        """将澄清回答喂回，修订原三件套产物（对话修订闭环）。"""
+        document = self.get_object()
+        serializer = ClarifyRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {'success': False, 'message': '参数错误', 'errors': serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        clarification_id = serializer.validated_data['clarification_id']
+        answer = serializer.validated_data['answer']
+        try:
+            result = RequirementThreeProductsService.revise_with_clarification(
+                document, clarification_id, answer)
+            return Response({'success': True, 'message': '澄清已应用并修订产物', 'result': result},
+                            status=status.HTTP_200_OK)
+        except ClarificationItem.DoesNotExist:
+            return Response({'success': False, 'message': '待澄清项不存在或不属于该文档'},
+                            status=status.HTTP_404_NOT_FOUND)
+        except RuntimeError as e:
+            return Response({'success': False, 'message': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"澄清修订失败: {e}")
+            return Response(
+                {'success': False, 'message': f'修订失败: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 

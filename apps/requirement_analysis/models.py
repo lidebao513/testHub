@@ -73,6 +73,83 @@ class RequirementAnalysis(models.Model):
         return f"{self.document.title} - 分析报告"
 
 
+class FunctionalInventory(models.Model):
+    """功能清单（需求三件套之一）：文档拆解出的功能点清单"""
+
+    document = models.ForeignKey(RequirementDocument, on_delete=models.CASCADE,
+                                related_name='functional_inventory', verbose_name='关联文档')
+    seq = models.PositiveIntegerField(verbose_name='序号')
+    name = models.CharField(max_length=200, verbose_name='功能名称')
+    summary = models.TextField(verbose_name='功能摘要')
+    source_ref = models.CharField(max_length=255, verbose_name='来源引用', blank=True, default='')
+
+    created_at = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'requirement_functional_inventory'
+        verbose_name = '功能清单'
+        verbose_name_plural = '功能清单'
+        ordering = ['seq']
+
+    def __str__(self):
+        return f"{self.seq}. {self.name}"
+
+
+class UIElementDescription(models.Model):
+    """界面元素描述（需求三件套之二）：文档涉及的关键界面与元素"""
+
+    document = models.ForeignKey(RequirementDocument, on_delete=models.CASCADE,
+                                related_name='ui_descriptions', verbose_name='关联文档')
+    page = models.CharField(max_length=200, verbose_name='页面/界面')
+    element = models.CharField(max_length=200, verbose_name='元素名称')
+    desc = models.TextField(verbose_name='元素描述')
+    interaction = models.TextField(verbose_name='交互行为', blank=True, default='')
+
+    created_at = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'requirement_ui_descriptions'
+        verbose_name = '界面元素描述'
+        verbose_name_plural = '界面元素描述'
+        ordering = ['id']
+
+    def __str__(self):
+        return f"{self.page} / {self.element}"
+
+
+class ClarificationItem(models.Model):
+    """待澄清项（需求三件套之三）+ 对话修订闭环"""
+
+    STATUS_CHOICES = [
+        ('open', '待澄清'),
+        ('answered', '已回答'),
+        ('resolved', '已解决'),
+    ]
+
+    document = models.ForeignKey(RequirementDocument, on_delete=models.CASCADE,
+                                related_name='clarifications', verbose_name='关联文档')
+    question = models.TextField(verbose_name='澄清问题')
+    impact = models.TextField(verbose_name='影响分析', blank=True, default='')
+    suggestion = models.TextField(verbose_name='建议', blank=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='open', verbose_name='状态')
+    answer = models.TextField(verbose_name='澄清回答', blank=True, default='')
+    revision_log = models.JSONField(verbose_name='修订记录', null=True, blank=True)
+
+    created_at = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'requirement_clarifications'
+        verbose_name = '待澄清项'
+        verbose_name_plural = '待澄清项'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"澄清 #{self.id}: {self.question[:40]}"
+
+
 class BusinessRequirement(models.Model):
     """业务需求模型"""
     REQUIREMENT_TYPE_CHOICES = [
@@ -256,6 +333,9 @@ class PromptConfig(models.Model):
     PROMPT_CHOICES = [
         ('writer', '用例编写提示词'),
         ('reviewer', '用例评审提示词'),
+        ('functional_inventory', '功能清单提示词'),
+        ('ui_description', '界面描述提示词'),
+        ('clarification', '待澄清项提示词'),
     ]
 
     name = models.CharField(max_length=100, verbose_name='配置名称')

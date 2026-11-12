@@ -19,6 +19,7 @@ from .models import (
     RequestHistory, TestSuite, TestExecution, TestSuiteRequest,
     ScheduledTask, TaskExecutionLog, NotificationLog,
     TaskNotificationSetting, OperationLog, AIServiceConfig,
+    ApiSpecImport, GeneratedApiTestCase,
 )
 
 User = get_user_model()
@@ -186,7 +187,7 @@ class TestSuiteSerializer(serializers.ModelSerializer):
     class Meta:
         model = TestSuite
         fields = [
-            'id', 'name', 'description', 'project', 'environment',
+            'id', 'name', 'description', 'project', 'environment', 'is_draft',
             'suite_requests', 'created_by', 'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
@@ -205,7 +206,7 @@ class TestExecutionSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'test_suite', 'status', 'start_time', 'end_time',
             'total_requests', 'passed_requests', 'failed_requests',
-            'results', 'executed_by', 'created_at'
+            'results', 'attribution', 'executed_by', 'created_at'
         ]
 
     def to_representation(self, instance):
@@ -870,3 +871,36 @@ class AIServiceConfigSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data['created_by'] = self.context['request'].user
         return super().create(validated_data)
+
+
+class ApiSpecImportSerializer(serializers.ModelSerializer):
+    """OpenAPI 规格导入记录序列化器"""
+
+    class Meta:
+        model = ApiSpecImport
+        fields = [
+            'id', 'name', 'source', 'raw_spec', 'spec_format', 'base_url',
+            'project', 'status', 'imported_count', 'error_message',
+            'imported_requests', 'created_by', 'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'base_url', 'status', 'imported_count', 'error_message',
+            'imported_requests', 'created_by', 'created_at', 'updated_at'
+        ]
+
+
+class GeneratedApiTestCaseSerializer(serializers.ModelSerializer):
+    """AI 生成的接口用例草稿序列化器"""
+
+    category_display = serializers.CharField(source='get_category_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    api_request_name = serializers.CharField(source='api_request.name', read_only=True)
+
+    class Meta:
+        model = GeneratedApiTestCase
+        fields = [
+            'id', 'api_request', 'api_request_name', 'name', 'category',
+            'category_display', 'request_overrides', 'assertions', 'description',
+            'status', 'status_display', 'created_by', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_by', 'created_at', 'updated_at', 'status']
