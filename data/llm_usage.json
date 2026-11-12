@@ -1,0 +1,10 @@
+{
+  "2026-11-12": {
+    "total": 71011,
+    "calls": 19,
+    "by_model": {
+      "deepseek-v4-pro-0813@django": 70450,
+      "deepseek-v4.1-flash@django": 561
+    }
+  }
+}

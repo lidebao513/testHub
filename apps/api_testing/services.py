@@ -485,5 +485,5 @@ class FailureAttributionService:
         data = _extract_json(content)
         attribution = data if isinstance(data, dict) else {"raw": content or ""}
         execution.attribution = attribution
-        execution.save(update_fields=["attribution", "updated_at"])
+        execution.save(update_fields=["attribution"])
         return attribution

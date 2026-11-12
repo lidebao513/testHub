@@ -173,3 +173,83 @@ export function getOperationLogs(params) {
     params
   })
 }
+
+// ==================== P0-2 OpenAPI 导入 + 接口 Agent + AI 归因 ====================
+
+// 解析 swagger/openapi 并落库为接口资产
+export function importOpenApi(data) {
+  return request({
+    url: '/api-testing/spec-imports/import-openapi/',
+    method: 'post',
+    data
+  })
+}
+
+// 单接口用例生成 Agent（生成草稿用例）
+export function generateCases(requestId, data = {}) {
+  return request({
+    url: `/api-testing/requests/${requestId}/generate-cases/`,
+    method: 'post',
+    data
+  })
+}
+
+// 场景用例生成 Agent（串联多个接口生成草稿套件）
+export function generateScenario(data) {
+  return request({
+    url: '/api-testing/test-suites/scenario/generate/',
+    method: 'post',
+    data
+  })
+}
+
+// 将 AI 生成的草稿套件转为正式套件
+export function adoptTestSuite(id) {
+  return request({
+    url: `/api-testing/test-suites/${id}/adopt/`,
+    method: 'post'
+  })
+}
+
+// 获取执行记录列表
+export function getExecutions(params) {
+  return request({
+    url: '/api-testing/test-executions/',
+    method: 'get',
+    params
+  })
+}
+
+// 失败执行 AI 归因
+export function getAttribution(executionId, data = {}) {
+  return request({
+    url: `/api-testing/test-executions/${executionId}/attribution/`,
+    method: 'post',
+    data
+  })
+}
+
+// 获取 AI 生成的接口用例草稿列表
+export function getGeneratedCases(params) {
+  return request({
+    url: '/api-testing/generated-cases/',
+    method: 'get',
+    params
+  })
+}
+
+// 确认采纳一条草稿用例
+export function adoptGeneratedCase(id) {
+  return request({
+    url: `/api-testing/generated-cases/${id}/adopt/`,
+    method: 'post'
+  })
+}
+
+// 丢弃一条草稿用例
+export function discardGeneratedCase(id) {
+  return request({
+    url: `/api-testing/generated-cases/${id}/discard/`,
+    method: 'post'
+  })
+}

@@ -641,6 +641,10 @@ class ApiRequestViewSet(viewsets.ModelViewSet):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except RuntimeError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            # LLM 推理超时/网络抖动：返回可重试的客户端错误，而非 500
+            return Response({'error': f'LLM 推理超时，请稍后重试: {e}'},
+                            status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             logger.exception('单接口用例生成失败')
             return Response({'error': f'生成失败: {e}'},
@@ -999,6 +1003,21 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
             execution.save()
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+    @action(detail=True, methods=['post'], url_path='adopt')
+    def adopt(self, request, pk=None):
+        """将 AI 生成的草稿套件转为正式套件（is_draft=False）。
+
+        P0-2 场景 Agent 闭环：generate_scenario 产出 is_draft=True 的草稿套件，
+        用户确认（采纳）后才转为正式可执行的套件。
+        """
+        test_suite = self.get_object()
+        if not test_suite.is_draft:
+            return Response({'error': '该套件不是草稿'}, status=status.HTTP_400_BAD_REQUEST)
+        test_suite.is_draft = False
+        test_suite.save(update_fields=['is_draft', 'updated_at'])
+        serializer = TestSuiteSerializer(test_suite, context={'request': request})
+        return Response(serializer.data)
+
     def perform_create(self, serializer):
         """创建测试套件时记录日志"""
         instance = serializer.save()
@@ -1116,6 +1135,9 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except RuntimeError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            return Response({'error': f'LLM 推理超时，请稍后重试: {e}'},
+                            status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             logger.exception('场景用例生成失败')
             return Response({'error': f'生成失败: {e}'},
@@ -1123,17 +1145,6 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
 
         serializer = TestSuiteSerializer(suite, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-    @action(detail=True, methods=['post'], url_path='adopt')
-    def adopt(self, request, pk=None):
-        """将 AI 生成的草稿套件转为正式套件（is_draft=False）。"""
-        suite = get_object_or_404(TestSuite, id=pk)
-        if not suite.is_draft:
-            return Response({'error': '该套件不是草稿'}, status=status.HTTP_400_BAD_REQUEST)
-        suite.is_draft = False
-        suite.save(update_fields=['is_draft', 'updated_at'])
-        serializer = TestSuiteSerializer(suite, context={'request': request})
-        return Response(serializer.data)
 
 
 class TestSuiteRequestViewSet(viewsets.ModelViewSet):
@@ -1742,6 +1753,9 @@ class TestExecutionViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except RuntimeError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            return Response({'error': f'LLM 推理超时，请稍后重试: {e}'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except Exception as e:
             logger.exception('失败归因失败')
             return Response({'error': f'归因失败: {e}'},
@@ -1761,6 +1775,9 @@ class TestExecutionViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except RuntimeError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            return Response({'error': f'LLM 推理超时，请稍后重试: {e}'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except Exception as e:
             logger.exception('重新归因失败')
             return Response({'error': f'归因失败: {e}'},

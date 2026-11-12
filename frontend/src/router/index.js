@@ -190,6 +190,11 @@ const routes = [
                 component: () => import('@/views/requirement-analysis/GeneratedTestCaseList.vue')
             },
             {
+                path: 'requirement-three-products',
+                name: 'RequirementThreeProducts',
+                component: () => import('@/views/requirement-analysis/ThreeProductsView.vue')
+            },
+            {
                 path: 'task-detail/:taskId',
                 name: 'TaskDetail',
                 component: () => import('@/views/requirement-analysis/TaskDetail.vue')
@@ -259,6 +264,11 @@ const routes = [
                 path: 'notification-logs',
                 name: 'ApiNotificationLogs',
                 component: NotificationLogs
+            },
+            {
+                path: 'ai-interface-generation',
+                name: 'ApiInterfaceGeneration',
+                component: () => import('@/views/api-testing/AiInterfaceGeneration.vue')
             }
         ]
     },

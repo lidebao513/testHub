@@ -25,6 +25,7 @@ export default {
     aiCaseGeneration: 'AI Case Generation',
     codeGenerationConsole: 'Code Generation (testgen)',
     aiGeneratedTestcases: 'AI Generated Test Cases',
+    requirementThreeProducts: 'Requirement Three Products',
     promptConfig: 'Prompt Configuration',
     projectManagement: 'Project Management',
     testCases: 'Test Cases',
@@ -43,6 +44,7 @@ export default {
     environmentManagement: 'Environment Management',
     scheduledTasks: 'Scheduled Tasks',
     notificationList: 'Notification List',
+    aiInterfaceGeneration: 'AI Interface Generation',
 
     // Bug Management
     defectDashboard: 'Defect Dashboard',

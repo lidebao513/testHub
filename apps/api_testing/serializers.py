@@ -174,10 +174,14 @@ class RequestHistorySerializer(serializers.ModelSerializer):
 
 class TestSuiteRequestSerializer(serializers.ModelSerializer):
     request = ApiRequestSerializer(read_only=True)
+    request_id = serializers.PrimaryKeyRelatedField(
+        source='request', queryset=ApiRequest.objects.all(), write_only=True
+    )
+    test_suite = serializers.PrimaryKeyRelatedField(queryset=TestSuite.objects.all())
 
     class Meta:
         model = TestSuiteRequest
-        fields = ['id', 'request', 'order', 'assertions', 'enabled']
+        fields = ['id', 'request', 'request_id', 'test_suite', 'order', 'assertions', 'enabled']
 
 
 class TestSuiteSerializer(serializers.ModelSerializer):

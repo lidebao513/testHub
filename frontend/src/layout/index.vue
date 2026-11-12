@@ -23,6 +23,7 @@
               <el-menu-item index="/ai-generation/requirement-analysis">{{ $t('menu.aiCaseGeneration') }}</el-menu-item>
               <el-menu-item index="/ai-generation/testgen-console">{{ $t('menu.codeGenerationConsole') }}</el-menu-item>
               <el-menu-item index="/ai-generation/generated-testcases">{{ $t('menu.aiGeneratedTestcases') }}</el-menu-item>
+              <el-menu-item index="/ai-generation/requirement-three-products">{{ $t('menu.requirementThreeProducts') }}</el-menu-item>
             </el-sub-menu>
             <el-menu-item index="/ai-generation/projects">
               <el-icon><Folder /></el-icon>
@@ -92,6 +93,10 @@
             <el-menu-item index="/api-testing/notification-logs">
               <el-icon><Bell /></el-icon>
               <span>{{ $t('menu.notificationList') }}</span>
+            </el-menu-item>
+            <el-menu-item index="/api-testing/ai-interface-generation">
+              <el-icon><MagicStick /></el-icon>
+              <span>{{ $t('menu.aiInterfaceGeneration') }}</span>
             </el-menu-item>
           </template>
 

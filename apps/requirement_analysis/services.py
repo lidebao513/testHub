@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import time
 import uuid
 import asyncio
@@ -493,30 +494,78 @@ class RequirementAnalysisService:
 
 
 def _extract_json(content: str) -> Dict[str, Any]:
-    """从 LLM 返回文本中稳健地解析 JSON（兼容 ```json 围栏与多余前后文本）。"""
+    """从 LLM 返回文本中稳健地解析 JSON。
+
+    兼容 ```json 围栏、多余前后文本、以及字符串内/嵌套的括号（deepseek
+    偶发输出），用平衡括号扫描兜底，避免简单 rfind('}') 截错导致 0 条。
+    """
     if content is None:
         return {}
     text = content.strip()
-    # 去掉可能的 ```json ... ``` 围栏
-    if '```' in text:
-        start = text.find('```')
-        end = text.rfind('```')
-        if start != end:
-            inner = text[start + 3:end]
-            # 去掉首行可能的语言标识
-            if inner.lstrip().lower().startswith('json'):
-                inner = inner.lstrip()[4:]
-            text = inner.strip()
-    # 截取第一个 { 到最后一个 } 之间的内容
-    first_brace = text.find('{')
-    last_brace = text.rfind('}')
-    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-        text = text[first_brace:last_brace + 1]
+
+    # 去 ```json ... ``` 围栏（正则兼顾无闭合围栏的情况）
+    fence = re.search(r"```(?:json)?\s*(.*?)(?:```|$)", text, re.DOTALL | re.IGNORECASE)
+    if fence:
+        text = fence.group(1).strip()
+
+    # 优先直接解析
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        logger.warning("三件套 LLM 返回无法解析为 JSON")
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+        # 顶层是数组等非对象：三件套契约要求 dict，标记无法解析
+        logger.warning("三件套 LLM 返回非对象 JSON（top-level=%s）", type(parsed).__name__)
         return None
+    except json.JSONDecodeError:
+        pass
+
+    # 平衡括号扫描：优先提取首个完整 {…}（三件套契约要求 dict）
+    obj = _extract_balanced(text, '{', '}')
+    if isinstance(obj, dict):
+        return obj
+
+    # 仅当文本确实以 [ 开头时，才退回到顶层数组（避免把内层数组误当顶层结果）
+    if text.lstrip().startswith('['):
+        arr = _extract_balanced(text, '[', ']')
+        if isinstance(arr, list):
+            logger.warning("三件套 LLM 返回顶层数组而非对象")
+            return None
+
+    logger.warning("三件套 LLM 返回无法解析为 JSON")
+    return None
+
+
+def _extract_balanced(text: str, open_c: str, close_c: str) -> Any:
+    """从 text 中扫描出首个配平 open_c/close_c 包裹的片段并尝试解析为 JSON。"""
+    start = text.find(open_c)
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == '\\':
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == open_c:
+            depth += 1
+        elif ch == close_c:
+            depth -= 1
+            if depth == 0:
+                cand = text[start:i + 1]
+                try:
+                    return json.loads(cand)
+                except json.JSONDecodeError:
+                    return None
+    return None
 
 
 def _default_system_prompt(product: str) -> str:
@@ -582,6 +631,8 @@ class RequirementThreeProductsService:
         "2) ui_descriptions：元素含 page(页面/界面)、element(元素名称)、desc(元素描述)、interaction(交互行为,可空串)；"
         "3) clarifications：元素含 question(待澄清问题)、impact(未澄清的影响)、suggestion(建议)。"
         "所有结论必须基于文档内容，不臆造。"
+        "【严格控制长度】summary/desc/suggestion/impact 每项不得超过 25 个汉字，"
+        "不要展开长段落、不要重复、不要示例性废话；整段输出应紧凑，避免被 max_tokens 截断。"
     )
 
     @classmethod
@@ -600,7 +651,13 @@ class RequirementThreeProductsService:
             {"role": "user", "content": _build_user_prompt(document, '需求三件套（功能清单/界面描述/待澄清项）')},
         ]
 
-        content = cls._call_llm(config, messages, timeout=120.0)
+        # 首次生成（max_tokens=8192）；若被截断则提升上限重试一次，避免三件套静默 0 条
+        result = cls._call_llm_raw(config, messages, timeout=120.0, max_tokens=8192)
+        content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+        if result.get('choices', [{}])[0].get('finish_reason') == 'length':
+            logger.warning("三件套首次生成被截断，提升至 max_tokens=16384 重试一次")
+            result = cls._call_llm_raw(config, messages, timeout=180.0, max_tokens=16384)
+            content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
         data = _extract_json(content) or {}
 
         fi_list = data.get('functional_inventory') or []
@@ -658,13 +715,14 @@ class RequirementThreeProductsService:
         }
 
     @classmethod
-    def _call_llm(cls, config: AIModelConfig, messages: List[Dict[str, str]], timeout: float = 120.0) -> str:
+    def _call_llm_raw(cls, config: AIModelConfig, messages: List[Dict[str, str]], timeout: float = 120.0, max_tokens: int = 4096) -> Dict[str, Any]:
+        """调用 LLM 并返回完整响应字典（含 finish_reason，便于截断重试）。"""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             result = loop.run_until_complete(
                 asyncio.wait_for(
-                    AIModelService.call_openai_compatible_api(config, messages, max_tokens=4096),
+                    AIModelService.call_openai_compatible_api(config, messages, max_tokens=max_tokens),
                     timeout=timeout,
                 )
             )
@@ -674,7 +732,18 @@ class RequirementThreeProductsService:
             except Exception:
                 pass
             loop.close()
-        return (result or {}).get('choices', [{}])[0].get('message', {}).get('content', '')
+        return result or {}
+
+    @classmethod
+    def _call_llm(cls, config: AIModelConfig, messages: List[Dict[str, str]], timeout: float = 120.0, max_tokens: int = 4096) -> str:
+        result = cls._call_llm_raw(config, messages, timeout=timeout, max_tokens=max_tokens)
+        # 输出被 max_tokens 截断时给出告警，便于调参
+        try:
+            if result.get('choices', [{}])[0].get('finish_reason') == 'length':
+                logger.warning("LLM 输出被 max_tokens(%s) 截断，建议提高上限", max_tokens)
+        except Exception:
+            pass
+        return result.get('choices', [{}])[0].get('message', {}).get('content', '')
 
     @classmethod
     def revise_with_clarification(
