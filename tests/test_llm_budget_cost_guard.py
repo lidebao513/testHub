@@ -278,3 +278,35 @@ class TestCallChain:
         )
         raw = json.loads(usage_tmp.read_text(encoding="utf-8"))
         assert raw[date.today().isoformat()]["total"] == 120
+
+
+def test_near_limit_flag_in_snapshot(usage_tmp, monkeypatch):
+    """当日用量跨过 warn_ratio 后，snapshot.near_limit 应为 True。"""
+    monkeypatch.setenv("LLM_DAILY_TOKEN_BUDGET", "1000")
+    monkeypatch.setenv("LLM_BUDGET_WARN_RATIO", "0.8")
+    cfg = llm_budget.load_settings()
+    assert cfg.warn_ratio == 0.8
+    llm_budget.record_usage("m", 0, 500, cfg=cfg)  # 50%
+    assert llm_budget.snapshot(cfg)["near_limit"] is False
+    llm_budget.record_usage("m", 0, 400, cfg=cfg)  # 90%
+    snap = llm_budget.snapshot(cfg)
+    assert snap["near_limit"] is True
+    assert abs(snap["warn_ratio"] - 0.8) < 1e-9
+
+
+def test_budget_warn_logged_once_on_crossing(usage_tmp, monkeypatch, caplog):
+    """用量跨过 warn_ratio 闸值时告警一次（不阻断），持续高于闸值不再重复告警。"""
+    import logging
+
+    monkeypatch.setenv("LLM_DAILY_TOKEN_BUDGET", "1000")
+    monkeypatch.setenv("LLM_BUDGET_WARN_RATIO", "0.8")
+    cfg = llm_budget.load_settings()
+    llm_budget.record_usage("m", 0, 500, cfg=cfg)  # 50%
+    with caplog.at_level(logging.WARNING, logger=llm_budget.logger.name):
+        llm_budget.record_usage("m", 0, 400, cfg=cfg)  # 90% -> 跨过 80%
+    assert any("已用" in r.message for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=llm_budget.logger.name):
+        llm_budget.record_usage("m", 0, 50, cfg=cfg)  # 95%，仍在闸值之上，未重新跨过
+    assert not any("已用" in r.message for r in caplog.records)

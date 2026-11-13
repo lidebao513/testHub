@@ -49,32 +49,90 @@ def _get_active_config(
 
 
 def _call_llm(
-    config: AIServiceConfig, messages: list[dict[str, str]], timeout: float = 90.0
+    config: AIServiceConfig, messages: list[dict[str, str]], timeout: float | None = None
 ) -> str:
-    """用 AIServiceConfig 同步调用 chat/completions，返回 message content。"""
+    """用 AIServiceConfig 同步调用 chat/completions，返回 message content。
+
+    #268 治理增强：
+    - 超时分级：默认走 ``llm_budget`` 的 ``call_timeout``（默认 180s），覆盖 DeepSeek 60~120s
+      推理；调用方显式传入的更小超时不生效（保证不低于配置下限），避免 60/90s 把长推理打挂。
+    - 成本记账：与 requirement_analysis 中央路径口径一致（channel='django'），写入 data/llm_usage.json。
+    - 长输出兜底：finish_reason=='length' 时把 max_tokens 翻倍重试一次（不超过护栏上限）。
+    """
+    from apps.requirement_analysis import llm_budget as budget
+
     from .ssrf_guard import safe_request
+
+    settings = budget.load_settings()
+    eff_timeout = (
+        float(timeout)
+        if (timeout and timeout > 0 and timeout >= settings.call_timeout)
+        else float(settings.call_timeout)
+    )
 
     headers = {
         "Authorization": f"Bearer {config.get_api_key()}",
         "Content-Type": "application/json",
     }
-    data = {
+    data: dict[str, Any] = {
         "model": config.model_name,
         "messages": messages,
         "max_tokens": config.max_tokens,
         "temperature": config.temperature,
     }
-    resp = safe_request(
-        "POST",
-        f"{config.base_url}/chat/completions",
-        headers=headers,
-        json=data,
-        timeout=timeout,
-    )
-    if resp.status_code != 200:
-        raise RuntimeError(f"AI 调用失败 {resp.status_code}: {(resp.text or '')[:500]}")
-    result = resp.json()
-    return result["choices"][0]["message"]["content"]
+
+    last_result: dict[str, Any] = {}
+    for _ in range(2):
+        resp = safe_request(
+            "POST",
+            f"{config.base_url}/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=eff_timeout,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"AI 调用失败 {resp.status_code}: {(resp.text or '')[:500]}")
+        last_result = resp.json()
+        if (
+            last_result.get("choices", [{}])[0].get("finish_reason") == "length"
+            and int(data.get("max_tokens") or 0) < settings.max_output_tokens
+        ):
+            data["max_tokens"] = min(int(data["max_tokens"]) * 2, settings.max_output_tokens)
+            continue  # 截断 → 翻倍 max_tokens 重试一次
+        break
+
+    content = last_result.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+    # 成本记账（与中央路径口径一致：channel='django'）
+    try:
+        usage = last_result.get("usage") or {}
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+        if not prompt_tokens:
+            prompt_tokens = budget.estimate_messages_tokens(messages)
+        if not completion_tokens:
+            completion_tokens = budget.estimate_tokens(str(content))
+        budget.record_usage(
+            config.model_name,
+            prompt_tokens,
+            completion_tokens,
+            channel="django",
+            cfg=settings,
+        )
+    except Exception as exc:
+        logger.warning("LLM 用量记账失败（不影响本次返回）：%s", exc)
+
+    # 仍被截断时告警（重试后仍 length）
+    try:
+        if last_result.get("choices", [{}])[0].get("finish_reason") == "length":
+            logger.warning(
+                "LLM 输出被 max_tokens(%s) 截断（重试后仍超限），建议提高护栏上限",
+                data.get("max_tokens"),
+            )
+    except Exception:  # noqa: S110 - 截断告警检查失败不阻断
+        pass
+
+    return content
 
 
 def _extract_json(content: str) -> Any:
@@ -344,7 +402,7 @@ class ApiTestCaseAgent:
             {"role": "system", "content": cls.CASE_SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(req_info, ensure_ascii=False)},
         ]
-        content = _call_llm(config, messages, timeout=90)
+        content = _call_llm(config, messages)
         data = _extract_json(content)
         if not isinstance(data, dict):
             raise TypeError("AI 返回无法解析为用例 JSON")
@@ -402,7 +460,7 @@ class ApiTestCaseAgent:
                 ),
             },
         ]
-        content = _call_llm(config, messages, timeout=90)
+        content = _call_llm(config, messages)
         data = _extract_json(content)
         if not isinstance(data, dict):
             raise TypeError("AI 返回无法解析为场景 JSON")
@@ -478,7 +536,7 @@ class FailureAttributionService:
                 "content": json.dumps(ctx, ensure_ascii=False, default=str),
             },
         ]
-        content = _call_llm(config, messages, timeout=60)
+        content = _call_llm(config, messages)
         data = _extract_json(content)
         attribution = data if isinstance(data, dict) else {"raw": content or ""}
         execution.attribution = attribution
