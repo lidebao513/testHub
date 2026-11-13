@@ -1,61 +1,84 @@
-from rest_framework import viewsets, status
-from rest_framework.decorators import action, api_view
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from django.contrib.auth import get_user_model
-from django.shortcuts import get_object_or_404
-from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import filters
-from django.db import models
-from django.utils import timezone
-from django.http import HttpResponse, FileResponse, Http404, HttpResponseNotFound
-from django.views.static import serve
-from django.conf import settings
-from django.views.decorators.csrf import csrf_exempt
-import requests
-import time
-import os
 import json
 import logging
-import uuid
+import os
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime
+
+import requests
+from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.db import models
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import filters, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 
 from .models import (
-    ApiProject, ApiCollection, ApiRequest, Environment,
-    RequestHistory, TestSuite, TestExecution, TestSuiteRequest,
-    ScheduledTask, TaskExecutionLog, NotificationLog,
-    TaskNotificationSetting, OperationLog, AIServiceConfig,
+    AIServiceConfig,
+    ApiCollection,
+    ApiProject,
+    ApiRequest,
+    ApiSpecImport,
+    Environment,
+    GeneratedApiTestCase,
+    NotificationLog,
+    OperationLog,
+    RequestHistory,
+    ScheduledTask,
+    TaskExecutionLog,
+    TaskNotificationSetting,
+    TestExecution,
+    TestSuite,
+    TestSuiteRequest,
 )
-
 from .serializers import (
-    ApiProjectSerializer, ApiCollectionSerializer, ApiRequestSerializer,
-    EnvironmentSerializer, RequestHistorySerializer, TestSuiteSerializer,
-    TestSuiteRequestSerializer, TestExecutionSerializer, UserSerializer,
-    ScheduledTaskSerializer, TaskExecutionLogSerializer,
-    NotificationLogSerializer, TaskNotificationSettingSerializer,
+    ApiCollectionSerializer,
+    ApiProjectSerializer,
+    ApiRequestSerializer,
+    EnvironmentSerializer,
     NotificationLogDetailSerializer,
-    TaskNotificationSettingDetailSerializer, OperationLogSerializer
+    NotificationLogSerializer,
+    OperationLogSerializer,
+    RequestHistorySerializer,
+    ScheduledTaskSerializer,
+    TaskExecutionLogSerializer,
+    TaskNotificationSettingDetailSerializer,
+    TaskNotificationSettingSerializer,
+    TestExecutionSerializer,
+    TestSuiteRequestSerializer,
+    TestSuiteSerializer,
+    UserSerializer,
 )
 
 logger = logging.getLogger(__name__)
 
 
 
+from .operation_logger import log_operation
+from .serializers import (
+    AIServiceConfigSerializer,
+    ApiSpecImportSerializer,
+    GeneratedApiTestCaseSerializer,
+)
+from .services import (
+    ApiTestCaseAgent,
+    FailureAttributionService,
+    OpenApiImportService,
+)
+from .ssrf_guard import SsrfBlocked, mask_webhook_url, safe_request
 from .utils import (
     apply_auth,
     execute_assertions,
     read_response_body,
     read_response_json,
 )
-from .operation_logger import log_operation
 from .variable_resolver import VariableResolver
-from .ssrf_guard import SsrfBlocked, mask_webhook_url, safe_request
-from .serializers import (
-    AIServiceConfigSerializer
-)
 
 # ---------------------------------------------------------------------------
 # L8：定时任务派发（Celery 优先，兜底为**有界**线程池）
@@ -84,7 +107,7 @@ def _dispatch_scheduled_task(task, execution_log, user_id=None):
 
         async_result = execute_scheduled_task.delay(task.id, execution_log.id, user_id)
         return 'celery', getattr(async_result, 'id', None)
-    except Exception as exc:  # noqa: BLE001 - broker 不可用须降级而非 500
+    except Exception as exc:
         logger.warning(
             "Celery 派发失败，退回有界线程池：task=%s err=%s", task.id, type(exc).__name__
         )
@@ -108,6 +131,7 @@ User = get_user_model()
 
 
 from rest_framework.pagination import PageNumberPagination
+
 
 class StandardPagination(PageNumberPagination):
     page_size = 20
@@ -617,6 +641,36 @@ class ApiRequestViewSet(viewsets.ModelViewSet):
         else:
             return data
 
+    @action(detail=True, methods=['post'], url_path='generate-cases')
+    def generate_cases(self, request, pk=None):
+        """P0-2：单接口用例生成 Agent。
+
+        调用 LLM 为该接口生成 正常/边界/异常 三类草稿用例，落 ``GeneratedApiTestCase(draft)``，
+        不直接作为正式用例执行，需前端确认（adopt）后才采纳。
+        """
+        api_request = get_object_or_404(ApiRequest, id=pk)
+        config_id = request.data.get('config_id')
+        try:
+            cases = ApiTestCaseAgent.generate_cases_for_request(
+                api_request, config_id=config_id, user=request.user,
+            )
+        except SsrfBlocked as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            # LLM 推理超时/网络抖动：返回可重试的客户端错误，而非 500
+            return Response({'error': f'LLM 推理超时，请稍后重试: {e}'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception('单接口用例生成失败')
+            return Response({'error': f'生成失败: {e}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        serializer = GeneratedApiTestCaseSerializer(cases, many=True)
+        return Response({'count': len(cases), 'cases': serializer.data},
+                        status=status.HTTP_201_CREATED)
+
 
 class EnvironmentViewSet(viewsets.ModelViewSet):
     queryset = Environment.objects.all()
@@ -814,11 +868,14 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
                         params[key] = resolver.resolve(params[key])
 
                     body_data = None
-                    if api_request.body and api_request.method in ['POST', 'PUT', 'PATCH']:
-                        if api_request.body.get('type') == 'json':
-                            body_data = api_request.body.get('data', {})
-                            body_data = self._replace_variables_in_dict(body_data, variables)
-                            body_data = self._resolve_variables_in_dict(body_data, resolver)
+                    if (
+                        api_request.body
+                        and api_request.method in ['POST', 'PUT', 'PATCH']
+                        and api_request.body.get('type') == 'json'
+                    ):
+                        body_data = api_request.body.get('data', {})
+                        body_data = self._replace_variables_in_dict(body_data, variables)
+                        body_data = self._resolve_variables_in_dict(body_data, resolver)
 
                     # M15：注入认证信息（auth 字段此前从未生效）
                     headers, params, request_auth = apply_auth(
@@ -946,7 +1003,7 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
                     executed_items,
                     reporter=request.user,
                 )
-            except Exception as _g4_exc:  # noqa: BLE001
+            except Exception as _g4_exc:
                 logger.warning("G4 安全裁判钩子异常（忽略）: %s", _g4_exc)
 
             # 记录执行操作
@@ -965,6 +1022,21 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
             execution.end_time = timezone.now()
             execution.save()
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'], url_path='adopt')
+    def adopt(self, request, pk=None):
+        """将 AI 生成的草稿套件转为正式套件（is_draft=False）。
+
+        P0-2 场景 Agent 闭环：generate_scenario 产出 is_draft=True 的草稿套件，
+        用户确认（采纳）后才转为正式可执行的套件。
+        """
+        test_suite = self.get_object()
+        if not test_suite.is_draft:
+            return Response({'error': '该套件不是草稿'}, status=status.HTTP_400_BAD_REQUEST)
+        test_suite.is_draft = False
+        test_suite.save(update_fields=['is_draft', 'updated_at'])
+        serializer = TestSuiteSerializer(test_suite, context={'request': request})
+        return Response(serializer.data)
 
     def perform_create(self, serializer):
         """创建测试套件时记录日志"""
@@ -1059,6 +1131,41 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
         else:
             return data
 
+    @action(detail=False, methods=['post'], url_path='scenario/generate')
+    def scenario_generate(self, request):
+        """P0-2：场景用例生成 Agent。
+
+        接收多个 ApiRequest id，AI 串联业务流，生成 ``TestSuite(is_draft=True)`` + 顺序请求草稿。
+        """
+        request_ids = request.data.get('request_ids') or []
+        if not isinstance(request_ids, list) or not request_ids:
+            return Response({'error': '请提供 request_ids 列表'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        project_id = request.data.get('project_id')
+        project = None
+        if project_id:
+            project = ApiProject.objects.filter(id=project_id).first()
+        try:
+            suite = ApiTestCaseAgent.generate_scenario(
+                request_ids=request_ids, project=project,
+                config_id=request.data.get('config_id'), user=request.user,
+                name=request.data.get('name'),
+            )
+        except SsrfBlocked as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            return Response({'error': f'LLM 推理超时，请稍后重试: {e}'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception('场景用例生成失败')
+            return Response({'error': f'生成失败: {e}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        serializer = TestSuiteSerializer(suite, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
 
 class TestSuiteRequestViewSet(viewsets.ModelViewSet):
     queryset = TestSuiteRequest.objects.all()
@@ -1111,8 +1218,8 @@ class TestExecutionViewSet(viewsets.ReadOnlyModelViewSet):
             os.makedirs(report_output_dir, exist_ok=True)
             
             # 使用Allure命令行工具生成完整报告
-            import subprocess
             import shutil
+            import subprocess
             import time
             from pathlib import Path
             
@@ -1156,7 +1263,7 @@ class TestExecutionViewSet(viewsets.ReadOnlyModelViewSet):
                             if os.path.exists(report_output_dir):
                                 try:
                                     shutil.rmtree(report_output_dir)
-                                except PermissionError as pe:
+                                except PermissionError:
                                     logger.warning(f"无法删除目录（权限不足）：{report_output_dir}，尝试清理内容")
                                     # 尝试只删除内容，保留目录
                                     for item in os.listdir(report_output_dir):
@@ -1166,8 +1273,8 @@ class TestExecutionViewSet(viewsets.ReadOnlyModelViewSet):
                                                 shutil.rmtree(item_path)
                                             else:
                                                 os.remove(item_path)
-                                        except Exception:
-                                            pass  # 跳过无法删除的文件
+                                        except Exception:  # noqa: S110  # 跳过无法删除的文件
+                                            pass
                             
                             # 构建命令行参数（路径统一使用字符串格式）
                             if os.name == 'nt':
@@ -1543,10 +1650,11 @@ class TestExecutionViewSet(viewsets.ReadOnlyModelViewSet):
             # 尝试执行 java -version 命令
             result = subprocess.run(
                 ['java', '-version'],
+                check=False,
                 capture_output=True,
                 text=True,
                 timeout=5
-            )
+            )  # 不抛异常，靠 returncode 判断 Java 可用性
             
             if result.returncode == 0:
                 # Java 可用，记录版本信息
@@ -1558,7 +1666,7 @@ class TestExecutionViewSet(viewsets.ReadOnlyModelViewSet):
                 return False
                 
         except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
-            logger.warning(f"Java 环境检查失败: {str(e)}")
+            logger.warning(f"Java 环境检查失败: {e!s}")
             return False
     
     def _generate_test_result_files(self, execution, report_dir):
@@ -1642,8 +1750,60 @@ class TestExecutionViewSet(viewsets.ReadOnlyModelViewSet):
 
         except Exception as e:
             import traceback
-            logger.error(f"生成测试结果文件失败: {str(e)}\n{traceback.format_exc()}")
+            logger.error(f"生成测试结果文件失败: {e!s}\n{traceback.format_exc()}")
             raise
+
+
+    @action(detail=True, methods=['post'], url_path='attribution')
+    def attribution(self, request, pk=None):
+        """P0-2：失败执行 AI 归因。
+
+        仅对状态为 FAILED 的执行记录生效；基于请求/响应/断言/日志产出根因与修复建议，
+        写回 ``execution.attribution``。SSRF 守卫拦截属用户输入非法（400）。
+        """
+        execution = get_object_or_404(TestExecution, id=pk)
+        if execution.status != 'FAILED':
+            return Response({'error': '仅失败的执行记录可触发归因', 'status': execution.status},
+                            status=status.HTTP_400_BAD_REQUEST)
+        config_id = request.data.get('config_id')
+        try:
+            attribution = FailureAttributionService.attribute(
+                execution, config_id=config_id,
+            )
+        except SsrfBlocked as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            return Response({'error': f'LLM 推理超时，请稍后重试: {e}'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except Exception as e:
+            logger.exception('失败归因失败')
+            return Response({'error': f'归因失败: {e}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({'execution_id': pk, 'attribution': attribution})
+
+    @action(detail=True, methods=['post'], url_path='regenerate-attribution')
+    def regenerate_attribution(self, request, pk=None):
+        """对已归因过的执行重新归因（覆盖原 attribution）。"""
+        execution = get_object_or_404(TestExecution, id=pk)
+        config_id = request.data.get('config_id')
+        try:
+            attribution = FailureAttributionService.attribute(
+                execution, config_id=config_id,
+            )
+        except SsrfBlocked as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            return Response({'error': f'LLM 推理超时，请稍后重试: {e}'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except Exception as e:
+            logger.exception('重新归因失败')
+            return Response({'error': f'归因失败: {e}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({'execution_id': pk, 'attribution': attribution})
 
 
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
@@ -1733,7 +1893,7 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
             
         except Exception as e:
             return Response(
-                {'error': f'执行任务失败: {str(e)}'},
+                {'error': f'执行任务失败: {e!s}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
     
@@ -1956,8 +2116,6 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
         try:
             import logging
             logger = logging.getLogger(__name__)
-            from django.core.mail import send_mail
-            from django.conf import settings
 
             logger.info("=== _send_notification 方法被调用 ===")
             logger.info(f"任务ID: {task.id}, 任务名称: {task.name}, 执行状态: {success}")
@@ -2021,16 +2179,16 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
                 logger.info("发送Webhook通知")
                 self._send_webhook_notification(task, execution_log, notification_setting, notification_config, success)
 
-        except Exception as e:
-            logger.error(f"发送通知失败: {str(e)}", exc_info=True)
+        except Exception:
+            logger.exception("发送通知失败")
 
     def _send_email_notification(self, task, execution_log, notification_setting, notification_config, success):
         """发送邮件通知"""
         try:
             import logging
             logger = logging.getLogger(__name__)
-            from django.core.mail import send_mail
             from django.conf import settings
+            from django.core.mail import send_mail
 
             logger.info("=== 开始发送邮件通知 ===")
 
@@ -2116,7 +2274,7 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
             )
 
         except Exception as e:
-            logger.error(f"发送邮件通知失败: {str(e)}", exc_info=True)
+            logger.exception("发送邮件通知失败")
             # 记录通知发送失败的日志
             try:
                 from .models import NotificationLog
@@ -2128,19 +2286,20 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
                     sender_name='系统邮件通知',
                     sender_email=settings.DEFAULT_FROM_EMAIL,
                     recipient_info=[{'email': email} for email in recipients] if 'recipients' in locals() else [],
-                    notification_content=f"发送邮件通知失败: {str(e)}",
+                    notification_content=f"发送邮件通知失败: {e!s}",
                     status='failed',
                     error_message=str(e)
                 )
-            except:
+            except Exception:  # noqa: S110  # 忽略失败日志写入异常
                 pass
 
     def _send_webhook_notification(self, task, execution_log, notification_setting, notification_config, success):
         """发送Webhook通知"""
         try:
-            import logging
-            import requests
             import json
+            import logging
+
+            import requests
             logger = logging.getLogger(__name__)
 
             logger.info("=== 开始发送Webhook通知 ===")
@@ -2203,7 +2362,6 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
 
             # 准备通知内容
             status_text = '成功' if success else '失败'
-            status_color = 'green' if success else 'red'
 
             # 为不同的机器人平台准备消息格式
             for bot in all_webhook_bots:
@@ -2271,10 +2429,10 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
                     # 钉钉机器人签名验证
                     secret = bot.get('secret')
                     if secret:
-                        import time
-                        import hmac
-                        import hashlib
                         import base64
+                        import hashlib
+                        import hmac
+                        import time
                         import urllib.parse
 
                         timestamp = str(round(time.time() * 1000))
@@ -2341,7 +2499,7 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
                 except SsrfBlocked as e:
                     logger.error(f"Webhook 目标未通过 SSRF 校验，已跳过 - {bot_type}: {e}")
                 except requests.exceptions.RequestException as e:
-                    logger.error(f"Webhook通知发送失败 - {bot_type}: {str(e)}")
+                    logger.error(f"Webhook通知发送失败 - {bot_type}: {e!s}")
 
                     # 记录失败的通知日志
                     try:
@@ -2364,13 +2522,13 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
                             error_message=str(e),
                             sent_at=timezone.now()
                         )
-                    except:
+                    except Exception:  # noqa: S110  # 忽略失败日志写入异常
                         pass
 
             logger.info("=== 结束发送Webhook通知 ===")
 
-        except Exception as e:
-            logger.error(f"发送Webhook通知失败: {str(e)}", exc_info=True)
+        except Exception:
+            logger.exception("发送Webhook通知失败")
 
 
 class TaskExecutionLogViewSet(viewsets.ReadOnlyModelViewSet):
@@ -2479,10 +2637,16 @@ class OperationLogViewSet(viewsets.ReadOnlyModelViewSet):
     ordering = ['-created_at']
     
     def get_queryset(self):
-        """只返回当前用户相关的操作日志"""
+        """
+        操作日志按用户隔离（修复越权：原实现返回全部，任何登录用户可见他人日志）：
+        - 普通登录用户仅能看到自己的操作日志（user == request.user）；
+        - 管理员（is_staff 或 is_superuser）可查看全部，用于审计。
+        """
+        qs = OperationLog.objects.all().order_by('-created_at')
         user = self.request.user
-        # 可以根据需要调整权限逻辑，这里返回所有日志
-        return OperationLog.objects.all().order_by('-created_at')
+        if user.is_authenticated and (user.is_staff or user.is_superuser):
+            return qs
+        return qs.filter(user=user)
 
 
 class ApiDashboardViewSet(viewsets.ViewSet):
@@ -2587,9 +2751,9 @@ class AIServiceConfigViewSet(viewsets.ModelViewSet):
         except requests.exceptions.Timeout:
             return Response({'error': '连接超时'}, status=status.HTTP_408_REQUEST_TIMEOUT)
         except requests.exceptions.RequestException as e:
-            return Response({'error': f'连接失败: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f'连接失败: {e!s}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception as e:
-            return Response({'error': f'未知错误: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f'未知错误: {e!s}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['post'])
     def complete_parameter_descriptions(self, request):
@@ -2695,9 +2859,9 @@ URL参数:
         except requests.exceptions.Timeout:
             return Response({'error': 'AI服务调用超时'}, status=status.HTTP_408_REQUEST_TIMEOUT)
         except requests.exceptions.RequestException as e:
-            return Response({'error': f'AI服务调用失败: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f'AI服务调用失败: {e!s}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception as e:
-            return Response({'error': f'未知错误: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f'未知错误: {e!s}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['post'])
     def generate_mock_data(self, request):
@@ -2768,9 +2932,9 @@ URL参数:
         except requests.exceptions.Timeout:
             return Response({'error': 'AI服务调用超时'}, status=status.HTTP_408_REQUEST_TIMEOUT)
         except requests.exceptions.RequestException as e:
-            return Response({'error': f'AI服务调用失败: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f'AI服务调用失败: {e!s}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception as e:
-            return Response({'error': f'未知错误: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f'未知错误: {e!s}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['post'])
     def normalize_parameter_names(self, request):
@@ -2845,9 +3009,9 @@ URL参数:
         except requests.exceptions.Timeout:
             return Response({'error': 'AI服务调用超时'}, status=status.HTTP_408_REQUEST_TIMEOUT)
         except requests.exceptions.RequestException as e:
-            return Response({'error': f'AI服务调用失败: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f'AI服务调用失败: {e!s}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception as e:
-            return Response({'error': f'未知错误: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f'未知错误: {e!s}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['post'])
     def extract_documentation(self, request):
@@ -2929,6 +3093,95 @@ URL参数: {json.dumps(request_data['params'], ensure_ascii=False)}
         except requests.exceptions.Timeout:
             return Response({'error': 'AI服务调用超时'}, status=status.HTTP_408_REQUEST_TIMEOUT)
         except requests.exceptions.RequestException as e:
-            return Response({'error': f'AI服务调用失败: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f'AI服务调用失败: {e!s}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception as e:
-            return Response({'error': f'未知错误: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f'未知错误: {e!s}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ApiSpecImportViewSet(viewsets.ModelViewSet):
+    """P0-2：OpenAPI 规格导入视图集"""
+
+    queryset = ApiSpecImport.objects.all()
+    serializer_class = ApiSpecImportSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['project', 'status', 'source']
+    search_fields = ['name', 'base_url']
+    ordering_fields = ['created_at', 'name']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        return ApiSpecImport.objects.filter(created_by=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    @action(detail=False, methods=['post'], url_path='import-openapi')
+    def import_openapi(self, request):
+        """解析 swagger/openapi 并落库为接口资产；server URL 经 SSRF 守卫校验。"""
+        raw_spec = request.data.get('raw_spec') or request.data.get('spec')
+        if not raw_spec:
+            return Response({'error': '请提供 raw_spec（规格内容）'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        spec_format = (request.data.get('spec_format') or 'json').lower()
+        name = request.data.get('name')
+        source = request.data.get('source') or 'paste'
+        project_id = request.data.get('project_id')
+        project = None
+        if project_id:
+            project = ApiProject.objects.filter(id=project_id, owner=request.user).first()
+        if not project:
+            project = ApiProject.objects.filter(owner=request.user).first()
+        if not project:
+            return Response({'error': '未找到可用项目，请先创建 API 项目'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            spec_import = OpenApiImportService.import_openapi(
+                raw_spec=raw_spec, spec_format=spec_format, project=project,
+                user=request.user, name=name, source=source,
+            )
+        except Exception as e:
+            logger.exception('OpenAPI 导入失败')
+            return Response({'error': f'导入失败: {e}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        serializer = ApiSpecImportSerializer(spec_import)
+        if spec_import.status == 'failed':
+            return Response(serializer.data, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class GeneratedApiTestCaseViewSet(viewsets.ModelViewSet):
+    """P0-2：AI 生成的接口用例草稿视图集（确认闸门）"""
+
+    serializer_class = GeneratedApiTestCaseSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['api_request', 'category', 'status']
+    ordering_fields = ['created_at', 'category']
+    ordering = ['category', 'created_at']
+
+    def get_queryset(self):
+        return GeneratedApiTestCase.objects.filter(created_by=self.request.user)
+
+    @action(detail=True, methods=['post'], url_path='adopt')
+    def adopt(self, request, pk=None):
+        """确认采纳一条草稿用例（status: draft → adopted）。"""
+        case = get_object_or_404(GeneratedApiTestCase, id=pk, created_by=request.user)
+        if case.status != 'draft':
+            return Response({'error': '该用例已处理'}, status=status.HTTP_400_BAD_REQUEST)
+        case.status = 'adopted'
+        case.save(update_fields=['status', 'updated_at'])
+        serializer = GeneratedApiTestCaseSerializer(case)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='discard')
+    def discard(self, request, pk=None):
+        """丢弃一条草稿用例（status: draft → discarded）。"""
+        case = get_object_or_404(GeneratedApiTestCase, id=pk, created_by=request.user)
+        if case.status != 'draft':
+            return Response({'error': '该用例已处理'}, status=status.HTTP_400_BAD_REQUEST)
+        case.status = 'discarded'
+        case.save(update_fields=['status', 'updated_at'])
+        serializer = GeneratedApiTestCaseSerializer(case)
+        return Response(serializer.data)

@@ -1,20 +1,25 @@
-from django.http import FileResponse
-from rest_framework import generics, permissions, status, pagination
-from rest_framework.response import Response
-from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import filters
 from django.db import models
-from rest_framework.parsers import MultiPartParser, FormParser
+from django.http import FileResponse
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import filters, generics, pagination, permissions, status
+from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import TestCase, TestCaseStep, TestCaseAttachment, TestCaseComment, TestCaseImportRecord
-from .serializers import (
-    TestCaseSerializer, TestCaseListSerializer, TestCaseCreateSerializer, TestCaseUpdateSerializer,
-    TestCaseImportRecordListSerializer, TestCaseImportRecordDetailSerializer
-)
 from apps.projects.models import Project
-from .services import TestCaseImportTemplateService, TestCaseExcelImportService
+
+from .models import TestCase, TestCaseImportRecord
+from .serializers import (
+    TestCaseCreateSerializer,
+    TestCaseImportRecordDetailSerializer,
+    TestCaseImportRecordListSerializer,
+    TestCaseListSerializer,
+    TestCaseSerializer,
+    TestCaseUpdateSerializer,
+)
+from .services import TestCaseExcelImportService, TestCaseImportTemplateService
 from .tasks import import_testcases_from_excel
+
 
 class TestCasePagination(pagination.PageNumberPagination):
     page_size = 10
@@ -32,6 +37,68 @@ def get_user_accessible_projects(user):
     return Project.objects.filter(
         models.Q(owner=user) | models.Q(members=user)
     ).distinct()
+
+
+class BridgeFromRequirementView(APIView):
+    """需求三件套 → 测试用例自动桥接（#273）。
+
+    POST {document_id, project_id?, include_ui?}
+    - 默认落库到文档关联项目；未关联时须显式传 project_id。
+    - 仅允许用户有权限访问的目标项目。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        document_id = request.data.get("document_id")
+        if not document_id:
+            return Response(
+                {"error": "请提供 document_id"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        from apps.requirement_analysis.models import RequirementDocument
+
+        document = RequirementDocument.objects.filter(id=document_id).first()
+        if not document:
+            return Response(
+                {"error": "需求文档不存在"}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        project_id = request.data.get("project_id") or (
+            document.project_id if document.project else None
+        )
+        if not project_id:
+            return Response(
+                {"error": "请指定目标项目 project_id（该文档未关联项目）"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        accessible = get_user_accessible_projects(request.user)
+        project = accessible.filter(id=project_id).first()
+        if not project:
+            return Response(
+                {"error": "目标项目不存在或无权限"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        include_ui = bool(request.data.get("include_ui"))
+        from .bridge import bridge_three_products_to_cases
+
+        summary = bridge_three_products_to_cases(
+            document_id, project, request.user, include_ui=include_ui
+        )
+        return Response(
+            {
+                "created": summary.created,
+                "skipped": summary.skipped,
+                "total": summary.total,
+                "functional": summary.functional,
+                "ui": summary.ui,
+                "clarifications": summary.clarifications,
+                "testcase_ids": summary.testcase_ids,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
 
 class TestCaseListCreateView(generics.ListCreateAPIView):
     queryset = TestCase.objects.all()

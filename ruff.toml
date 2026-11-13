@@ -1,0 +1,23 @@
+# ruff 配置（testhub_platform 根项目）
+#
+# 本仓库此前无 ruff 配置，依赖 ruff 内置默认规则集（含 E/F/I/B/UP/RUF/SIM/TRY/G/PL/BLE/S 等）。
+# 这里只做两件“减法/固化”，刻意不显式 select 规则集：
+#   - 避免用 `select = ["E"]` 把默认 E4,E7,E9 子集扩大成 E1–E9，反而引入 E1xx/E3xx 等新报错；
+#   - 仅对 Django REST 框架类属豁免 RUF012 误报。
+# 其余规则沿用 ruff 内置默认，行为与此前一致。
+
+line-length = 100
+# 实际运行环境为 Python 3.12/3.13（Django 4.2 主跑 3.12），故以 py310 为下限，
+# 这样 PEP 585(dict[str]) / PEP 604(X | None) 注解现代化可被 ruff 安全自动修复。
+target-version = "py310"
+
+[lint.per-file-ignores]
+# Django REST Framework 的 ModelSerializer.Meta / GenericViewSet 类属性
+# （fields / exclude / read_only_fields / permission_classes / filterset_fields 等）
+# 是框架约定：这些 list/tuple 在类定义时即固定，DRF 不会向它们 append，
+# 不存在“可变默认跨实例共享”的 bug。RUF012 在此为误报，统一豁免。
+"apps/**/serializers.py" = ["RUF012", "BLE001"]
+"apps/**/views.py" = ["RUF012", "BLE001"]
+# API 服务/业务逻辑层在边界处有意宽泛捕获 Exception（转 500 / 友好错误），
+# 与团队既有 services.py:291 的 `# noqa: BLE001` 惯例一致；此处统一配置豁免。
+"apps/**/services.py" = ["BLE001"]

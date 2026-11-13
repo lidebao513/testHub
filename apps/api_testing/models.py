@@ -168,6 +168,8 @@ class TestSuite(models.Model):
                                 verbose_name='所属项目')
     name = models.CharField(max_length=200, verbose_name='套件名称')
     description = models.TextField(blank=True, verbose_name='套件描述')
+    # P0-2：AI 场景 Agent 生成的草稿套件，需用户确认（adopt）后才视为正式套件
+    is_draft = models.BooleanField(default=False, verbose_name='是否草稿')
     requests = models.ManyToManyField(ApiRequest, through='TestSuiteRequest', verbose_name='包含请求')
     environment = models.ForeignKey(Environment, on_delete=models.SET_NULL, null=True, blank=True,
                                     verbose_name='执行环境')
@@ -225,6 +227,8 @@ class TestExecution(models.Model):
     passed_requests = models.IntegerField(default=0, verbose_name='通过请求数')
     failed_requests = models.IntegerField(default=0, verbose_name='失败请求数')
     results = models.JSONField(default=dict, verbose_name='执行结果')
+    # P0-2：AI 归因结果（执行失败时的根因分析），草稿态，不直接覆盖业务结论
+    attribution = models.JSONField(default=dict, blank=True, verbose_name='AI归因结果')
     executed_by = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name='执行者')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
 
@@ -236,6 +240,53 @@ class TestExecution(models.Model):
 
     def __str__(self):
         return f"{self.test_suite.name} - {self.created_at}"
+
+
+class ApiSpecImport(models.Model):
+    """P0-2：OpenAPI/Swagger 规格导入记录。
+
+    保存原始 spec 文本与导入结果，server URL 在解析时须经过 ssrf_guard 校验，
+    解析出的接口落为 ApiRequest 草稿（status=draft），不直接进入正式集合。
+    """
+
+    SOURCE_CHOICES = [
+        ('paste', '直接粘贴'),
+        ('upload', '文件上传'),
+        ('url', '远程 URL'),
+    ]
+
+    STATUS_CHOICES = [
+        ('pending', '待解析'),
+        ('success', '导入成功'),
+        ('partial', '部分成功'),
+        ('failed', '导入失败'),
+    ]
+
+    name = models.CharField(max_length=200, verbose_name='导入名称')
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='paste', verbose_name='来源类型')
+    raw_spec = models.TextField(verbose_name='原始规格内容')
+    spec_format = models.CharField(max_length=10, default='json', verbose_name='规格格式(json/yaml)')
+    base_url = models.CharField(max_length=500, blank=True, verbose_name='解析出的服务地址')
+    project = models.ForeignKey(ApiProject, on_delete=models.CASCADE, null=True, blank=True,
+                                related_name='spec_imports', verbose_name='归属项目')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='导入状态')
+    imported_count = models.IntegerField(default=0, verbose_name='成功导入接口数')
+    skipped_count = models.IntegerField(default=0, verbose_name='跳过接口数')
+    skipped_reasons = models.JSONField(default=list, blank=True, verbose_name='跳过原因')
+    error_message = models.TextField(blank=True, verbose_name='错误信息')
+    imported_requests = models.JSONField(default=list, blank=True, verbose_name='导入的接口ID列表')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name='创建者')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'api_spec_imports'
+        verbose_name = 'API规格导入'
+        verbose_name_plural = 'API规格导入'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.name} ({self.get_status_display()})"
 
 
 # 定时任务相关模型
@@ -661,3 +712,46 @@ class AIServiceConfig(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class GeneratedApiTestCase(models.Model):
+    """P0-2：单接口 Agent 生成的用例草稿。
+
+    AI 依据单个 ApiRequest 生成的测试用例，默认草稿态，禁止直接作为正式用例执行；
+    经用户确认（adopt）后才可被采纳。category 区分 正常 / 边界 / 异常。
+    """
+
+    CATEGORY_CHOICES = [
+        ('normal', '正常'),
+        ('boundary', '边界'),
+        ('abnormal', '异常'),
+    ]
+
+    STATUS_CHOICES = [
+        ('draft', '草稿'),
+        ('adopted', '已采纳'),
+        ('discarded', '已丢弃'),
+    ]
+
+    api_request = models.ForeignKey(ApiRequest, on_delete=models.CASCADE, related_name='generated_cases',
+                                    verbose_name='关联接口')
+    name = models.CharField(max_length=200, verbose_name='用例名称')
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default='normal', verbose_name='用例类别')
+    # 覆盖到原 ApiRequest 的字段：method/url/headers/params/body/auth（仅本次用例使用）
+    request_overrides = models.JSONField(default=dict, blank=True, verbose_name='请求覆盖')
+    # 断言规则列表（与 ApiRequest.assertions 同构）
+    assertions = models.JSONField(default=list, blank=True, verbose_name='断言规则')
+    description = models.TextField(blank=True, verbose_name='用例说明')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft', verbose_name='状态')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name='创建者')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'api_generated_test_cases'
+        verbose_name = 'AI生成接口用例'
+        verbose_name_plural = 'AI生成接口用例'
+        ordering = ['category', 'created_at']
+
+    def __str__(self):
+        return f"{self.name} ({self.get_category_display()})"

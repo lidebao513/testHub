@@ -81,3 +81,46 @@ jobs:
       # 用 npm run lint 而不是内联命令：保证本地与 CI 完全同一套参数（无 --fix）。
       - name: ESLint
         run: npm run lint
+
+  # 密钥泄漏守卫（#275）：.env.bak 曾含明文凭据被推送到公开仓库（见
+  # docs/security_env_bak_remediation_2026-10-30.md）。本 job 扫描「被跟踪」文件，
+  # 命中即失败，防止同类泄漏再次发生。模式高信号、低误报（已排除 .env.example）。
+  # 当前为 advisory（未纳入分支保护必需检查）；建议后续在分支保护中加入本 check 升级为必需。
+  #
+  # 私钥块判定要求「同文件同时存在 -----BEGIN 与 -----END 私钥标记」（真实 PEM
+  # 私钥必然成对），避免误伤：扫描器自身源码 / 测试样例里把该模式当字符串引用的
+  # 单行 BEGIN（无 END）不应报漏。
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Scan tracked files for leaked secrets
+        run: |
+          set -euo pipefail
+          echo "== 检查被跟踪的 .env* / *.bak（.env.example 除外）=="
+          leaks=$(git ls-files | grep -E '(\.env($|\.)|\.bak$)' | grep -vE '\.env\.example$' || true)
+          if [ -n "$leaks" ]; then
+            echo "::error::发现疑似密钥/备份文件被跟踪，禁止入库："
+            echo "$leaks"
+            exit 1
+          fi
+          echo "== 检查完整 PEM 私钥块（须同文件同时存在 -----BEGIN 与 -----END 标记）=="
+          keyleaks=$(git ls-files -z | while IFS= read -r -d '' f; do
+            # 排除 CI 配置目录：非密钥载体，且含本扫描器自身源码（字面引用上述模式），
+            # 否则会自引用误报。真实私钥永不落于 .github/workflows/，排除不削弱防护。
+            case "$f" in
+              .github/workflows/*) continue ;;
+            esac
+            if grep -IqP -e '-----BEGIN .*PRIVATE KEY-----' "$f" && grep -IqP -e '-----END .*PRIVATE KEY-----' "$f"; then
+              printf '%s\n' "$f"
+            fi
+          done)
+          if [ -n "${keyleaks:-}" ]; then
+            echo "::error::发现完整 PEM 私钥块被跟踪："
+            printf '%s\n' "$keyleaks"
+            exit 1
+          fi
+          echo "secret-scan OK：未发现被跟踪的密钥/备份文件或私钥块"

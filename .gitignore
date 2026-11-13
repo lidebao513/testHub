@@ -123,3 +123,9 @@ logs/e2e_ui/
 # 闭环/巡检运行时报告（可随时重跑生成，不入库）
 data/closed_loop_reports/
 data/smoke_patrol_reports/
+# UI 验证产物（截图/日志/AB 对比，二进制、体积大、可随时重跑生成，不入库；验证脚本 .py/.md/.sh/.txt 仍入库）
+ui_verify/evidence/
+ui_verify/shots/
+ui_verify/shots_p1/
+ui_verify/*.png
+ui_verify/*.log

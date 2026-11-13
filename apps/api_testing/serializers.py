@@ -1,7 +1,7 @@
-from rest_framework import serializers
+
 from django.contrib.auth import get_user_model
 from django.utils import timezone
-from datetime import datetime
+from rest_framework import serializers
 
 from .ssrf_guard import SsrfBlocked, validate_url
 
@@ -15,10 +15,22 @@ class NullableDateField(serializers.DateField):
         # 否则使用父类的正常处理
         return super().to_internal_value(value)
 from .models import (
-    ApiProject, ApiCollection, ApiRequest, Environment,
-    RequestHistory, TestSuite, TestExecution, TestSuiteRequest,
-    ScheduledTask, TaskExecutionLog, NotificationLog,
-    TaskNotificationSetting, OperationLog, AIServiceConfig,
+    AIServiceConfig,
+    ApiCollection,
+    ApiProject,
+    ApiRequest,
+    ApiSpecImport,
+    Environment,
+    GeneratedApiTestCase,
+    NotificationLog,
+    OperationLog,
+    RequestHistory,
+    ScheduledTask,
+    TaskExecutionLog,
+    TaskNotificationSetting,
+    TestExecution,
+    TestSuite,
+    TestSuiteRequest,
 )
 
 User = get_user_model()
@@ -173,10 +185,14 @@ class RequestHistorySerializer(serializers.ModelSerializer):
 
 class TestSuiteRequestSerializer(serializers.ModelSerializer):
     request = ApiRequestSerializer(read_only=True)
+    request_id = serializers.PrimaryKeyRelatedField(
+        source='request', queryset=ApiRequest.objects.all(), write_only=True
+    )
+    test_suite = serializers.PrimaryKeyRelatedField(queryset=TestSuite.objects.all())
 
     class Meta:
         model = TestSuiteRequest
-        fields = ['id', 'request', 'order', 'assertions', 'enabled']
+        fields = ['id', 'request', 'request_id', 'test_suite', 'order', 'assertions', 'enabled']
 
 
 class TestSuiteSerializer(serializers.ModelSerializer):
@@ -186,7 +202,7 @@ class TestSuiteSerializer(serializers.ModelSerializer):
     class Meta:
         model = TestSuite
         fields = [
-            'id', 'name', 'description', 'project', 'environment',
+            'id', 'name', 'description', 'project', 'environment', 'is_draft',
             'suite_requests', 'created_by', 'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
@@ -205,7 +221,7 @@ class TestExecutionSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'test_suite', 'status', 'start_time', 'end_time',
             'total_requests', 'passed_requests', 'failed_requests',
-            'results', 'executed_by', 'created_at'
+            'results', 'attribution', 'executed_by', 'created_at'
         ]
 
     def to_representation(self, instance):
@@ -251,7 +267,7 @@ class ScheduledTaskSerializer(serializers.ModelSerializer):
             notification_setting = obj.notification_settings.first()
             if notification_setting:
                 return notification_setting.get_notification_type_display()
-        except:
+        except Exception:  # noqa: S110  # 防御性忽略字段获取失败，回退默认值
             pass
         return "-"
 
@@ -261,7 +277,7 @@ class ScheduledTaskSerializer(serializers.ModelSerializer):
             notification_setting = obj.notification_settings.first()
             if notification_setting:
                 return notification_setting.notification_type
-        except:
+        except Exception:  # noqa: S110  # 防御性忽略字段获取失败，回退默认值
             pass
         return "email"  # 默认值
 
@@ -308,10 +324,11 @@ class ScheduledTaskSerializer(serializers.ModelSerializer):
         task.save()
 
         # 创建对应的通知设置
-        from .models import TaskNotificationSetting
         import logging
+
+        from .models import TaskNotificationSetting
         logger = logging.getLogger(__name__)
-        logger.info(f"=== 开始创建通知设置 ===")
+        logger.info("=== 开始创建通知设置 ===")
         logger.info(
             f"任务ID: {task.id}, 通知类型: {notification_type}, 成功通知: {task.notify_on_success}, 失败通知: {task.notify_on_failure}")
 
@@ -376,8 +393,9 @@ class ScheduledTaskSerializer(serializers.ModelSerializer):
 
         # 更新通知设置
         if notification_type is not None:
-            from .models import TaskNotificationSetting
             from apps.core.models import UnifiedNotificationConfig
+
+            from .models import TaskNotificationSetting
             try:
                 # 根据通知类型选择合适的通知配置
                 notification_config = None
@@ -476,7 +494,7 @@ class NotificationLogSerializer(serializers.ModelSerializer):
                 notification_setting = obj.task.notification_settings.first()
                 if notification_setting:
                     return notification_setting.get_notification_type_display()
-            except:
+            except Exception:  # noqa: S110  # 防御性忽略字段获取失败，回退默认值
                 pass
         # 回退到原始的通知类型显示
         return obj.get_notification_type_display()
@@ -518,11 +536,11 @@ class NotificationLogSerializer(serializers.ModelSerializer):
                 targets.append(bot_display)
 
         # 检查是否有邮箱收件人
-        if obj.recipient_info:
-            if isinstance(obj.recipient_info, list) and len(obj.recipient_info) > 0:
-                targets.append('邮箱')
-            elif isinstance(obj.recipient_info, dict) and obj.recipient_info.get('email'):
-                targets.append('邮箱')
+        if obj.recipient_info and (
+            (isinstance(obj.recipient_info, list) and len(obj.recipient_info) > 0)
+            or (isinstance(obj.recipient_info, dict) and obj.recipient_info.get('email'))
+        ):
+            targets.append('邮箱')
 
         return ', '.join(targets) if targets else '-'
 
@@ -584,7 +602,7 @@ class NotificationLogDetailSerializer(serializers.ModelSerializer):
                 notification_setting = obj.task.notification_settings.first()
                 if notification_setting:
                     return notification_setting.get_notification_type_display()
-            except:
+            except Exception:  # noqa: S110  # 防御性忽略字段获取失败，回退默认值
                 pass
         # 回退到原始的通知类型显示
         return obj.get_notification_type_display()
@@ -660,7 +678,7 @@ class NotificationLogDetailSerializer(serializers.ModelSerializer):
                 notification_setting = obj.task.notification_settings.first()
                 if notification_setting and notification_setting.notification_type in ['webhook', 'both']:
                     return obj.webhook_bot_info or {}
-            except:
+            except Exception:  # noqa: S110  # 防御性忽略字段获取失败，回退默认值
                 pass
         return None
 
@@ -870,3 +888,38 @@ class AIServiceConfigSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data['created_by'] = self.context['request'].user
         return super().create(validated_data)
+
+
+class ApiSpecImportSerializer(serializers.ModelSerializer):
+    """OpenAPI 规格导入记录序列化器"""
+
+    class Meta:
+        model = ApiSpecImport
+        fields = [
+            'id', 'name', 'source', 'raw_spec', 'spec_format', 'base_url',
+            'project', 'status', 'imported_count', 'skipped_count',
+            'skipped_reasons', 'error_message',
+            'imported_requests', 'created_by', 'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'base_url', 'status', 'imported_count', 'skipped_count',
+            'skipped_reasons', 'error_message',
+            'imported_requests', 'created_by', 'created_at', 'updated_at'
+        ]
+
+
+class GeneratedApiTestCaseSerializer(serializers.ModelSerializer):
+    """AI 生成的接口用例草稿序列化器"""
+
+    category_display = serializers.CharField(source='get_category_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    api_request_name = serializers.CharField(source='api_request.name', read_only=True)
+
+    class Meta:
+        model = GeneratedApiTestCase
+        fields = [
+            'id', 'api_request', 'api_request_name', 'name', 'category',
+            'category_display', 'request_overrides', 'assertions', 'description',
+            'status', 'status_display', 'created_by', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_by', 'created_at', 'updated_at', 'status']

@@ -147,3 +147,39 @@ export function deletePromptConfig(id) {
     method: 'delete'
   })
 }
+
+// ==================== P0-1 需求三件套 ====================
+
+// 获取需求文档列表
+export function getRequirementDocuments(params) {
+  return request({
+    url: '/requirement-analysis/documents/',
+    method: 'get',
+    params
+  })
+}
+
+// 针对文档生成需求三件套（功能清单/界面描述/待澄清项）
+export function generateThreeProducts(docId) {
+  return request({
+    url: `/requirement-analysis/documents/${docId}/generate-products/`,
+    method: 'post'
+  })
+}
+
+// 获取文档的需求三件套
+export function getThreeProducts(docId) {
+  return request({
+    url: `/requirement-analysis/documents/${docId}/products/`,
+    method: 'get'
+  })
+}
+
+// 将澄清回答喂回，修订原三件套产物（对话修订闭环）
+export function clarifyRequirement(docId, data) {
+  return request({
+    url: `/requirement-analysis/documents/${docId}/clarify/`,
+    method: 'post',
+    data
+  })
+}

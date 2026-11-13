@@ -85,6 +85,8 @@ class BudgetSettings:
     max_input_tokens: int = 24000
     max_output_tokens: int = 4096
     daily_token_budget: int = 300000
+    call_timeout: int = 180
+    warn_ratio: float = 0.8
     usage_path: str = ""
 
 
@@ -139,6 +141,19 @@ def _as_int(raw: str | None, default: int) -> int:
     return value if value > 0 else default
 
 
+def _as_ratio(raw: str | None, default: float) -> float:
+    """比例解析（0~1），越界/非法回退默认。"""
+    try:
+        val = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    if val < 0:
+        return default
+    if val > 1:
+        return 1.0
+    return val
+
+
 def _default_usage_path() -> str:
     env = _env("LLM_USAGE_PATH")
     if env:
@@ -158,6 +173,8 @@ def load_settings() -> BudgetSettings:
         max_input_tokens=_as_int(_env("LLM_CALL_MAX_INPUT_TOKENS"), 24000),
         max_output_tokens=_as_int(_env("LLM_CALL_MAX_OUTPUT_TOKENS"), 4096),
         daily_token_budget=_as_int(_env("LLM_DAILY_TOKEN_BUDGET"), 300000),
+        call_timeout=_as_int(_env("LLM_CALL_TIMEOUT"), 180),
+        warn_ratio=_as_ratio(_env("LLM_BUDGET_WARN_RATIO"), 0.8),
         usage_path=_default_usage_path(),
     )
 
@@ -965,7 +982,8 @@ def record_usage(
         entry = data.get(day)
         if not isinstance(entry, dict):
             entry = {"total": 0, "calls": 0, "by_model": {}}
-        entry["total"] = int(entry.get("total") or 0) + total
+        prev_total = int(entry.get("total") or 0)
+        entry["total"] = prev_total + total
         entry["calls"] = int(entry.get("calls") or 0) + 1
         by_model = entry.get("by_model")
         if not isinstance(by_model, dict):
@@ -977,6 +995,16 @@ def record_usage(
         cutoff = (date.today() - timedelta(days=_RETAIN_DAYS)).isoformat()
         data = {k: v for k, v in data.items() if k >= cutoff}
         _write_usage(cfg.usage_path, data)
+    # 额度预警：当日用量跨过 warn_ratio 闸值时告警一次（不阻断，仅提示成本风险）
+    if cfg.daily_token_budget > 0 and cfg.warn_ratio > 0:
+        ratio_after = entry["total"] / cfg.daily_token_budget
+        if ratio_after >= cfg.warn_ratio and prev_total < cfg.daily_token_budget * cfg.warn_ratio:
+            logger.warning(
+                "LLM 日额度已用 %.0f%%（%d/%d token），接近上限；达到 100%% 后将熔断拒绝调用，请关注成本",
+                ratio_after * 100,
+                entry["total"],
+                cfg.daily_token_budget,
+            )
     if total:
         logger.info(
             "LLM 用量 +%d token（模型 %s，通道 %s）；当日累计 %d/%d",
@@ -1004,6 +1032,10 @@ def snapshot(cfg: BudgetSettings | None = None) -> dict[str, Any]:
         "allowlist": cfg.allowlist,
         "allow_paid": cfg.allow_paid,
         "remaining": max(0, cfg.daily_token_budget - used),
+        "warn_ratio": cfg.warn_ratio,
+        "near_limit": bool(
+            cfg.daily_token_budget > 0 and used >= cfg.daily_token_budget * cfg.warn_ratio
+        ),
         "expiry_guard_minutes": expiry_guard_minutes(),
         "quota_marks": _quota_marks(),
         "registry": evaluate_registry(cfg),

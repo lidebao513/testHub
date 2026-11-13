@@ -1,9 +1,11 @@
 from django.urls import path
+
 from . import views
 
 urlpatterns = [
     # 测试用例相关
     path('', views.TestCaseListCreateView.as_view(), name='testcase-list'),
+    path('bridge-from-requirement/', views.BridgeFromRequirementView.as_view(), name='bridge-from-requirement'),
     path('import/template/', views.TestCaseImportTemplateDownloadView.as_view(), name='testcase-import-template'),
     path('import-records/', views.TestCaseImportRecordListCreateView.as_view(), name='testcase-import-record-list'),
     path('import-records/<int:pk>/', views.TestCaseImportRecordDetailView.as_view(), name='testcase-import-record-detail'),

@@ -3,7 +3,7 @@ from apps.requirement_analysis import llm_budget
 from .models import (
     RequirementDocument, RequirementAnalysis, BusinessRequirement,
     GeneratedTestCase, AnalysisTask, AIModelConfig, PromptConfig, TestCaseGenerationTask,
-    GenerationConfig
+    GenerationConfig, FunctionalInventory, UIElementDescription, ClarificationItem
 )
 
 
@@ -317,3 +317,44 @@ class GenerationConfigSerializer(serializers.ModelSerializer):
             'is_active', 'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
+
+
+class FunctionalInventorySerializer(serializers.ModelSerializer):
+    """功能清单序列化器"""
+    class Meta:
+        model = FunctionalInventory
+        fields = ['id', 'seq', 'name', 'summary', 'source_ref', 'created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at']
+
+
+class UIElementDescriptionSerializer(serializers.ModelSerializer):
+    """界面元素描述序列化器"""
+    class Meta:
+        model = UIElementDescription
+        fields = ['id', 'page', 'element', 'desc', 'interaction', 'created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at']
+
+
+class ClarificationItemSerializer(serializers.ModelSerializer):
+    """待澄清项序列化器"""
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = ClarificationItem
+        fields = ['id', 'question', 'impact', 'suggestion', 'status', 'status_display',
+                  'answer', 'revision_log', 'created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at', 'status', 'revision_log']
+
+
+class RequirementThreeProductsSerializer(serializers.Serializer):
+    """三件套聚合返回序列化器"""
+    document_id = serializers.IntegerField()
+    functional_inventory = FunctionalInventorySerializer(many=True)
+    ui_descriptions = UIElementDescriptionSerializer(many=True)
+    clarifications = ClarificationItemSerializer(many=True)
+
+
+class ClarifyRequestSerializer(serializers.Serializer):
+    """澄清回答请求序列化器"""
+    clarification_id = serializers.IntegerField(help_text="待澄清项ID")
+    answer = serializers.CharField(help_text="用户对澄清问题的回答")

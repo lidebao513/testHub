@@ -52,6 +52,7 @@ export default {
 
   // 需求分析模块
   requirementAnalysis: requirementModule.requirementAnalysis,
+  threeProducts: requirementModule.threeProducts,
   generatedTestCases: requirementModule.generatedTestCases,
   promptConfig: requirementModule.promptConfig,
   generationConfig: requirementModule.generationConfig,

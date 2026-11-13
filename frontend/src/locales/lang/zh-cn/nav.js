@@ -25,6 +25,7 @@ export default {
     aiCaseGeneration: 'AI用例生成',
     codeGenerationConsole: '代码生成（testgen）',
     aiGeneratedTestcases: 'AI生成用例记录',
+    requirementThreeProducts: '需求三件套',
     promptConfig: '提示词配置',
     projectManagement: '项目管理',
     testCases: '测试用例',
@@ -43,6 +44,7 @@ export default {
     environmentManagement: '环境管理',
     scheduledTasks: '定时任务',
     notificationList: '通知列表',
+    aiInterfaceGeneration: 'AI接口生成',
 
     // Bug缺陷管理
     defectDashboard: '缺陷看板',
