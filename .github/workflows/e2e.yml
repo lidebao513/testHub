@@ -1,0 +1,46 @@
+# E2E 冒烟固化（#274）。
+#
+# 默认关闭：须仓库 Settings → Secrets and variables → Actions → Variables 设
+# ENABLE_E2E=true 才运行（避免在没有真实运行栈的公共 CI 上空跑/失败）。
+# 启用后，E2E_BASE_URL 应指向一个「已拉起 Django(:8900)+Vite(:3900)+MySQL+Redis」的预览地址；
+# 本工作流只负责装 Playwright + 跑 tests/test_e2e_smoke.py（默认整模块跳过，ENABLE_E2E=1 才真正开浏览器）。
+#
+# 与 ci.yml 的必需检查（pr-lint/gate/django-tests/frontend-lint）相互独立，
+# 不纳入 main 分支保护必需 status check，纯属 advisory 加固。
+
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-smoke:
+    if: vars.ENABLE_E2E == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run E2E smoke
+        env:
+          DJANGO_SETTINGS_MODULE: backend.test_settings
+          SECRET_KEY: ci-test-only-placeholder-not-a-real-secret
+          DEBUG: "1"
+          E2E_BASE_URL: ${{ vars.E2E_BASE_URL || 'http://127.0.0.1:3900' }}
+          ENABLE_E2E: "1"
+        run: python -m pytest tests/test_e2e_smoke.py -q
