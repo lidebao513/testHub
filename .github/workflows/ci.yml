@@ -81,3 +81,33 @@ jobs:
       # 用 npm run lint 而不是内联命令：保证本地与 CI 完全同一套参数（无 --fix）。
       - name: ESLint
         run: npm run lint
+
+  # 密钥泄漏守卫（#275）：.env.bak 曾含明文凭据被推送到公开仓库（见
+  # docs/security_env_bak_remediation_2026-10-30.md）。本 job 扫描「被跟踪」文件，
+  # 命中即失败，防止同类泄漏再次发生。模式高信号、低误报（已排除 .env.example）。
+  # 当前为 advisory（未纳入分支保护必需检查）；建议后续在分支保护中加入本 check 升级为必需。
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Scan tracked files for leaked secrets
+        run: |
+          set -euo pipefail
+          echo "== 检查被跟踪的 .env* / *.bak（.env.example 除外）=="
+          leaks=$(git ls-files | grep -E '(\.env($|\.)|\.bak$)' | grep -vE '\.env\.example$' || true)
+          if [ -n "$leaks" ]; then
+            echo "::error::发现疑似密钥/备份文件被跟踪，禁止入库："
+            echo "$leaks"
+            exit 1
+          fi
+          echo "== 检查私钥块（BEGIN ... PRIVATE KEY）=="
+          keyleaks=$(git grep -Il 'BEGIN .*PRIVATE KEY' -- $(git ls-files) || true)
+          if [ -n "$keyleaks" ]; then
+            echo "::error::发现私钥块被跟踪："
+            echo "$keyleaks"
+            exit 1
+          fi
+          echo "secret-scan OK：未发现被跟踪的密钥/备份文件或私钥块"
