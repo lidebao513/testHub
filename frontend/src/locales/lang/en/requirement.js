@@ -664,6 +664,9 @@ export default {
     emptyDoc: 'No requirement documents. Upload one under "AI Case Generation" first',
     revised: 'Revised',
     pending: 'Pending',
-    answered: 'Answered'
+    answered: 'Answered',
+    loadFailed: 'Failed to load requirement documents',
+    productsLoadFailed: 'Failed to load three products',
+    retry: 'Retry'
   }
 }

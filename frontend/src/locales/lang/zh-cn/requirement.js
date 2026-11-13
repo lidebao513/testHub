@@ -664,6 +664,9 @@ export default {
     emptyDoc: '暂无需求文档，请先在“AI用例生成”上传需求文档',
     revised: '已修订',
     pending: '待澄清',
-    answered: '已答复'
+    answered: '已答复',
+    loadFailed: '需求文档加载失败',
+    productsLoadFailed: '三件套加载失败',
+    retry: '重试'
   }
 }

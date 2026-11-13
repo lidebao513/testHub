@@ -949,6 +949,19 @@ export default {
       runAttribution: 'Run Attribution',
       attributing: 'Attributing...',
       attributionResult: 'Attribution Result',
-      noFailedExec: 'No failed executions'
+      noFailedExec: 'No failed executions',
+      // Experience polish (#269)
+      view: 'View',
+      retry: 'Retry',
+      requestsLoadFailed: 'Failed to load interfaces',
+      casesLoadFailed: 'Failed to load draft cases',
+      execLoadFailed: 'Failed to load executions',
+      adoptConfirmTitle: 'Confirm adopt case',
+      adoptConfirmContent: 'Adopt draft case "{name}" as an official case?',
+      adoptSuiteConfirmTitle: 'Confirm adopt suite',
+      adoptSuiteConfirmContent: 'Adopt the draft scenario suite as an official suite?',
+      detailTitle: 'Case detail / pre-adopt preview',
+      noOverride: 'No request overrides (uses original interface)',
+      noAssertion: 'No assertions'
   }
 }

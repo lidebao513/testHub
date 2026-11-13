@@ -13,6 +13,7 @@
         :placeholder="$t('threeProducts.docPlaceholder')"
         filterable
         style="width: 420px"
+        :loading="loadingDocs"
         @change="onDocChange"
       >
         <el-option
@@ -32,15 +33,37 @@
       </el-button>
     </el-card>
 
-    <div v-if="!selectedDocId" class="empty-tip">
+    <el-alert
+      v-if="docsError"
+      type="error"
+      :closable="false"
+      show-icon
+      class="load-error"
+    >
+      {{ $t('threeProducts.loadFailed') }}
+      <el-button size="small" text type="primary" @click="loadDocuments">{{ $t('threeProducts.retry') }}</el-button>
+    </el-alert>
+
+    <div v-if="!selectedDocId && !docsError" class="empty-tip">
       {{ $t('threeProducts.emptyDoc') }}
     </div>
 
-    <div v-else-if="!hasProducts" class="empty-tip">
+    <el-alert
+      v-if="productsError"
+      type="error"
+      :closable="false"
+      show-icon
+      class="load-error"
+    >
+      {{ $t('threeProducts.productsLoadFailed') }}
+      <el-button size="small" text type="primary" @click="loadProducts">{{ $t('threeProducts.retry') }}</el-button>
+    </el-alert>
+
+    <div v-else-if="!hasProducts && !productsError" class="empty-tip">
       {{ $t('threeProducts.notGenerated') }}
     </div>
 
-    <div v-else class="products-grid" v-loading="loadingProducts">
+    <div v-else v-loading="loadingProducts" class="products-grid">
       <!-- 功能清单 -->
       <el-card class="product-col" shadow="never">
         <template #header>
@@ -142,8 +165,10 @@ const { t } = useI18n()
 const documents = ref([])
 const selectedDocId = ref(null)
 const loadingDocs = ref(false)
+const docsError = ref(false)
 const generating = ref(false)
 const loadingProducts = ref(false)
+const productsError = ref(false)
 const products = reactive({
   functional_inventory: [],
   ui_descriptions: [],
@@ -162,6 +187,7 @@ const submitting = ref(false)
 
 async function loadDocuments() {
   loadingDocs.value = true
+  docsError.value = false
   try {
     const res = await getRequirementDocuments({ page_size: 200 })
     documents.value = res.data.results || res.data || []
@@ -170,6 +196,7 @@ async function loadDocuments() {
       await loadProducts()
     }
   } catch (e) {
+    docsError.value = true
     ElMessage.error(e.response?.data?.error || t('common.error'))
   } finally {
     loadingDocs.value = false
@@ -179,12 +206,14 @@ async function loadDocuments() {
 async function loadProducts() {
   if (!selectedDocId.value) return
   loadingProducts.value = true
+  productsError.value = false
   try {
     const res = await getThreeProducts(selectedDocId.value)
     products.functional_inventory = res.data.functional_inventory || []
     products.ui_descriptions = res.data.ui_descriptions || []
     products.clarifications = res.data.clarifications || []
   } catch (e) {
+    productsError.value = true
     ElMessage.error(e.response?.data?.error || t('common.error'))
   } finally {
     loadingProducts.value = false
@@ -259,6 +288,8 @@ onMounted(loadDocuments)
 .subtitle { color: #888; margin: 4px 0 0; font-size: 13px; }
 .doc-bar { margin-bottom: 16px; display: flex; gap: 12px; align-items: center; }
 .empty-tip { color: #999; padding: 40px; text-align: center; }
+.load-error { margin-bottom: 16px; }
+.load-error .el-button { margin-left: 8px; vertical-align: baseline; }
 .products-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

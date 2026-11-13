@@ -964,6 +964,19 @@ export default {
       runAttribution: '执行归因',
       attributing: '归因中...',
       attributionResult: '归因结果',
-      noFailedExec: '暂无失败的执行记录'
+      noFailedExec: '暂无失败的执行记录',
+      // 体验补齐（#269）
+      view: '查看',
+      retry: '重试',
+      requestsLoadFailed: '接口列表加载失败',
+      casesLoadFailed: '草稿用例加载失败',
+      execLoadFailed: '执行记录加载失败',
+      adoptConfirmTitle: '确认采纳用例',
+      adoptConfirmContent: '确定将草稿用例「{name}」采纳为正式用例吗？',
+      adoptSuiteConfirmTitle: '确认采纳套件',
+      adoptSuiteConfirmContent: '确定将场景套件草稿采纳为正式套件吗？',
+      detailTitle: '用例详情 / 采纳前预览',
+      noOverride: '无请求覆盖（沿用原接口）',
+      noAssertion: '无断言规则'
   }
 }
