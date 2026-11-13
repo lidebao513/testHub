@@ -897,11 +897,13 @@ class ApiSpecImportSerializer(serializers.ModelSerializer):
         model = ApiSpecImport
         fields = [
             'id', 'name', 'source', 'raw_spec', 'spec_format', 'base_url',
-            'project', 'status', 'imported_count', 'error_message',
+            'project', 'status', 'imported_count', 'skipped_count',
+            'skipped_reasons', 'error_message',
             'imported_requests', 'created_by', 'created_at', 'updated_at'
         ]
         read_only_fields = [
-            'base_url', 'status', 'imported_count', 'error_message',
+            'base_url', 'status', 'imported_count', 'skipped_count',
+            'skipped_reasons', 'error_message',
             'imported_requests', 'created_by', 'created_at', 'updated_at'
         ]
 

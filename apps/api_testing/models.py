@@ -271,6 +271,8 @@ class ApiSpecImport(models.Model):
                                 related_name='spec_imports', verbose_name='归属项目')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='导入状态')
     imported_count = models.IntegerField(default=0, verbose_name='成功导入接口数')
+    skipped_count = models.IntegerField(default=0, verbose_name='跳过接口数')
+    skipped_reasons = models.JSONField(default=list, blank=True, verbose_name='跳过原因')
     error_message = models.TextField(blank=True, verbose_name='错误信息')
     imported_requests = models.JSONField(default=list, blank=True, verbose_name='导入的接口ID列表')
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name='创建者')

@@ -280,39 +280,54 @@ class OpenApiImportService:
             created_by=user,
         )
         try:
+            if len(raw_spec or "") > 2 * 1024 * 1024:
+                raise ValueError("规格内容过大（上限 2MB），请精简后重试")
             spec = cls.parse_openapi(raw_spec, spec_format)
+            if not isinstance(spec, dict):
+                raise TypeError("规格根节点必须是对象")
             base_urls = cls._resolve_base_urls(spec)
             base_url = base_urls[0] if base_urls else ""
 
             paths = spec.get("paths") or {}
+            if not isinstance(paths, dict):
+                raise TypeError("paths 必须是对象")
             title = (spec.get("info") or {}).get("title") or name or "OpenAPI 导入"
 
-            with transaction.atomic():
-                collection = ApiCollection.objects.create(
-                    name=title,
-                    description=f"由规格导入：{spec_import.name}",
-                    project=project,
-                    order=0,
-                )
-                created_ids: list[int] = []
-                http_methods = {
-                    "get",
-                    "post",
-                    "put",
-                    "delete",
-                    "patch",
-                    "head",
-                    "options",
-                }
-                order = 0
-                for path, ops in paths.items():
-                    if not isinstance(ops, dict):
+            collection = ApiCollection.objects.create(
+                name=title,
+                description=f"由规格导入：{spec_import.name}",
+                project=project,
+                order=0,
+            )
+
+            created_ids: list[int] = []
+            skipped: list[str] = []
+            http_methods = {
+                "get",
+                "post",
+                "put",
+                "delete",
+                "patch",
+                "head",
+                "options",
+            }
+            order = 0
+            for path, ops in paths.items():
+                if not isinstance(ops, dict):
+                    skipped.append(f"路径 {path} 非对象，已跳过")
+                    continue
+                for method, op in ops.items():
+                    if method.lower() not in http_methods:
                         continue
-                    for method, op in ops.items():
-                        if method.lower() not in http_methods or not isinstance(
-                            op, dict
-                        ):
-                            continue
+                    if not isinstance(op, dict):
+                        skipped.append(f"{method.upper()} {path} 非对象，已跳过")
+                        continue
+                    if "$ref" in op:
+                        skipped.append(
+                            f"{method.upper()} {path} 为 $ref 引用，未做内联解析，已跳过"
+                        )
+                        continue
+                    try:
                         payload = cls._build_request_payload(path, method, op, base_url)
                         payload["collection"] = collection
                         payload["order"] = order
@@ -322,23 +337,37 @@ class OpenApiImportService:
                         req = ApiRequest.objects.create(**payload)
                         created_ids.append(req.id)
                         order += 1
+                    except Exception as e:  # 单条失败不阻断整体导入
+                        skipped.append(f"{method.upper()} {path} 处理失败: {e}")
+                        continue
+
+            if created_ids:
+                final_status = "partial" if skipped else "success"
+            else:
+                final_status = "failed" if skipped else "partial"
+                if not skipped:
+                    skipped.append("规格中未发现任何可导入的接口 path/operation")
 
             spec_import.base_url = base_url
-            spec_import.status = "success" if created_ids else "partial"
+            spec_import.status = final_status
             spec_import.imported_count = len(created_ids)
             spec_import.imported_requests = created_ids
+            spec_import.skipped_count = len(skipped)
+            spec_import.skipped_reasons = skipped[:50]
             spec_import.save(
                 update_fields=[
                     "base_url",
                     "status",
                     "imported_count",
                     "imported_requests",
+                    "skipped_count",
+                    "skipped_reasons",
                     "updated_at",
                 ]
             )
             return spec_import
 
-        except (ValueError, SsrfBlocked) as e:
+        except (TypeError, ValueError, SsrfBlocked) as e:
             spec_import.status = "failed"
             spec_import.error_message = str(e)
             spec_import.save(update_fields=["status", "error_message", "updated_at"])

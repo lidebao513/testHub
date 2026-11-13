@@ -924,6 +924,10 @@ export default {
       importResult: '导入结果',
       status: '状态',
       importedCount: '已导入接口数',
+      skippedCount: '跳过接口数',
+      skippedReasons: '跳过原因',
+      importFailed: '导入失败',
+      importPartial: '部分导入成功',
       // 单接口 Agent
       agentTab: '接口用例生成 Agent',
       agentDesc: '选择接口，AI 生成 正常/边界/异常 三类草稿用例，确认后采纳',

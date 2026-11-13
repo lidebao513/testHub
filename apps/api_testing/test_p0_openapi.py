@@ -193,3 +193,103 @@ def test_import_openapi_ssrf_blocked_rolls_back():
 
     persisted = ApiSpecImport.objects.filter(id=spec_import.id, status="failed").first()
     assert persisted is not None
+
+
+@pytest.mark.django_db
+def test_import_openapi_skips_ref_and_reports(monkeypatch):
+    # $ref 操作应被跳过并计入 skipped，不阻断其余接口导入（标记为 partial）
+    monkeypatch.setattr(
+        "apps.api_testing.services.validate_url", lambda url, *a, **k: None
+    )
+    user = User.objects.create_user(username="p0tester3", password="x")
+    from .models import ApiProject
+
+    proj = ApiProject.objects.create(
+        name="P0 测试项目3",
+        project_type="HTTP",
+        status="IN_PROGRESS",
+        owner=user,
+    )
+    spec = {
+        "openapi": "3.0.0",
+        "info": {"title": "Ref API", "version": "1.0.0"},
+        "servers": [{"url": "https://api.example.com"}],
+        "paths": {
+            "/ok": {"get": {"summary": "正常接口"}},
+            "/ref": {"get": {"$ref": "#/components/operations/getOk"}},
+        },
+    }
+    spec_import = OpenApiImportService.import_openapi(
+        raw_spec=json.dumps(spec),
+        spec_format="json",
+        project=proj,
+        user=user,
+    )
+    assert spec_import.status == "partial"
+    assert spec_import.imported_count == 1
+    assert spec_import.skipped_count == 1
+    assert any("$ref" in r for r in spec_import.skipped_reasons)
+    from .models import ApiRequest
+
+    assert ApiRequest.objects.filter(collection__project=proj).count() == 1
+
+
+@pytest.mark.django_db
+def test_import_openapi_empty_paths_reports(monkeypatch):
+    # 无可导入接口时标记为 partial 并给出原因（不误判为成功）
+    monkeypatch.setattr(
+        "apps.api_testing.services.validate_url", lambda url, *a, **k: None
+    )
+    user = User.objects.create_user(username="p0tester4", password="x")
+    from .models import ApiProject
+
+    proj = ApiProject.objects.create(
+        name="P0 测试项目4",
+        project_type="HTTP",
+        status="IN_PROGRESS",
+        owner=user,
+    )
+    spec = {
+        "openapi": "3.0.0",
+        "info": {"title": "Empty API", "version": "1.0.0"},
+        "servers": [{"url": "https://api.example.com"}],
+        "paths": {},
+    }
+    spec_import = OpenApiImportService.import_openapi(
+        raw_spec=json.dumps(spec),
+        spec_format="json",
+        project=proj,
+        user=user,
+    )
+    assert spec_import.status == "partial"
+    assert spec_import.imported_count == 0
+    assert any("未发现" in r for r in spec_import.skipped_reasons)
+
+
+@pytest.mark.django_db
+def test_import_openapi_oversized_guard():
+    # 规格超过 2MB 应被拒绝并标记 failed（不触发解析/落库）
+    user = User.objects.create_user(username="p0tester5", password="x")
+    from .models import ApiProject, ApiSpecImport
+
+    proj = ApiProject.objects.create(
+        name="P0 测试项目5",
+        project_type="HTTP",
+        status="IN_PROGRESS",
+        owner=user,
+    )
+    big = "x" * (2 * 1024 * 1024 + 10)
+    spec_import = OpenApiImportService.import_openapi(
+        raw_spec=big,
+        spec_format="json",
+        project=proj,
+        user=user,
+    )
+    assert spec_import.status == "failed"
+    assert "过大" in spec_import.error_message
+    # 不应创建任何 collection/request
+    from .models import ApiCollection, ApiRequest
+
+    assert ApiCollection.objects.filter(project=proj).count() == 0
+    assert ApiRequest.objects.filter(collection__project=proj).count() == 0
+    ApiSpecImport.objects.filter(id=spec_import.id).delete()

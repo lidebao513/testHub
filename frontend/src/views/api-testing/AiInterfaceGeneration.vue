@@ -55,15 +55,22 @@
 
           <el-alert
             v-if="importResult"
-            :title="$t('apiTesting.aiInterfaceGeneration.importSuccess')"
-            type="success"
+            :title="importResult.status === 'failed' ? $t('apiTesting.aiInterfaceGeneration.importFailed') : (importResult.status === 'partial' ? $t('apiTesting.aiInterfaceGeneration.importPartial') : $t('apiTesting.aiInterfaceGeneration.importSuccess'))"
+            :type="importResult.status === 'failed' ? 'error' : (importResult.status === 'partial' ? 'warning' : 'success')"
             :closable="false"
             show-icon
           >
             <div class="import-result">
               <div>{{ $t('apiTesting.aiInterfaceGeneration.importedCount') }}：{{ importResult.imported_count }}</div>
+              <div v-if="importResult.skipped_count">⚠ {{ $t('apiTesting.aiInterfaceGeneration.skippedCount') }}：{{ importResult.skipped_count }}</div>
               <div>ID：{{ importResult.id }} | {{ $t('apiTesting.aiInterfaceGeneration.status') }}：{{ importResult.status }}</div>
               <div v-if="importResult.error_message" class="err-msg">{{ importResult.error_message }}</div>
+              <div v-if="importResult.skipped_reasons && importResult.skipped_reasons.length" class="skip-msg">
+                <div>{{ $t('apiTesting.aiInterfaceGeneration.skippedReasons') }}：</div>
+                <ul>
+                  <li v-for="(r, i) in importResult.skipped_reasons.slice(0, 8)" :key="i">{{ r }}</li>
+                </ul>
+              </div>
             </div>
           </el-alert>
         </el-card>
@@ -784,6 +791,10 @@ onMounted(() => {
 .filter-bar { margin-bottom: 16px; }
 .empty-tip { color: #999; padding: 30px; text-align: center; }
 .import-result { line-height: 1.9; font-size: 13px; }
+.skip-msg { margin-top: 4px; color: #e6a23c; }
+.skip-msg ul { margin: 4px 0 0; padding-left: 18px; }
+.skip-msg li { margin-bottom: 2px; }
+.err-msg { color: #f56c6c; }
 .file-hint { margin-left: 12px; color: #409eff; font-size: 13px; }
 .attribution-card { margin-top: 16px; }
 .attribution-json { background: #f5f7fa; padding: 12px; border-radius: 6px; max-height: 420px; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
