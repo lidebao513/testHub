@@ -12,21 +12,21 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 from django.db import transaction
 
 from .models import (
-    ApiProject,
+    AIServiceConfig,
     ApiCollection,
+    ApiProject,
     ApiRequest,
-    TestSuite,
-    TestSuiteRequest,
-    TestExecution,
     ApiSpecImport,
     GeneratedApiTestCase,
-    AIServiceConfig,
+    TestExecution,
+    TestSuite,
+    TestSuiteRequest,
 )
 from .ssrf_guard import SsrfBlocked, validate_url
 
@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 # 通用工具
 # ---------------------------------------------------------------------------
 def _get_active_config(
-    role: Optional[str] = None, config_id: Optional[int] = None
-) -> Optional[AIServiceConfig]:
+    role: str | None = None, config_id: int | None = None
+) -> AIServiceConfig | None:
     """取一个可用的 AI 配置：优先指定 id，其次指定 role，最后任意活跃配置。"""
     if config_id:
         return AIServiceConfig.objects.filter(id=config_id, is_active=True).first()
@@ -49,7 +49,7 @@ def _get_active_config(
 
 
 def _call_llm(
-    config: AIServiceConfig, messages: List[Dict[str, str]], timeout: float = 90.0
+    config: AIServiceConfig, messages: list[dict[str, str]], timeout: float = 90.0
 ) -> str:
     """用 AIServiceConfig 同步调用 chat/completions，返回 message content。"""
     from .ssrf_guard import safe_request
@@ -64,16 +64,13 @@ def _call_llm(
         "max_tokens": config.max_tokens,
         "temperature": config.temperature,
     }
-    try:
-        resp = safe_request(
-            "POST",
-            f"{config.base_url}/chat/completions",
-            headers=headers,
-            json=data,
-            timeout=timeout,
-        )
-    except SsrfBlocked:
-        raise
+    resp = safe_request(
+        "POST",
+        f"{config.base_url}/chat/completions",
+        headers=headers,
+        json=data,
+        timeout=timeout,
+    )
     if resp.status_code != 200:
         raise RuntimeError(f"AI 调用失败 {resp.status_code}: {(resp.text or '')[:500]}")
     result = resp.json()
@@ -111,7 +108,7 @@ class OpenApiImportService:
     """解析 swagger/openapi 规格，并将 paths 落为 ApiCollection + ApiRequest。"""
 
     @classmethod
-    def parse_openapi(cls, raw_spec: str, spec_format: str = "json") -> Dict[str, Any]:
+    def parse_openapi(cls, raw_spec: str, spec_format: str = "json") -> dict[str, Any]:
         """解析原始规格文本为 dict。支持 JSON 与 YAML（仅 safe_load）。"""
         spec_format = (spec_format or "json").lower()
         if spec_format in ("yaml", "yml"):
@@ -125,12 +122,12 @@ class OpenApiImportService:
             raise ValueError(f"JSON 解析失败: {e}")
 
     @classmethod
-    def _resolve_base_urls(cls, spec: Dict[str, Any]) -> List[str]:
+    def _resolve_base_urls(cls, spec: dict[str, Any]) -> list[str]:
         """从 openapi3 servers 或 swagger2 host/basePath/schemes 抽取服务地址。
 
         每个地址在返回前经 ``validate_url`` 做 SSRF 校验，命中黑名单直接抛 SsrfBlocked。
         """
-        urls: List[str] = []
+        urls: list[str] = []
         # OpenAPI 3.x
         for srv in spec.get("servers") or []:
             url = (srv.get("url") or "").rstrip("/")
@@ -151,16 +148,16 @@ class OpenApiImportService:
 
     @classmethod
     def _build_request_payload(
-        cls, path: str, method: str, op: Dict[str, Any], base_url: str
-    ) -> Dict[str, Any]:
+        cls, path: str, method: str, op: dict[str, Any], base_url: str
+    ) -> dict[str, Any]:
         """由单条 path 项构造 ApiRequest 的字段字典。"""
         summary = (
             op.get("summary") or op.get("operationId") or f"{method.upper()} {path}"
         )
         description = op.get("description") or ""
 
-        params: Dict[str, Any] = {}
-        headers: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
+        headers: dict[str, Any] = {}
         for p in op.get("parameters") or []:
             loc = p.get("in")
             name = p.get("name")
@@ -180,7 +177,7 @@ class OpenApiImportService:
                 # 路径参数也并入 params 便于前端提示，url 保留 {name}
                 params[name] = ref
 
-        body: Dict[str, Any] = {}
+        body: dict[str, Any] = {}
         req_body = op.get("requestBody") or {}
         content = req_body.get("content") or {}
         for ctype, cval in content.items():
@@ -207,7 +204,7 @@ class OpenApiImportService:
         spec_format: str,
         project: ApiProject,
         user,
-        name: Optional[str] = None,
+        name: str | None = None,
         source: str = "paste",
     ) -> ApiSpecImport:
         """解析并落库：ApiSpecImport + ApiCollection + ApiRequest。
@@ -239,7 +236,7 @@ class OpenApiImportService:
                     project=project,
                     order=0,
                 )
-                created_ids: List[int] = []
+                created_ids: list[int] = []
                 http_methods = {
                     "get",
                     "post",
@@ -288,7 +285,7 @@ class OpenApiImportService:
             spec_import.error_message = str(e)
             spec_import.save(update_fields=["status", "error_message", "updated_at"])
             return spec_import
-        except Exception as e:  # noqa: BLE001 - 顶层兜底，记录后返回 failed
+        except Exception as e:
             spec_import.status = "failed"
             spec_import.error_message = f"导入异常: {e}"
             spec_import.save(update_fields=["status", "error_message", "updated_at"])
@@ -325,10 +322,10 @@ class ApiTestCaseAgent:
     def generate_cases_for_request(
         cls,
         api_request: ApiRequest,
-        config: Optional[AIServiceConfig] = None,
-        config_id: Optional[int] = None,
+        config: AIServiceConfig | None = None,
+        config_id: int | None = None,
         user=None,
-    ) -> List[GeneratedApiTestCase]:
+    ) -> list[GeneratedApiTestCase]:
         """调用 LLM 为该接口生成三类草稿用例并落库（status=draft）。"""
         config = config or _get_active_config(role="mock_data", config_id=config_id)
         if not config:
@@ -350,9 +347,9 @@ class ApiTestCaseAgent:
         content = _call_llm(config, messages, timeout=90)
         data = _extract_json(content)
         if not isinstance(data, dict):
-            raise RuntimeError("AI 返回无法解析为用例 JSON")
+            raise TypeError("AI 返回无法解析为用例 JSON")
 
-        created: List[GeneratedApiTestCase] = []
+        created: list[GeneratedApiTestCase] = []
         for category in ("normal", "boundary", "abnormal"):
             for item in data.get(category) or []:
                 if not isinstance(item, dict):
@@ -374,12 +371,12 @@ class ApiTestCaseAgent:
     @classmethod
     def generate_scenario(
         cls,
-        request_ids: List[int],
-        config: Optional[AIServiceConfig] = None,
-        config_id: Optional[int] = None,
-        project: Optional[ApiProject] = None,
+        request_ids: list[int],
+        config: AIServiceConfig | None = None,
+        config_id: int | None = None,
+        project: ApiProject | None = None,
         user=None,
-        name: Optional[str] = None,
+        name: str | None = None,
     ) -> TestSuite:
         """调用 LLM 串联多接口业务流，生成 TestSuite(is_draft=True) + TestSuiteRequest。"""
         requests = list(ApiRequest.objects.filter(id__in=request_ids))
@@ -408,7 +405,7 @@ class ApiTestCaseAgent:
         content = _call_llm(config, messages, timeout=90)
         data = _extract_json(content)
         if not isinstance(data, dict):
-            raise RuntimeError("AI 返回无法解析为场景 JSON")
+            raise TypeError("AI 返回无法解析为场景 JSON")
 
         project = (
             project or requests[0].collection.project
@@ -456,9 +453,9 @@ class FailureAttributionService:
     def attribute(
         cls,
         execution: TestExecution,
-        config: Optional[AIServiceConfig] = None,
-        config_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        config: AIServiceConfig | None = None,
+        config_id: int | None = None,
+    ) -> dict[str, Any]:
         """计算归因并写回 execution.attribution；返回归因字典。"""
         config = config or _get_active_config(role="description", config_id=config_id)
         if not config:

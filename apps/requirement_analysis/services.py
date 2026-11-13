@@ -1,12 +1,11 @@
-import os
+import asyncio
 import json
+import logging
 import re
 import time
 import uuid
-import asyncio
-import logging
-from typing import List, Dict, Any, Optional
 from datetime import datetime
+from typing import Any
 
 try:
     from PyPDF2 import PdfReader
@@ -17,13 +16,19 @@ try:
     import docx
 except ImportError:
     docx = None
-from django.conf import settings
-from django.core.files.storage import default_storage
 
 from .models import (
-    RequirementDocument, RequirementAnalysis, BusinessRequirement, GeneratedTestCase, AnalysisTask,
-    AIModelConfig, PromptConfig, FunctionalInventory, UIElementDescription, ClarificationItem,
+    AIModelConfig,
     AIModelService,
+    AnalysisTask,
+    BusinessRequirement,
+    ClarificationItem,
+    FunctionalInventory,
+    GeneratedTestCase,
+    PromptConfig,
+    RequirementAnalysis,
+    RequirementDocument,
+    UIElementDescription,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,7 +49,7 @@ class DocumentProcessor:
             return text.strip()
         except Exception as e:
             logger.error(f"PDF文本提取失败: {e}")
-            return f"PDF文本提取失败: {str(e)}"
+            return f"PDF文本提取失败: {e!s}"
     
     @staticmethod
     def extract_text_from_docx(file_path: str) -> str:
@@ -57,7 +62,7 @@ class DocumentProcessor:
             return text.strip()
         except Exception as e:
             logger.error(f"Word文档文本提取失败: {e}")
-            return f"Word文档文本提取失败: {str(e)}"
+            return f"Word文档文本提取失败: {e!s}"
     
     @staticmethod
     def extract_text_from_txt(file_path: str) -> str:
@@ -71,10 +76,10 @@ class DocumentProcessor:
                     return file.read().strip()
             except Exception as e:
                 logger.error(f"文本文件读取失败: {e}")
-                return f"文本文件读取失败: {str(e)}"
+                return f"文本文件读取失败: {e!s}"
         except Exception as e:
             logger.error(f"文本文件读取失败: {e}")
-            return f"文本文件读取失败: {str(e)}"
+            return f"文本文件读取失败: {e!s}"
     
     @classmethod
     def extract_text(cls, document: RequirementDocument) -> str:
@@ -85,9 +90,7 @@ class DocumentProcessor:
             return cls.extract_text_from_pdf(file_path)
         elif document.document_type == 'docx':
             return cls.extract_text_from_docx(file_path)
-        elif document.document_type == 'txt':
-            return cls.extract_text_from_txt(file_path)
-        elif document.document_type == 'md':
+        elif document.document_type == 'txt' or document.document_type == 'md':
             return cls.extract_text_from_txt(file_path)
         else:
             return "不支持的文档类型"
@@ -97,7 +100,7 @@ class AIService:
     """AI服务类 - 模拟大模型调用"""
     
     @staticmethod
-    async def analyze_requirements(text: str, document_title: str = "") -> Dict[str, Any]:
+    async def analyze_requirements(text: str, document_title: str = "") -> dict[str, Any]:
         """
         先进的需求分析 - 使用新的智能分析引擎
         
@@ -144,7 +147,7 @@ class AIService:
             return await AIService._fallback_analyze_requirements(text, document_title)
     
     @staticmethod
-    async def _fallback_analyze_requirements(text: str, document_title: str = "") -> Dict[str, Any]:
+    async def _fallback_analyze_requirements(text: str, document_title: str = "") -> dict[str, Any]:
         """备用需求分析方法"""
         # 模拟AI分析过程
         await asyncio.sleep(2)
@@ -236,7 +239,7 @@ class AIService:
         }
     
     @staticmethod
-    async def generate_test_cases(requirement: BusinessRequirement, test_level: str, test_priority: str, count: int) -> List[Dict[str, Any]]:
+    async def generate_test_cases(requirement: BusinessRequirement, test_level: str, test_priority: str, count: int) -> list[dict[str, Any]]:
         """生成测试用例 - 大模型A"""
         # 模拟AI生成过程
         await asyncio.sleep(1)
@@ -269,7 +272,7 @@ class AIService:
             if "登录" in requirement.requirement_name:
                 test_cases.append({
                     "case_id": case_id,
-                    "title": f"验证用户使用有效凭证登录系统的认证流程和权限获取",
+                    "title": "验证用户使用有效凭证登录系统的认证流程和权限获取",
                     "priority": test_priority,
                     "precondition": "系统正常运行，测试用户账号已创建",
                     "test_steps": "1. 打开登录页面\n2. 输入有效的用户名和密码\n3. 点击登录按钮\n4. 检查登录结果和页面跳转",
@@ -278,7 +281,7 @@ class AIService:
             elif "数据" in requirement.requirement_name:
                 test_cases.append({
                     "case_id": case_id,
-                    "title": f"测试数据录入功能在各种输入场景下的验证机制和保存结果",
+                    "title": "测试数据录入功能在各种输入场景下的验证机制和保存结果",
                     "priority": test_priority,
                     "precondition": "系统正常运行，用户已登录具备数据操作权限",
                     "test_steps": "1. 进入数据录入页面\n2. 填写必填字段信息\n3. 提交数据\n4. 验证数据保存结果",
@@ -287,7 +290,7 @@ class AIService:
             elif "报告" in requirement.requirement_name:
                 test_cases.append({
                     "case_id": case_id,
-                    "title": f"验证报告生成功能在不同格式和数据量下的处理能力和输出质量",
+                    "title": "验证报告生成功能在不同格式和数据量下的处理能力和输出质量",
                     "priority": test_priority, 
                     "precondition": "系统正常运行，存在可用于生成报告的数据",
                     "test_steps": "1. 进入报告生成页面\n2. 选择报告类型和参数\n3. 点击生成报告\n4. 检查生成的报告内容和格式",
@@ -306,7 +309,7 @@ class AIService:
         return test_cases
     
     @staticmethod
-    async def review_test_cases(test_cases: List[GeneratedTestCase], review_criteria: str) -> Dict[str, Any]:
+    async def review_test_cases(test_cases: list[GeneratedTestCase], review_criteria: str) -> dict[str, Any]:
         """评审测试用例 - 大模型B"""
         # 模拟AI评审过程
         await asyncio.sleep(1.5)
@@ -431,10 +434,10 @@ class RequirementAnalysisService:
             document.status = 'failed'
             document.save()
             
-            raise e
+            raise
     
     @classmethod
-    async def generate_test_cases_for_requirements(cls, requirement_ids: List[int], test_level: str, test_priority: str, test_case_count: int) -> List[GeneratedTestCase]:
+    async def generate_test_cases_for_requirements(cls, requirement_ids: list[int], test_level: str, test_priority: str, test_case_count: int) -> list[GeneratedTestCase]:
         """为需求生成测试用例"""
         generated_cases = []
         
@@ -471,7 +474,7 @@ class RequirementAnalysisService:
         return generated_cases
     
     @classmethod
-    async def review_test_cases(cls, test_case_ids: List[int], review_criteria: str) -> Dict[str, Any]:
+    async def review_test_cases(cls, test_case_ids: list[int], review_criteria: str) -> dict[str, Any]:
         """评审测试用例"""
         test_cases = GeneratedTestCase.objects.filter(id__in=test_case_ids)
         
@@ -493,7 +496,7 @@ class RequirementAnalysisService:
         return review_result
 
 
-def _extract_json(content: str) -> Dict[str, Any]:
+def _extract_json(content: str) -> dict[str, Any]:
     """从 LLM 返回文本中稳健地解析 JSON。
 
     兼容 ```json 围栏、多余前后文本、以及字符串内/嵌套的括号（deepseek
@@ -636,7 +639,7 @@ class RequirementThreeProductsService:
     )
 
     @classmethod
-    def generate_three_products(cls, document: RequirementDocument) -> Dict[str, int]:
+    def generate_three_products(cls, document: RequirementDocument) -> dict[str, int]:
         """调用 LLM 生成三件套并落库（先清旧再落新，保证幂等）。
 
         Returns: 各产物的创建数量字典。
@@ -715,7 +718,7 @@ class RequirementThreeProductsService:
         }
 
     @classmethod
-    def _call_llm_raw(cls, config: AIModelConfig, messages: List[Dict[str, str]], timeout: float = 120.0, max_tokens: int = 4096) -> Dict[str, Any]:
+    def _call_llm_raw(cls, config: AIModelConfig, messages: list[dict[str, str]], timeout: float = 120.0, max_tokens: int = 4096) -> dict[str, Any]:
         """调用 LLM 并返回完整响应字典（含 finish_reason，便于截断重试）。"""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -729,26 +732,26 @@ class RequirementThreeProductsService:
         finally:
             try:
                 loop.run_until_complete(loop.shutdown_asyncgens())
-            except Exception:
+            except Exception:  # noqa: S110  # 忽略事件循环清理异常
                 pass
             loop.close()
         return result or {}
 
     @classmethod
-    def _call_llm(cls, config: AIModelConfig, messages: List[Dict[str, str]], timeout: float = 120.0, max_tokens: int = 4096) -> str:
+    def _call_llm(cls, config: AIModelConfig, messages: list[dict[str, str]], timeout: float = 120.0, max_tokens: int = 4096) -> str:
         result = cls._call_llm_raw(config, messages, timeout=timeout, max_tokens=max_tokens)
         # 输出被 max_tokens 截断时给出告警，便于调参
         try:
             if result.get('choices', [{}])[0].get('finish_reason') == 'length':
                 logger.warning("LLM 输出被 max_tokens(%s) 截断，建议提高上限", max_tokens)
-        except Exception:
+        except Exception:  # noqa: S110  # 忽略 finish_reason 检查异常
             pass
         return result.get('choices', [{}])[0].get('message', {}).get('content', '')
 
     @classmethod
     def revise_with_clarification(
         cls, document: RequirementDocument, clarification_id: int, answer: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """把澄清回答喂回，修订原三件套产物。
 
         流程：
