@@ -2637,8 +2637,16 @@ class OperationLogViewSet(viewsets.ReadOnlyModelViewSet):
     ordering = ['-created_at']
     
     def get_queryset(self):
-        """返回所有操作日志（注：当前未做用户级隔离，权限隔离待评估，见任务 #276）"""
-        return OperationLog.objects.all().order_by('-created_at')
+        """
+        操作日志按用户隔离（修复越权：原实现返回全部，任何登录用户可见他人日志）：
+        - 普通登录用户仅能看到自己的操作日志（user == request.user）；
+        - 管理员（is_staff 或 is_superuser）可查看全部，用于审计。
+        """
+        qs = OperationLog.objects.all().order_by('-created_at')
+        user = self.request.user
+        if user.is_authenticated and (user.is_staff or user.is_superuser):
+            return qs
+        return qs.filter(user=user)
 
 
 class ApiDashboardViewSet(viewsets.ViewSet):
