@@ -234,8 +234,32 @@
           <div v-if="!failedExecutions.length && !loadingExecutions && !execError" class="empty-tip">{{ $t('apiTesting.aiInterfaceGeneration.noFailedExec') }}</div>
 
           <el-card v-if="attributionResult" class="attribution-card" shadow="never">
-            <template #header>{{ $t('apiTesting.aiInterfaceGeneration.attributionResult') }}</template>
-            <pre class="attribution-json">{{ prettyJson(attributionResult) }}</pre>
+            <template #header>
+              <div class="attr-header">
+                <span>{{ $t('apiTesting.aiInterfaceGeneration.attributionResult') }}</span>
+                <el-button size="small" type="primary" @click="openAdoptDefect">{{ $t('apiTesting.aiInterfaceGeneration.adoptAsDefect') }}</el-button>
+              </div>
+            </template>
+            <div v-if="attributionResult.raw" class="attr-raw">
+              <pre class="attribution-json">{{ attributionResult.raw }}</pre>
+            </div>
+            <div v-else class="attr-body">
+              <div class="attr-root">
+                <span class="attr-label">{{ $t('apiTesting.aiInterfaceGeneration.rootCause') }}</span>
+                <el-tag :type="confidenceTag(attrConfidence)" size="small">{{ confidenceLabel(attrConfidence) }}</el-tag>
+              </div>
+              <p class="attr-root-text">{{ attributionResult.root_cause || '—' }}</p>
+              <div v-if="attributionResult.details" class="attr-section">
+                <div class="attr-label">{{ $t('apiTesting.aiInterfaceGeneration.details') }}</div>
+                <p class="attr-text">{{ attributionResult.details }}</p>
+              </div>
+              <div v-if="attrSuggestions.length" class="attr-section">
+                <div class="attr-label">{{ $t('apiTesting.aiInterfaceGeneration.suggestions') }}</div>
+                <ul class="attr-suggestions">
+                  <li v-for="(s, i) in attrSuggestions" :key="i">{{ s }}</li>
+                </ul>
+              </div>
+            </div>
           </el-card>
         </el-card>
       </el-tab-pane>
@@ -280,11 +304,52 @@
         </div>
       </div>
     </el-drawer>
+
+    <!-- 采纳归因 → 缺陷 对话框 -->
+    <el-dialog
+      v-model="adoptDefectVisible"
+      :title="$t('apiTesting.aiInterfaceGeneration.adoptAsDefect')"
+      width="580px"
+      :close-on-click-modal="false"
+    >
+      <el-form label-width="92px">
+        <el-form-item :label="$t('apiTesting.aiInterfaceGeneration.defectTitle')">
+          <el-input v-model="defectForm.title" maxlength="300" show-word-limit />
+        </el-form-item>
+        <el-form-item :label="$t('apiTesting.aiInterfaceGeneration.defectProject')">
+          <el-select v-model="defectForm.project_id" filterable :placeholder="$t('apiTesting.aiInterfaceGeneration.defectProject')" style="width: 320px">
+            <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="$t('apiTesting.aiInterfaceGeneration.defectType')">
+          <el-select v-model="defectForm.defect_type" style="width: 200px">
+            <el-option v-for="o in defectTypeOptions" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="$t('apiTesting.aiInterfaceGeneration.severity')">
+          <el-select v-model="defectForm.severity" style="width: 200px">
+            <el-option v-for="o in severityOptions" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="$t('apiTesting.aiInterfaceGeneration.priority')">
+          <el-select v-model="defectForm.priority" style="width: 200px">
+            <el-option v-for="o in priorityOptions" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="$t('apiTesting.aiInterfaceGeneration.description')">
+          <el-input v-model="defectForm.description" type="textarea" :rows="6" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="adoptDefectVisible = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="submittingDefect" @click="submitDefect">{{ $t('common.confirm') }}</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import api from '@/utils/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -300,6 +365,7 @@ import {
   adoptTestSuite,
   getExecutions
 } from '@/api/api-testing'
+import { createDefect } from '@/api/defects'
 
 const { t } = useI18n()
 
@@ -344,6 +410,43 @@ const failedExecutions = ref([])
 const selectedExecutionId = ref(null)
 const attributing = ref(false)
 const attributionResult = ref(null)
+
+// 采纳归因 → 缺陷
+const adoptDefectVisible = ref(false)
+const submittingDefect = ref(false)
+const defectForm = reactive({
+  title: '',
+  project_id: null,
+  defect_type: 'functional',
+  severity: 'major',
+  priority: 'p2',
+  description: ''
+})
+const severityOptions = [
+  { value: 'blocker', label: t('apiTesting.aiInterfaceGeneration.sevBlocker') },
+  { value: 'critical', label: t('apiTesting.aiInterfaceGeneration.sevCritical') },
+  { value: 'major', label: t('apiTesting.aiInterfaceGeneration.sevMajor') },
+  { value: 'minor', label: t('apiTesting.aiInterfaceGeneration.sevMinor') },
+  { value: 'suggestion', label: t('apiTesting.aiInterfaceGeneration.sevSuggestion') }
+]
+const priorityOptions = [
+  { value: 'p0', label: 'P0' }, { value: 'p1', label: 'P1' },
+  { value: 'p2', label: 'P2' }, { value: 'p3', label: 'P3' }
+]
+const defectTypeOptions = [
+  { value: 'functional', label: t('apiTesting.aiInterfaceGeneration.typeFunctional') },
+  { value: 'ui', label: t('apiTesting.aiInterfaceGeneration.typeUi') },
+  { value: 'compatibility', label: t('apiTesting.aiInterfaceGeneration.typeCompatibility') },
+  { value: 'performance', label: t('apiTesting.aiInterfaceGeneration.typePerformance') },
+  { value: 'security', label: t('apiTesting.aiInterfaceGeneration.typeSecurity') },
+  { value: 'data', label: t('apiTesting.aiInterfaceGeneration.typeData') },
+  { value: 'other', label: t('apiTesting.aiInterfaceGeneration.typeOther') }
+]
+const attrConfidence = computed(() => attributionResult.value?.confidence || '')
+const attrSuggestions = computed(() => {
+  const s = attributionResult.value?.suggestions
+  return Array.isArray(s) ? s : []
+})
 
 async function loadProjects() {
   loadingProjects.value = true
@@ -602,6 +705,62 @@ function categoryTag(category) {
   return 'danger'
 }
 
+function confidenceTag(c) {
+  if (c === 'high') return 'success'
+  if (c === 'medium') return 'warning'
+  if (c === 'low') return 'danger'
+  return 'info'
+}
+
+function confidenceLabel(c) {
+  if (c === 'high') return t('apiTesting.aiInterfaceGeneration.confHigh')
+  if (c === 'medium') return t('apiTesting.aiInterfaceGeneration.confMedium')
+  if (c === 'low') return t('apiTesting.aiInterfaceGeneration.confLow')
+  return t('apiTesting.aiInterfaceGeneration.confUnknown')
+}
+
+function openAdoptDefect() {
+  const r = attributionResult.value || {}
+  const ex = failedExecutions.value.find(e => String(e.id) === String(selectedExecutionId.value))
+  defectForm.title = (r.root_cause || t('apiTesting.aiInterfaceGeneration.adoptAsDefect')).toString().slice(0, 300)
+  const parts = []
+  if (r.details) parts.push(r.details)
+  if (attrSuggestions.value.length) {
+    parts.push(t('apiTesting.aiInterfaceGeneration.suggestions') + '：\n' + attrSuggestions.value.map(s => '· ' + s).join('\n'))
+  }
+  defectForm.description = parts.join('\n\n')
+  defectForm.project_id = ex?.test_suite?.project || null
+  defectForm.defect_type = 'functional'
+  defectForm.severity = 'major'
+  defectForm.priority = 'p2'
+  adoptDefectVisible.value = true
+}
+
+async function submitDefect() {
+  if (!defectForm.project_id) {
+    ElMessage.warning(t('apiTesting.aiInterfaceGeneration.defectProjectRequired'))
+    return
+  }
+  submittingDefect.value = true
+  try {
+    await createDefect({
+      title: defectForm.title,
+      project_id: defectForm.project_id,
+      defect_type: defectForm.defect_type,
+      severity: defectForm.severity,
+      priority: defectForm.priority,
+      description: defectForm.description,
+      source: 'api_testing'
+    })
+    ElMessage.success(t('apiTesting.aiInterfaceGeneration.defectCreated'))
+    adoptDefectVisible.value = false
+  } catch (e) {
+    ElMessage.error(e.response?.data?.error || e.response?.data?.project_id || t('common.error'))
+  } finally {
+    submittingDefect.value = false
+  }
+}
+
 function prettyJson(obj) {
   try {
     return JSON.stringify(obj, null, 2)
@@ -641,4 +800,14 @@ onMounted(() => {
 .assert-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .assert-name { font-weight: 600; color: #303133; }
 .assert-body { background: #f5f7fa; padding: 8px 10px; border-radius: 6px; margin: 0; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+.attr-header { display: flex; justify-content: space-between; align-items: center; }
+.attr-body { font-size: 13px; }
+.attr-root { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.attr-label { font-weight: 600; color: #606266; }
+.attr-root-text { margin: 0 0 12px; font-size: 14px; font-weight: 500; color: #303133; }
+.attr-section { margin-bottom: 12px; }
+.attr-text { margin: 6px 0 0; color: #606266; line-height: 1.7; white-space: pre-wrap; }
+.attr-suggestions { margin: 6px 0 0; padding-left: 20px; color: #606266; line-height: 1.9; }
+.attr-suggestions li { margin-bottom: 2px; }
+.attr-raw { margin: 0; }
 </style>
