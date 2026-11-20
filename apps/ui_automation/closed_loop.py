@@ -23,6 +23,8 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
+from .history_utils import history_steps
+
 logger = logging.getLogger(__name__)
 
 
@@ -424,7 +426,7 @@ def finalize_execution_record(
         failed = any(t.get("status") in ("failed", "error") for t in planned)
     if not failed and history:
         try:
-            steps = history.steps if hasattr(history, "steps") else []
+            steps = history_steps(history)
             for step in steps:
                 if getattr(step, "status", None) == "failed":
                     failed = True

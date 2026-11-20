@@ -42,6 +42,7 @@ from .serializers import (
     AICaseSerializer, AIExecutionRecordSerializer
 )
 from .operation_logger import log_operation
+from .history_utils import history_steps
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -3085,7 +3086,7 @@ class AICaseViewSet(viewsets.ModelViewSet):
                     # history 也可能包含状态信息
                     if not failed and history:
                         try:
-                            steps = history.steps if hasattr(history, 'steps') else []
+                            steps = history_steps(history)
                             for step in steps:
                                 if getattr(step, 'status', None) == 'failed':
                                     failed = True
@@ -3115,8 +3116,7 @@ class AICaseViewSet(viewsets.ModelViewSet):
                 # 格式化 history 为日志 (如果不是停止状态)
                 steps = []
                 if history:
-                    if hasattr(history, 'steps'):
-                        steps = [extract_step_info(s, i) for i, s in enumerate(history.steps)]
+                    steps = [extract_step_info(s, i) for i, s in enumerate(history_steps(history))]
 
                 execution_record.steps_completed = steps
 
@@ -3721,7 +3721,7 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                         failed = any(t.get('status') in ('failed', 'error') for t in execution_record.planned_tasks)
                     if not failed and history:
                         try:
-                            steps = history.steps if hasattr(history, 'steps') else []
+                            steps = history_steps(history)
                             for step in steps:
                                 if getattr(step, 'status', None) == 'failed':
                                     failed = True
@@ -3751,8 +3751,7 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                 # 格式化 history 为日志 (如果不是停止状态)
                 steps = []
                 if history:
-                    if hasattr(history, 'steps'):
-                        steps = [extract_step_info(s, i) for i, s in enumerate(history.steps)]
+                    steps = [extract_step_info(s, i) for i, s in enumerate(history_steps(history))]
 
                 execution_record.steps_completed = steps
 

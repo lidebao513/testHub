@@ -179,12 +179,20 @@ def _node_text(node) -> str:
 
 
 def page_text_from_state(state) -> str:
-    """从 BrowserStateSummary 提取页面可见文本（供 page_contains 评估）。失败返回空串。"""
+    """从终态快照提取页面可见文本（供 page_contains 评估）。失败返回空串。
+
+    BrowserStateSummary 用 ``dom_state.selector_map``；直接从执行历史复用的
+    BrowserStateHistory 没有 dom_state，但有 ``interacted_element``（同样带
+    node_value/attributes），两者都支持，避免浏览器关闭后断言全落 unknown。
+    """
     try:
         dom_state = getattr(state, "dom_state", None)
         selector_map = getattr(dom_state, "selector_map", None) or {}
+        nodes = list(selector_map.values())
+        if not nodes:
+            nodes = [n for n in (getattr(state, "interacted_element", None) or []) if n is not None]
         chunks = []
-        for node in selector_map.values():
+        for node in nodes:
             text = _node_text(node)
             if text.strip():
                 chunks.append(text.strip())

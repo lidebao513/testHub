@@ -80,7 +80,7 @@
 | # | 问题 | 影响 | 建议 |
 |---|---|---|---|
 | 1 | **清单未落库**，只进日志与前端日志面板 | 事后审计要翻日志，无法按执行记录查询 | 给 `AIExecutionRecord` 加 `pre_explore` JSONField（需迁移），与 #178 的成本字段一并做 |
-| 2 | **无 run_task 级集成测试** | 无法在单测层证明"prompt 真的拼进 task" | 可用 monkeypatch 替换 `Agent`/`Controller` 断言 `task` 含关键串；或靠真实 AI 任务兜底 |
+| 2 | ~~**无 run_task 级集成测试**~~（**S4 已解决 2026-11-20**） | 无法在单测层证明"prompt 真的拼进 task" | 已新增 `apps/ui_automation/tests/test_run_task_prompt_wiring.py` 6 例：裸实例 + stub `Agent`/`Controller`/路由/LLM 校验，真实调用 `run_task`，在 `Agent(task=...)` 处截取最终 task 断言——预探索 prompt 整段存在、开关关闭时不注入、位置在规则区之前、安全边界/CURRENT TIME/子任务列表均在。比 `inspect.getsource` 静态检查更强（运行时证据） |
 | 3 | **收益未量化** | 「减少步数/token」是推断，没有实测对照 | 需 1 个可用的 `browser_use_text` 模型配置，跑同任务开/关对照 |
 | 4 | **抓取时机是 step_end（动作后）** | 严格意义上不是"动手前的状态"，第 1 步的动作已经生效 | 当前对审计足够；若要严格前置，需用 `initial_actions` + `on_step_start`（改动更大） |
 | 5 | **页面文本进日志** | 元素可见文本（可能含用户名等）会写进 `AIExecutionRecord.logs` | 单条已截断 40 字、最多 15 条；如涉敏可在日志层做脱敏 |
