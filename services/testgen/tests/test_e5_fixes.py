@@ -130,6 +130,34 @@ def test_css_path_filters_hash_classes() -> None:
     assert src.count(".filter(stableClass)") == 2
 
 
+def test_css_path_escapes_tailwind_special_chars() -> None:
+    """Tailwind arbitrary-value 类名（如 min-h-[100dvh]）必须 CSS.escape 转义。
+
+    历史缺陷：直接把 class 拼进选择器，Playwright 把 `[100dvh]` 当成属性选择器语法
+    抛 Error → 元素断言异常 → 6 条用例假 FAIL。三处 cssPath 都要转义。
+    """
+    src = Path(runtime_ui.__file__).read_text(encoding="utf-8")
+    # 三处 cssPath 的 class 拼接都经过 CSS.escape（2 处元素发现 + 1 处卡片导航触发）
+    assert src.count("CSS.escape(c)") == 3, (
+        "三处 class→选择器拼接都必须用 CSS.escape 转义 Tailwind 特殊字符类名"
+    )
+
+
+def test_panel_discovery_has_time_budget() -> None:
+    """面板/菜单发现必须有时间预算 + 单次点击短超时，防大量导航项拖到像卡死。
+
+    历史现场（2026-11-20，福享 Agent 带正确 OTP）：登录后发现 60 个菜单标签，
+    每个点击最坏等 30s → runtime_ui 阶段进度 2 分钟不动，被误判卡死。
+    """
+    assert runtime_ui.PANEL_DISCOVERY_BUDGET_MS > 0
+    assert 0 < runtime_ui.PANEL_CLICK_TIMEOUT_MS < 30000
+    src = Path(runtime_ui.__file__).read_text(encoding="utf-8")
+    assert "deadline = time.monotonic()" in src, "面板发现缺少总时间预算"
+    assert "budget_exhausted" in src, "预算耗尽需可观测"
+    # 菜单发现与面板发现都用短超时（各至少 1 处传 click_timeout_ms）
+    assert src.count("click_timeout_ms=PANEL_CLICK_TIMEOUT_MS") == 3
+
+
 # ---------------------------------------------------------------- B11 元素等待
 def test_element_check_waits_when_supported() -> None:
     """B11：locator 支持 wait_for 时优先等待可见（SPA 慢页面不假 FAIL）。"""

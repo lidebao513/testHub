@@ -35,6 +35,7 @@ import os
 import re
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -191,7 +192,10 @@ _CARD_CANDIDATE_JS = r"""
       if (stableId(node.id)) { parts.unshift('#' + node.id); break; }
       let sel = node.tagName.toLowerCase();
       const cls = (node.getAttribute('class') || '').trim().split(/\s+/).filter(stableClass).slice(0, 2);
-      if (cls.length) sel += '.' + cls.join('.');
+      // Tailwind arbitrary-value / 响应式类名含 []():., 等 CSS 特殊字符
+      // （如 min-h-[100dvh]、hover:bg-blue-500），直接拼接会被当成属性选择器 / 伪类而抛 Error。
+      // CSS.escape 是浏览器原生转义，保留语义 class 的同时生成合法选择器。
+      if (cls.length) sel += '.' + cls.map(function(c){ return CSS.escape(c); }).join('.');
       const parent = node.parentElement;
       if (parent) {
         const same = Array.from(parent.children).filter((c) => c.tagName === node.tagName);
@@ -252,6 +256,12 @@ MAX_CONSOLE_ERRORS_PER_PAGE = 20
 MAX_CONSOLE_ERRORS_TOTAL = 500
 # SPA 路由切换后的静默等待（毫秒）
 SPA_SETTLE_MS = 900
+# 状态驱动面板发现的总时间预算（毫秒）：菜单标签可能高达 60 个，每个点击最坏等
+# timeout_ms(options)（默认 30s），累积极易拖到数分钟像「卡死」。预算到即停止探测，
+# 已采集的面板保留；不牺牲覆盖率（面板本来就是可选兜底通道，主路由发现已完成）。
+PANEL_DISCOVERY_BUDGET_MS = 25000
+# 面板探测中单次点击的上限（毫秒），远小于全局 timeout，防止单个遮挡元素耗满 30s。
+PANEL_CLICK_TIMEOUT_MS = 5000
 # 进入新页面后等「网络静默」的上限（毫秒）。
 # SPA 普遍有长轮询/心跳，`networkidle` 往往**永远不满足**；若照配置超时（几十秒）等，
 # 遍历十几个路由就会拖到数分钟。这里只需要「首屏渲染差不多完成」，故给一个短预算。
@@ -1116,12 +1126,21 @@ def _route_of_nav_item(page: Any, handle: Any, options: RuntimeUiOptions, popups
     return route
 
 
-def _click_label(page: Any, label: str, options: RuntimeUiOptions, popups: list[Any]) -> str:
+def _click_label(
+    page: Any,
+    label: str,
+    options: RuntimeUiOptions,
+    popups: list[Any],
+    click_timeout_ms: int | None = None,
+) -> str:
     """按 label 点击导航项并读回路由：先 CSS 句柄，未命中则按可见文字点击（S0 治本兜底）。
 
     CSS 启发式（`_NAV_SELECTOR`）匹配不到真实菜单时，专家 S0 反推出的菜单文字也无法用
     CSS 句柄定位——此时退回 `page.get_by_text` 文本点击，仍能驱动 SPA 路由跳转，
     把 `routes=0` 修成真实菜单数。任何异常均返回空串，不影响主链路。
+
+    `click_timeout_ms`：可选的单次点击上限；面板探测传短值避免遮挡元素耗满全局 timeout，
+    不传则沿用 `options.timeout`（菜单发现 / 执行器重放保持原行为）。
     """
     popups.clear()
     handle = _locate_nav(page, label, 0)
@@ -1140,7 +1159,7 @@ def _click_label(page: Any, label: str, options: RuntimeUiOptions, popups: list[
     try:
         if not el.is_visible():
             return ""
-        el.click(timeout=timeout_ms(options), no_wait_after=True)
+        el.click(timeout=click_timeout_ms or timeout_ms(options), no_wait_after=True)
     except Exception:
         return ""
     try:
@@ -1180,11 +1199,17 @@ def _probe_menu_routes(probe: _MenuProbe) -> list[str]:
     limit = max(1, int(probe.options.max_pages))
     try:
         for _idx, label in enumerate(probe.labels[:limit]):
-            raw = _click_label(page, label, probe.options, popups)
+            # 单项短超时：遮挡 / 不可交互的导航项不耗满全局 timeout（默认 30s），
+            # 否则几十个菜单项逐个点击会把菜单发现拖到数分钟（真机带 OTP 复现过）。
+            raw = _click_label(
+                page, label, probe.options, popups, click_timeout_ms=PANEL_CLICK_TIMEOUT_MS
+            )
             if not raw:  # CSS 与文本点击都失败 → 回起点后重试一次（导航可能被跳转带走）
                 if not _return_to(page, probe.start_url, probe.options):
                     break
-                raw = _click_label(page, label, probe.options, popups)
+                raw = _click_label(
+                    page, label, probe.options, popups, click_timeout_ms=PANEL_CLICK_TIMEOUT_MS
+                )
             route = _normalize_route(raw, probe.options.base_url)
             if route and route != probe.start_route and route not in seen:
                 seen.add(route)
@@ -1498,7 +1523,8 @@ _EXTRACT_JS_TEMPLATE = """
       if (stableId(node.id)) { parts.unshift('#' + node.id); break; }
       let sel = node.tagName.toLowerCase();
       const cls = (node.getAttribute('class') || '').trim().split(/\\s+/).filter(stableClass).slice(0, 2);
-      if (cls.length) sel += '.' + cls.join('.');
+      // Tailwind arbitrary-value / 响应式类名含 []():., 等 CSS 特殊字符，CSS.escape 转义。
+      if (cls.length) sel += '.' + cls.map(function(c){ return CSS.escape(c); }).join('.');
       const parent = node.parentElement;
       if (parent) {
         const same = Array.from(parent.children).filter((c) => c.tagName === node.tagName);
@@ -1819,13 +1845,21 @@ def _absorb_panel_areas(  # noqa: PLR0913, PLR0917 - 面板发现器参数多但
     # 所以「到达第 N 个面板的真实点击序列」= 此前所有点击之和（含展开子菜单的无效点击，
     # 它们本就是复现路径的一部分）。执行器据此先 goto 父页、按序点击、再校验签名。
     click_path: list[str] = []
+    # 时间预算：菜单标签可达 60 个，逐个点击 + 等待会累积到数分钟（真机带 OTP 复现过
+    # 「runtime_ui 阶段 2 分钟进度不动」）。预算到就停，面板是可有可无的兜底通道，
+    # 主路由发现已在前面完成，不牺牲功能点覆盖。
+    deadline = time.monotonic() + PANEL_DISCOVERY_BUDGET_MS / 1000.0
+    budget_exhausted = False
     for label in labels:
         if _is_danger_label(label):
             continue
         if collected >= limit:
             break
+        if time.monotonic() >= deadline:
+            budget_exhausted = True
+            break
         before = _panel_signature(page)
-        _click_label(page, label, options, [])
+        _click_label(page, label, options, [], click_timeout_ms=PANEL_CLICK_TIMEOUT_MS)
         click_path.append(label)
         try:
             page.wait_for_timeout(SPA_SETTLE_MS)
@@ -1855,6 +1889,11 @@ def _absorb_panel_areas(  # noqa: PLR0913, PLR0917 - 面板发现器参数多但
     if collected:
         result.notes.append(
             f"状态驱动面板区域发现 {collected} 个（菜单点击未改 URL，按内容签名区分）"
+        )
+    if budget_exhausted:
+        result.notes.append(
+            f"面板区域发现达时间预算 {PANEL_DISCOVERY_BUDGET_MS}ms，"
+            f"已采集 {collected} 个后停止（避免大量导航项逐个点击拖长生成）"
         )
     return collected
 
@@ -1950,7 +1989,8 @@ _TRIGGER_SELECTORS_JS = """
       for(var i=0;i<sib.length;i++){ if(sib[i].nodeName.toLowerCase()===nm){ cnt++; if(sib[i]===el) idx=cnt; } }
       if(cnt>1) sel+=':nth-of-type('+idx+')';
       if(el.className && typeof el.className==='string' && el.className.trim()){
-        sel+='.'+el.className.trim().split(/\\s+/).join('.');
+        // 同 cssPath：Tailwind 类名含 []():., 等 CSS 特殊字符必须转义，否则 querySelector 抛 Error。
+        sel+='.'+el.className.trim().split(/\\s+/).map(function(c){return CSS.escape(c);}).join('.');
       }
       path.unshift(sel);
       el=el.parentNode;
