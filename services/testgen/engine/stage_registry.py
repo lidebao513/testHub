@@ -205,6 +205,29 @@ class TagStageOutput:
 
 
 # ---------------------------------------------------------------------------
+# 12) quality —— 生成后自检（T5）：门禁 + 三 KPI + 三通道
+# 输入全部是「本次运行的中间产物」，没有一项能从库里还原（hunk 行号、改动函数、
+# 被预算截断的引用方总数都只在生成期存在），这也是 KPI 必须以快照形式落库的原因。
+# ---------------------------------------------------------------------------
+@dataclass
+class QualityStageInput:
+    test_points: list[Any]
+    functional_points: list[Any]
+    files: dict[str, Any]
+    hunks: dict[str, list[tuple[int, int]]]
+    scopes: set[str]
+    semantic_dims: dict[str, Any]
+    attributed_evidence: list[dict[str, Any]]
+    impact_stats: dict[str, Any] | None = None
+    file_impact_stats: dict[str, Any] | None = None
+
+
+@dataclass
+class QualityStageOutput:
+    quality: dict[str, Any]
+
+
+# ---------------------------------------------------------------------------
 # Stage 描述符 + 注册表
 # ---------------------------------------------------------------------------
 
@@ -400,6 +423,21 @@ def _build_registry() -> StageRegistry:
             input_type=TagStageInput,
             output_type=TagStageOutput,
             description="git diff -> 变更上下文（全量 / 增量基线校验 + 逃逸阻断）",
+        )
+    )
+
+    # ---- T5：生成后自检（门禁 + 三 KPI + 三通道）----
+    # 契约先按占位登记（fn=None/planned=True），由 pipeline._wire_stages_to_registry
+    # 回注真实实现——与适配层同一手法，避免 registry 反向 import pipeline 造成循环依赖。
+    reg.register(
+        Stage(
+            name="quality",
+            kind=StageKind.CAPABILITY,
+            fn=None,
+            planned=True,
+            input_type=QualityStageInput,
+            output_type=QualityStageOutput,
+            description="生成后自检：命题门禁（证据/可观测预期/来源标签）+ 三 KPI + 三通道",
         )
     )
 

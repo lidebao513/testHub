@@ -80,6 +80,9 @@
   .scan-item .meta{color:var(--sub);font-size:11px;white-space:nowrap}
   .tp-sem{font-size:11px;color:var(--sub);margin-top:2px}
   .tp-exp{font-size:11px;color:#15803d;margin-top:1px}
+  /* T5：未验证标黄——「没证据」与「需特殊环境」都不可直接执行，但原因必须写清 */
+  .tp-warn{font-size:11px;color:#7a5b00;background:#fff6d6;border:1px solid #e0b800;
+    border-radius:4px;padding:1px 6px;margin-top:3px;display:inline-block}
   .st-added{background:#dcfce7;color:#166534}
   .st-modified{background:#fef3c7;color:#92400e}
   .st-unchanged{background:#eef2f7;color:#475569}
@@ -149,13 +152,16 @@
       <div style="margin-top:8px">
         <button class="btn-ghost btn-sm" id="btn_branches" onclick="loadBranches()">🔄 获取分支</button>
       </div>
+      <div id="branch_tip" class="hint" style="display:none;margin-top:6px;padding:8px 10px;border-radius:8px;background:#eef4ff;border:1px solid #c9dcff;color:#1b4f9c;font-size:12px;line-height:1.6"></div>
       <div style="margin-top:8px">
         <label>分支（增量模式的目标 ref）</label>
         <select id="scan_ref" style="width:100%" onchange="onBranchChange()"><option value="">默认分支</option></select>
+        <select id="scan_ref_commit" style="width:100%;margin-top:4px" onchange="onCommitChange('target')" title="选定分支下的历史提交；不选则用该分支最新提交"><option value="">（该分支最新提交）</option></select>
       </div>
       <div style="margin-top:8px">
         <label>基线 ref（可空）</label>
         <select id="scan_base_ref" style="width:100%" onchange="syncRefs()"><option value="">（留空 = 不对比，只列文件）</option></select>
+        <select id="scan_base_ref_commit" style="width:100%;margin-top:4px" onchange="onCommitChange('base')" title="选定基线分支下的历史提交；不选则用该分支最新提交"><option value="">（该分支最新提交）</option></select>
       </div>
       <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
         <button class="btn-primary btn-sm" id="btn_scan" onclick="scanCode()">🔍 扫描</button>
@@ -176,7 +182,7 @@
         <button class="btn-ghost btn-sm" id="btn_clear_desc" onclick="clearDescCache()" title="清空本地已保存的文件描述缓存（换模型或强制刷新时用）">🧹 清空描述缓存</button>
         <span class="hint" style="margin:0">扫描后用这些按钮勾选生成范围</span>
       </div>
-      <div class="hint">「分支」即增量模式的目标 ref；「基线 ref」用于对比出新增/修改（留空只列文件不标变更）。增量 = 只对两者的 diff 范围生成测试点，需 git 仓库。点「获取分支」刷新两个下拉框。</div>
+      <div class="hint">「分支」即增量模式的目标 ref，「基线 ref」用于对比出新增/修改（留空只列文件不标变更）。选定分支后，下方会列出该分支的历史提交，可选任一历史时间点作为实际对比 ref（不选 = 用该分支最新提交）。增量 = 只对两者的 diff 范围生成测试点。点「获取分支」刷新两个下拉框。</div>
     </div>
 
     <div class="sec">
@@ -191,8 +197,8 @@
 
     <div class="sec">
       <div class="sec-title"><span class="step">D</span>被测环境（可选 · 执行验证 / 一键闭环时需要）</div>
-      <label>统一智能输入框（把地址+账号+密码+动态口令+代码路径混在一起写也行）</label>
-      <textarea id="auto_input" placeholder="例：http://47.97.154.50:8090/chat 账号 test_ft001@ft.cntaiping.com 密码 Tp0909@test 动态口令 123456"></textarea>
+      <label>统一智能输入框（把地址+账号+密码+动态口令+代码路径混在一起写也行；内容自动关联下方已保存配置）</label>
+      <textarea id="auto_input"></textarea>
       <label style="margin-top:8px">或分项填写（更清晰）</label>
       <div class="row">
         <div><label>被测环境地址(URL)</label><input type="text" id="test_url" placeholder="http://host:port/chat"></div>
@@ -206,16 +212,23 @@
         <div><label>动态口令(OTP)</label><input type="text" id="otp" placeholder="6位动态码"></div>
         <div><label>项目名(可空)</label><input type="text" id="pname" placeholder="自动命名"></div>
       </div>
+      <div class="row" style="align-items:center;gap:8px;margin-top:10px">
+        <button class="btn-ghost btn-sm" onclick="saveEnvConfig()">💾 保存环境配置</button>
+        <button class="btn-ghost btn-sm" onclick="clearEnvConfig()">🗑 清除</button>
+        <span id="env_save_status" class="hint" style="margin:0"></span>
+      </div>
+      <div class="hint" style="margin-top:4px">保存后每次打开页面自动反显；修改字段后重新点「保存环境配置」覆盖。凭证仅存本机浏览器 localStorage，请勿在公用电脑保存敏感口令。</div>
     </div>
 
     <div class="sec">
       <div class="sec-title"><span class="step">E</span>生成与执行</div>
       <div class="actions" style="margin-top:0">
         <button class="btn-primary" id="btn_gen" onclick="doGenerate()">▶ 生成用例</button>
-        <button class="btn-ok" id="btn_exec" onclick="doExecute()" disabled>▶ 执行验证</button>
+        <button class="btn-ok" id="btn_exec" onclick="doExecute()" title="对当前项目跑一遍执行验证（真实访问被测系统）；没项目/没地址会先提示缺什么">▶ 执行验证</button>
         <button class="btn-ok" id="btn_onetwo" onclick="doScanAndTest()">⚡ 一键闭环（生成→执行→报告）</button>
         <button class="btn-danger" id="btn_cancel_task" style="display:none" onclick="cancelCurrentTask()">✖ 取消任务</button>
       </div>
+      <div id="exec_tip" class="hint" style="display:none;margin-top:8px;padding:8px 10px;border-radius:8px;background:#eef4ff;border:1px solid #c9dcff;color:#1b4f9c;font-size:12px;line-height:1.6"></div>
       <div id="gen_progress" style="display:none;margin-top:10px">
         <div style="display:flex;justify-content:space-between;font-size:12px;color:#666">
           <span>阶段：<span id="gen_stage">—</span></span><span id="gen_frac"></span>
@@ -225,10 +238,31 @@
         </div>
       </div>
       <div class="hint">提示：只填「代码目录」= 纯代码生成；只填「被测地址+账号」= 浏览器自动发现页面/接口生成。执行验证默认只读（不污染被测环境），勾下方可放行写/真实点击。</div>
-      <div class="row" style="margin-top:8px">
-        <div><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="allow_write">放行写操作</label></div>
-        <div><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ui_click">UI 真实点击</label></div>
-        <div><label>指定已有项目ID执行(可选)</label><input type="text" id="exec_pid" placeholder="如 15"></div>
+      <div class="row" style="margin-top:8px;align-items:flex-start">
+        <div>
+          <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="allow_write">放行写操作</label>
+          <div class="hint" style="font-size:11px;margin-top:2px"><b>默认不勾</b>。只读（GET/查询）。勾了会真的提交/修改被测数据。</div>
+        </div>
+        <div>
+          <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ui_click">UI 真实点击</label>
+          <div class="hint" style="font-size:11px;margin-top:2px">默认不勾。勾了在浏览器里真的点按钮/填表单，覆盖率高但会触发副作用。</div>
+        </div>
+        <div>
+          <label style="display:flex;gap:6px;align-items:center" title="每页一次大模型调用（约 30~60 秒/页），会显著拉长生成时间并消耗 LLM 额度"><input type="checkbox" id="expert_ui">专家逐页审阅（慢，消耗额度）</label>
+          <div class="hint" style="font-size:11px;margin-top:2px">默认不勾。只影响「生成」（每页 30~60 秒、烧额度），不影响执行。</div>
+        </div>
+        <div>
+          <label>指定已有项目ID执行(可选)</label><input type="text" id="exec_pid" placeholder="留空=当前项目">
+          <div class="hint" style="font-size:11px;margin-top:2px">留空就用「② 实时进度」里的当前项目；要跑历史项目才填。</div>
+        </div>
+        <div>
+          <label>地址通道范围</label>
+          <select id="runtime_scope" title="仅在「增量」模式下生效：靶向=只测与本次变更相关的页面/接口；全站巡检=把整个被测系统扫一遍">
+            <option value="targeted" selected>仅变更靶向（推荐）</option>
+            <option value="full">全站巡检</option>
+          </select>
+          <div class="hint" style="font-size:11px;margin-top:2px">只影响「生成」（增量模式）：靶向=只测本次变更涉及的页面/接口。</div>
+        </div>
       </div>
     </div>
 
@@ -262,6 +296,7 @@
       <div class="kv"><b>当前任务</b><span id="task_id">—</span><span id="task_state" class="badge b-pending">idle</span></div>
       <div class="kv"><b>阶段</b><span id="stage">—</span><span id="frac">—</span></div>
       <div class="kv"><b>生成项目</b><span id="pid">—</span> <a class="link" id="report_link" style="display:none" target="_blank">查看报告 ↗</a></div>
+      <div id="reuse_tip" class="hint" style="display:none;margin:4px 0 8px;padding:8px 10px;border-radius:8px;background:#fff6e5;border:1px solid #ffd699;color:#8a5a00;line-height:1.6"></div>
       <div class="log" id="log">等待操作…</div>
     </div>
 
@@ -284,10 +319,15 @@
 
     <div class="card">
       <h2>④ 测试点查看器 <span id="tp_count" class="badge t-unknown">—</span></h2>
+      <!-- T5：三通道（本体/影响面/运行时）+ 三个 KPI。KPI 来自生成期快照，
+           三通道计数由本页按 origin/source 现算（与后端 engine/quality 同口径）。 -->
+      <div id="tp_channels" class="pills" style="margin-bottom:6px"></div>
+      <div id="tp_kpis" class="pills" style="margin-bottom:8px"></div>
       <div id="tp_summary" class="pills" style="margin-bottom:8px"></div>
       <div class="actions" style="margin:0 0 10px;align-items:flex-end">
-        <select id="filter_tag" style="width:auto" onchange="renderTestPoints(currentTestPoints)"><option value="">类型: 全部</option><option value="全量">全量</option><option value="更新">更新</option></select>
+        <select id="filter_tag" style="width:auto" onchange="renderTestPoints(currentTestPoints)"><option value="">类型: 全部</option><option value="全量">全量</option><option value="更新">更新</option><option value="受影响·直接">受影响·直接</option><option value="受影响·数据">受影响·数据</option><option value="受影响·文件级">受影响·文件级</option></select>
         <select id="filter_scope" style="width:auto" onchange="renderTestPoints(currentTestPoints)"><option value="">范围: 全部</option><option value="正常">正常</option><option value="异常">异常</option><option value="安全">安全</option><option value="边界">边界</option></select>
+        <select id="filter_verify" style="width:auto" onchange="renderTestPoints(currentTestPoints)"><option value="">验证: 全部</option><option value="unverified">仅未验证（标黄）</option><option value="ok">仅可执行</option></select>
         <input type="text" id="filter_kw" placeholder="搜索标题/模块/来源" style="flex:1" oninput="renderTestPoints(currentTestPoints)">
         <button class="btn-ghost" onclick="loadTestPoints(curPid)">刷新</button>
         <button class="btn-ghost" onclick="exportCases(curPid)">导出用例 CSV</button>
@@ -425,9 +465,12 @@ function apiUrl(path){
 async function api(path, opts){
   const r = await fetch(apiUrl(path), Object.assign({headers:{"Content-Type":"application/json"}}, opts));
   if(!r.ok){
-    let detail="";
-    try{ detail = (await r.json()).detail || ""; }catch(e){}
-    throw new Error(`HTTP ${r.status} ${detail}`);
+    // 后端错误体字段不统一：AppError 用 detail，CodeupError/UnauthorizedError 用 message。
+    // 全都读一遍，避免像「Codeup API [401] Expired token」这样的真实原因被吞成裸 HTTP 401。
+    let body={};
+    try{ body = await r.json() || {}; }catch(e){}
+    const detail = body.detail || body.message || body.error || "";
+    throw new Error(`HTTP ${r.status}${detail ? " " + detail : ""}`);
   }
   return r.json();
 }
@@ -651,7 +694,7 @@ async function saveRepo(){
 
 async function probeFormRepo(){
   const url = $("repo_url").value.trim();
-  if(!url){ alert("请先填仓库地址"); return; }
+  if(!url){ $("repo_form_result").innerHTML=""; alert("请先填仓库地址"); return; }
   const el = $("repo_form_result");
   el.innerHTML = '<div class="test-result ok" style="background:#f1f5f9;color:#65758a">测试中…</div>';
   try{
@@ -704,67 +747,141 @@ function fillRepo(id){
 
 /* ============ 生成 / 执行（原有功能不变） ============ */
 function buildBody(){
+  // 提交前再同步一次：用户可能只在智能框里粘贴了内容却直接点生成（没点保存）。
+  syncFieldsFromAuto();
   const ai = $("auto_input").value.trim();
   const sc = scopes();
+  // 与扫描共用同一套 ref 解析：历史提交选中值优先，否则分支名。保证"选历史时间点做对比"在生成时同样生效。
+  const eff = _effectiveRefs();
   const b = {
     auto_input: ai,
     local_path: $("repo").value.trim(),
     repo_url: "",
     project_name: $("pname").value.trim(),
     mode: document.querySelector('input[name="gen_mode"]:checked').value,
-    base: $("base_ref").value.trim(),
-    target: $("target_ref").value.trim(),
+    base: eff.base_ref,
+    target: eff.ref,
     scopes: sc,
     test_url: $("test_url").value.trim(),
     login_url: $("login_url").value.trim(),
     login_user: $("user").value.trim(),
     login_password: $("pwd").value.trim(),
     login_otp: $("otp").value.trim(),
-    runtime_ui: !!($("test_url").value.trim()),
+    runtime_ui: !!($("test_url").value.trim() || $("auto_input").value.trim()),
+    runtime_scope: ($("runtime_scope") && $("runtime_scope").value) || "targeted",
+    expert_ui: $("expert_ui").checked,
     execute: false,
     selected_paths: collectSelectedPaths()
   };
   if(b.local_path.startsWith("git@") || b.local_path.endsWith(".git")){
     b.repo_url = b.local_path; b.local_path = "";
   }
+  // 生成取码与扫描共用同一套只读凭证（Codeup PAT），避免两把 token 割裂导致取码 invalid token。
+  // "仓库配置凭证"模式返回 access_key 空串，后端按 repo_url 从 repo_configs 带出有效 PAT。
+  if(b.repo_url && (/codeup\.aliyun\.com/.test(b.repo_url))){
+    const cs = _collectCodeSource();
+    if(cs === null) return null;
+    b.code_source = cs;
+  }
+  // 多仓改造（v1.7）：若项目视图通过 setMultiRepos 注入了仓库清单，则一次提交 N 仓；
+  // 未注入时保持原有单仓字段（零回归）。每项沿用顶层 code_source 的凭证模式。
+  if(Array.isArray(window.MULTI_REPO_SPECS) && window.MULTI_REPO_SPECS.length){
+    b.repos = window.MULTI_REPO_SPECS.map(function(s){
+      return {
+        repo_key: s.repo_key || "",
+        local_path: s.local_path || "",
+        repo_url: s.repo_url || "",
+        base: s.base || null,
+        target: s.target || null,
+        ref: s.ref || "",
+        changed_files: s.changed_files || [],
+        selected_paths: s.selected_paths || []
+      };
+    });
+  }
   return b;
+}
+
+/* 多仓改造（v1.7）：项目级仓库清单注入点。
+   项目视图读出 repo_bindings 后调用本函数，即可一次生成覆盖所有仓；
+   传空数组或 [] 回到单仓模式。 */
+function setMultiRepos(specs){
+  window.MULTI_REPO_SPECS = Array.isArray(specs) ? specs : [];
+  log(window.MULTI_REPO_SPECS.length
+    ? ("已设置多仓模式：" + window.MULTI_REPO_SPECS.map(function(s){return s.repo_key;}).join(", "))
+    : "已回到单仓模式");
 }
 
 /* ---- 任务状态：忙碌态 / 最近任务记忆 / 任务列表（A+B+C 改版） ---- */
 const LS_LAST_TASK = "testgen_last_task";
+const LS_LAST_PID = "testgen_last_pid";
 const LS_LAST_BODY = "testgen_last_body";
 let activeTaskId = null;
+// 当前轮询的任务类型：generate / execute。执行验证结束不能走「本次生成 0 条测试点」的解释，
+// 否则会弹出与本次操作无关的生成类提示（历史现场：点执行验证弹「生成 0 条」）。
+let pollKind = "generate";
 
 function saveLastTask(id, kind){
   activeTaskId = id;
   try{ localStorage.setItem(LS_LAST_TASK, JSON.stringify({id, kind})); }catch(e){}
 }
-function setBusy(busy){
+function setBusy(busy, kind){
   const b = $("btn_gen");
   b.disabled = busy;
-  b.textContent = busy ? "⟳ 生成中…" : "▶ 生成用例";
+  // 执行验证也在跑的时候，不要把主按钮写成「生成中」，否则用户看不出在跑什么
+  b.textContent = busy ? (kind === "execute" ? "⟳ 执行中…" : "⟳ 生成中…") : "▶ 生成用例";
   $("btn_onetwo").disabled = busy;
+  $("btn_exec").disabled = busy;
   $("btn_cancel_task").style.display = busy ? "inline-block" : "none";
   $("gen_progress").style.display = busy ? "block" : "none";
+  pollStartAt = busy ? Date.now() : 0;
   if(!busy){ $("gen_stage").textContent="—"; $("gen_frac").textContent=""; $("gen_bar").style.width="0"; }
+}
+/* 命中幂等键时后端会 reused=true：直接复用历史任务，不会重跑管道。
+   必须显式提示，否则「改了逻辑重新生成、点数却不变」会被误判成没生效。 */
+function markReused(r){
+  const el = $("reuse_tip");
+  if(!el) return;
+  if(!r || !r.reused){ el.style.display = "none"; el.innerHTML = ""; return; }
+  el.style.display = "block";
+  el.innerHTML = "♻️ <b>命中历史任务，本次没有重新生成</b>：请求参数与引擎版本都与任务 "
+    + escapeHtml(r.task_id||"")
+    + " 相同，直接复用了它的产物。想强制重跑：改一项会进产物的输入（如「项目名」或勾选的测试范围）后再点生成。";
 }
 function applyTaskProject(r){
   if(r.project_id == null) return;
   curPid = r.project_id;
+  try{ localStorage.setItem(LS_LAST_PID, String(curPid)); }catch(e){}
   $("pid").textContent = curPid;
   $("report_link").style.display="inline";
   $("report_link").href = apiUrl(`/api/v1/projects/${curPid}/report?format=html`);
   $("btn_exec").disabled = false;
 }
+/* 刷新页面后恢复「当前项目」，否则执行验证会因为 curPid 为空而报「没有可执行的项目」 */
+function restoreLastPid(){
+  try{
+    const v = localStorage.getItem(LS_LAST_PID);
+    if(!v) return;
+    const n = Number(v);
+    if(!n) return;
+    curPid = n;
+    $("pid").textContent = n;
+    $("report_link").style.display = "inline";
+    $("report_link").href = apiUrl(`/api/v1/projects/${n}/report?format=html`);
+  }catch(e){}
+}
 async function submitGeneration(body){
+  setExecTip("");   // 新一轮生成开始：清掉上一次执行验证的结论提示，避免张冠李戴
   $("btn_gen").disabled = true;
   setBusy(true);
   try{
     log("提交生成任务…");
+    pollKind = "generate";
     const r = await api("/api/v1/generate", {method:"POST", body:JSON.stringify(body)});
     $("task_id").textContent = r.task_id;
     setBadge("task_state","running");
     log("已接受，任务 "+r.task_id);
+    markReused(r);
     saveLastTask(r.task_id, "generate");
     try{ localStorage.setItem(LS_LAST_BODY, JSON.stringify(body)); }catch(e){}
     poll(r.task_id);
@@ -774,50 +891,266 @@ async function submitGeneration(body){
     setBusy(false);
   }
 }
+/* 点「生成用例」的提交前提醒：把「这次要跑什么 + 有什么会白跑的风险」一次讲清楚。
+   历史现场：基线=目标（diff 为空）+ 动态码过期 → 跑两分钟只拿到 0 条，
+   用户只能看末尾那个「0 条」弹窗，不知道是配置问题还是引擎问题。所以在提交前就提醒。 */
+function preflightGenerate(body){
+  const inc = body.mode === "incremental";
+  const t = _refDisplay("target");
+  const b = _refDisplay("base");
+  const tgtText = t.text || body.target || "默认分支";
+  const baseText = b.text || body.base || "未选";
+  const samePoint = !!body.base && body.base === body.target;
+  const selCount = (body.selected_paths || []).length;
+  const risks = [];
+  if(inc && !body.base){
+    risks.push("增量模式没选「基线 ref」：没有基线就 diff 不出变更，基本必然 0 条。"
+      + "要么补一个基线（上一个发布点/上一版分支），要么把生成模式切「全量」。");
+  }
+  if(inc && samePoint){
+    risks.push("基线与目标是同一个点（" + tgtText + "）→ 两者 diff 为空，本次会生成 0 条测试点。"
+      + "请把「基线 ref」换成更早的提交，或改「全量」生成。");
+  }
+  if(inc && !body.target && body.base){
+    risks.push("目标分支没显式选（走「默认分支」），基线却是「" + baseText + "」："
+      + "如果基线就是默认分支的最新提交，两边其实同一个点，diff 仍为空 → 0 条。"
+      + "建议把目标分支也显式选具体分支/提交，才看得出差异。");
+  }
+  if(body.login_otp && body.test_url){
+    risks.push("已填动态口令(OTP)：它是「运行时登录」那一步才用到，通常要等点击后 1~2 分钟，"
+      + "而动态码有效期只有 30~60 秒，很可能在登录前就过期（上次 0 条就是这个原因）。"
+      + "建议先生成不带 OTP 的静态用例，等「执行验证」前一刻再填。");
+  }
+  if(body.expert_ui){
+    risks.push("已勾「专家逐页审阅」：逐页调大模型，实测 50~170 秒/页，整体 3~5 分钟并消耗 LLM 额度"
+      + "（默认最多 3 页 / 90 秒收尾）。");
+  }
+  const lines = [
+    "即将开始生成测试用例（会真实扫描代码" + (body.test_url ? "，并访问被测系统" : "") + "）。",
+    "",
+    "模式：" + (inc ? "增量（只对基线与目标的 diff 生成）" : "全量（整仓功能点都出用例）"),
+    "目标：" + tgtText,
+    "基线：" + baseText + (inc && samePoint ? "   ← 与目标同一个点" : ""),
+    "范围：" + (selCount ? "勾选的 " + selCount + " 个文件" : "未限定（按扫描结果全量分析）"),
+    "被测地址：" + (body.test_url || "未填（不做运行时元素级发现）"),
+    "登录账号：" + (body.login_user || "未填") + (body.login_otp ? "（含动态码）" : ""),
+    "预计耗时：约 1~2 分钟" + (body.expert_ui ? "；开专家审阅 3~5 分钟" : "")
+  ];
+  if(risks.length){
+    lines.push("", "⚠ 风险提醒：");
+    risks.forEach((r, i) => lines.push((i + 1) + ". " + r));
+    lines.push("", "建议点「取消」，按上面提示改完再生成；仍要按当前配置跑就点「确定」。");
+  }else{
+    lines.push("", "确认开始生成吗？");
+  }
+  const ok = confirm(lines.join("\n"));
+  if(!ok){ log("已取消生成（提交前提醒里点了取消，没有发起任何请求）"); return false; }
+  log("生成参数：模式=" + (inc ? "增量" : "全量") + " · 目标=" + tgtText + " · 基线=" + baseText
+    + " · 范围=" + (selCount ? selCount + " 个文件" : "全部") + " · 地址=" + (body.test_url || "未填"));
+  return true;
+}
 function doGenerate(){
   const body = buildBody();
+  if(!body) return;  // 凭证缺失时 buildBody 已 alert
   if(!body.auto_input && !body.local_path && !body.repo_url && !body.test_url){
     alert("请至少填写代码目录、仓库地址或被测环境地址"); return;
   }
+  if(!preflightGenerate(body)) return;
   submitGeneration(body);
 }
 function regenLast(){
   let b=null;
   try{ b=JSON.parse(localStorage.getItem(LS_LAST_BODY)||"null"); }catch(e){}
   if(!b){ alert("没有可复用的生成参数——请重新填写后点「生成用例」"); return; }
+  // 上次的参数本身就是 0 条配置（基线=目标）时，直接重放只会再拿一次 0 条，先提醒
+  if(b.mode === "incremental" && b.base && b.base === b.target){
+    if(!confirm("上次的参数里「基线」与「目标」是同一个 ref（" + b.base + "），diff 为空，重跑仍是 0 条。\n\n"
+      + "建议：点「取消」，到 B 区把基线换成更早的提交，或把生成模式改「全量」，再点「生成用例」。\n\n仍要重跑吗？")) return;
+  }
   log("使用上次的参数重新提交生成任务…");
   submitGeneration(b);
 }
 
+/* 最近一个项目ID：用于「点了执行但没指定项目」时自动兜底，避免按钮看着没反应 */
+async function latestProjectId(){
+  try{
+    const r = await api("/api/v1/projects");
+    const ps = r.projects || [];
+    return ps.length ? ps[0].id : null;
+  }catch(e){ return null; }
+}
+
 async function doExecute(){
-  const pid = $("exec_pid").value.trim() || curPid;
-  if(!pid){ alert("没有可执行的project_id（先生成，或填写指定项目ID）"); return; }
+  // ① 已有任务在跑：直接说清楚，不要让点击石沉大海（之前按钮 disabled 时就是「点了没反应」）
+  if($("btn_gen").disabled){
+    setExecTip("⏳ <b>当前已有任务在运行</b>（见「② 实时进度」）。等它结束，或点「✖ 取消任务」后再执行验证。", "warn");
+    alert("已有任务在运行中：请看「② 实时进度」，或先点「✖ 取消任务」。");
+    return;
+  }
+  let pid = $("exec_pid").value.trim() || curPid;
+  const url = $("test_url").value.trim();
+  // ② 没指定项目：自动取最近一个项目兜底（弹窗里会写清项目号，可取消），
+  //    而不是只弹一句「没有可执行的 project_id」就结束。
+  if(!pid){
+    const latest = await latestProjectId();
+    if(latest){
+      $("exec_pid").value = latest;
+      log("执行验证：未指定项目，自动使用最近项目 " + latest);
+      setExecTip("ℹ️ 未指定项目，已自动选用最近生成的项目 <b>" + latest + "</b>（如不对，改「指定已有项目ID执行」后再点）。", "info");
+      pid = String(latest);
+    }
+  }
+  if(!pid){
+    setExecTip("⚠️ <b>还没有可执行的项目</b>：先点「▶ 生成用例」拿到项目ID，或在下方「指定已有项目ID执行」里填一个。", "warn");
+    alert("没有可执行的project_id（先生成，或填写指定项目ID）"); return;
+  }
+  if(!url){
+    setExecTip("⚠️ <b>缺少被测环境地址</b>：执行验证需要真实访问被测系统。请到 D 区填「被测环境地址(URL)」"
+      + "（或智能输入框里写上地址），保存后再点执行。", "warn");
+    alert("请先填写「被测环境地址(URL)」——执行验证要真实访问它，没有地址无法执行。"); return;
+  }
+  const allowWrite = $("allow_write").checked;
+  const uiClick = $("ui_click").checked;
+  const hasOtp = !!$("otp").value.trim();
+  const user = $("user").value.trim();
+  // ② 弹窗提醒：把「要做什么、打到哪、什么模式、大概多久」讲清楚再执行
+  const tpCount = await fetchPointCount(pid);
+  const modeText = [
+    allowWrite ? "⚠️ 已勾「放行写操作」：会真的提交/修改被测系统数据" : "只读：只做 GET/查询，不改数据",
+    uiClick ? "⚠️ 已勾「UI 真实点击」：会在浏览器里真的点按钮" : "不点击：仅接口层验证"
+  ].join("；");
+  const ok = confirm(
+    "即将对项目 " + pid + " 执行验证（会真实访问被测系统）\n\n"
+    + "目标地址：" + url + "\n"
+    + "测试点：" + (tpCount == null ? "—" : tpCount + " 条") + "\n"
+    + "登录账号：" + (user || "未填（不登录，仅匿名/接口层验证）")
+    + (hasOtp ? "（含动态码）" : "") + "\n"
+    + "执行模式：" + modeText + "\n\n"
+    + "耗时通常数分钟；期间请勿关闭页面，可在「② 实时进度」看阶段。\n\n"
+    + "确认执行验证？"
+  );
+  if(!ok){
+    setExecTip("已取消本次执行验证（没有发起任何请求，被测环境未被访问）。", "info");
+    log("已取消执行验证：项目 " + pid);
+    return;
+  }
   $("btn_exec").disabled = true;
+  setBusy(true, "execute");   // 复用进度条 + 取消按钮，执行验证可能跑几分钟，用户要能看到进展
+  setExecTip("⏳ 已提交执行验证：项目 <b>" + escapeHtml(String(pid)) + "</b> → " + escapeHtml(url)
+    + "（" + (allowWrite ? "放行写" : "只读") + " / " + (uiClick ? "真实点击" : "不点击")
+    + "）。阶段见「② 实时进度」，结果完成后会回到这里。", "info");
   try{
     const body = {
       project_id: Number(pid),
-      test_url: $("test_url").value.trim(),
+      test_url: url,
       login_url: $("login_url").value.trim(),
-      login_user: $("user").value.trim(),
+      login_user: user,
       login_password: $("pwd").value.trim(),
       login_otp: $("otp").value.trim(),
-      exec_url: $("test_url").value.trim(),
-      allow_write: $("allow_write").checked,
-      ui_click: $("ui_click").checked
+      exec_url: url,
+      allow_write: allowWrite,
+      ui_click: uiClick
     };
     log("提交执行任务（项目 "+pid+"）…");
+    pollKind = "execute";
     const r = await api("/api/v1/execute", {method:"POST", body:JSON.stringify(body)});
     $("task_id").textContent = r.task_id;
     setBadge("task_state","running");
     log("已接受，任务 "+r.task_id);
+    markReused(r);
+    if(r.reused){
+      setExecTip("♻️ 这次执行命中了历史任务（同一项目 + 同一地址 + 同一模式），直接复用上次执行结果；"
+        + "想重新跑一遍：改一下「放行写/真实点击」或地址后再执行。", "warn");
+    }
     saveLastTask(r.task_id, "execute");
     poll(r.task_id, ()=>{});
   }catch(e){
     log("❌ "+e.message);
     setBadge("task_state","failed");
+    setBusy(false);
+    setExecTip("❌ 执行验证提交失败：" + escapeHtml(e.message) + "（检查服务是否在运行、项目ID是否存在）", "err");
   }finally{
     $("btn_exec").disabled = false;
   }
+}
+
+/* 执行验证的项目测试点数（用于确认弹窗里的「将要跑多少条」）；拿不到就返回 null，不阻断流程 */
+async function fetchPointCount(pid){
+  try{
+    const r = await api(`/api/v1/projects/${pid}/test-points`);
+    return (r.test_points || []).length;
+  }catch(e){ return null; }
+}
+
+/* 执行完成后的页面提示：通过/失败/异常/跳过一眼可见，并给报告入口。
+   注意结果有两种形状：执行任务把汇总直接放在 result 顶层（total/executed/pass…），
+   生成+执行任务则放在 result.counts 的 exec_* 里——两种都要认，否则会显示成 0 条。 */
+function explainExecResult(res, pid){
+  if(!res) return;
+  const r = res.result || {};
+  const c = r.counts || {};
+  const num = (...vals) => { for(const v of vals){ if(typeof v === "number") return v; } return 0; };
+  const total = num(r.total, c.exec_total);
+  const done = num(r.executed, c.exec_executed);
+  const pass = num(r.pass, c.exec_pass);
+  const fail = num(r.fail, c.exec_fail);
+  const err = num(r.error, c.exec_error);
+  const skip = num(r.skipped, c.exec_skipped);
+  const pidText = String(pid || res.project_id || "—");
+  if(res.state === "success"){
+    if(!total){
+      setExecTip("⚠️ 执行验证结束了，但<b>没有可执行的用例</b>（项目 " + escapeHtml(pidText) + "）："
+        + "先「▶ 生成用例」再执行，或换一个已生成用例的项目ID。", "warn");
+      return;
+    }
+    const bad = (fail + err) > 0;
+    setExecTip((bad ? "⚠️ 执行验证完成（<b>有失败</b>）" : "✅ 执行验证完成") + "（项目 " + escapeHtml(pidText) + "）：共 " + total
+      + " 条，已执行 " + done + " 条 —— 通过 <b>" + pass + "</b> / 失败 <b>" + fail + "</b> / 异常 <b>" + err + "</b>，跳过 " + skip
+      + " 条。<a class='link' href='" + apiUrl(`/api/v1/projects/${pid || res.project_id}/report?format=html`)
+      + "' target='_blank'>查看报告 ↗</a>", bad ? "warn" : "ok");
+    if(fail + err > 0) log("⚠️ 执行验证有 " + (fail + err) + " 条失败/异常，详见报告");
+  }else if(res.state === "failed"){
+    setExecTip("❌ 执行验证失败：" + escapeHtml(res.error || "未知错误")
+      + "（常见原因：被测环境不可达、账号/动态码失效、缺少放行写操作）", "err");
+  }else if(res.state === "cancelled"){
+    setExecTip("已取消本次执行验证。", "info");
+  }
+}
+
+/* ---- 阶段文案：后端下发英文 stage，面板显示中文，避免「semantic_enrich 83%」看不懂 ---- */
+const STAGE_LABELS = {
+  pull:"取码", resolve_sources:"来源解析", register:"项目注册", scan:"扫描代码",
+  extract:"功能点提取", fp_extract:"功能点提取", runtime_ui:"浏览器发现页面/接口",
+  tag:"差异打标", diff_tag:"差异打标", narrow:"增量收窄", auth_scan:"鉴权扫描",
+  target_runtime:"变更靶向收窄",
+  tp_expand:"测试点展开", semantic_enrich:"语义增强", expert_review:"专家逐页审阅（大模型，慢）",
+  prd_ingest:"PRD 解析", case_gen:"生成用例", llm_design:"LLM 用例设计",
+  execute:"执行验证", partition_channels:"通道拆分", persist:"落库", done:"完成"
+};
+/* 后端把阶段内明细编码进 stage（`expert_review:2/3`）——表结构没有 stage_info 列。
+   这里拆出来显示「专家逐页审阅 第 2/3 页」，否则长阶段看起来像卡死。 */
+function stageLabel(s){
+  if(!s) return "—";
+  const raw = String(s);
+  const i = raw.indexOf(":");
+  const key = i >= 0 ? raw.slice(0, i) : raw;
+  const detail = i >= 0 ? raw.slice(i + 1) : "";
+  let label = STAGE_LABELS[key] || key;
+  if(detail){
+    if(key === "expert_review"){
+      const [p, t] = detail.split("/");
+      label += ` 第 ${p}/${t} 页`;
+    }else{
+      label += " " + detail;
+    }
+  }
+  return label;
+}
+let pollStartAt = 0;
+function elapsedText(){
+  if(!pollStartAt) return "";
+  const s = Math.floor((Date.now()-pollStartAt)/1000);
+  return `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
 }
 
 function poll(taskId, onUpdate){
@@ -826,13 +1159,14 @@ function poll(taskId, onUpdate){
     try{
       const r = await api("/api/v1/tasks/"+taskId);
       setBadge("task_state", r.state);
-      $("stage").textContent = r.stage || "—";
+      $("stage").textContent = stageLabel(r.stage);
       $("frac").textContent = r.progress!=null ? Math.round(r.progress*100)+"%" : "—";
-      if(r.stage) $("gen_stage").textContent = r.stage;
+      if(r.stage) $("gen_stage").textContent = stageLabel(r.stage);
       if(r.progress!=null){
-        const pc = Math.round(r.progress*100)+"%";
-        $("gen_frac").textContent = pc;
-        $("gen_bar").style.width = pc;
+        const pct = Math.round(r.progress*100);
+        const el = elapsedText();
+        $("gen_frac").textContent = pct + "%" + (el ? " · 已用 " + el : "");
+        $("gen_bar").style.width = pct + "%";
       }
       applyTaskProject(r);
       if(r.error) log("❌ "+r.error);
@@ -844,11 +1178,15 @@ function poll(taskId, onUpdate){
         setBusy(false);
         loadProjects();
         loadTestPoints(r.project_id);
+        explainTargeting(r);
+        if(pollKind === "execute") explainExecResult(r, r.project_id);
+        else explainZeroPoints(r);
         loadTasks();
       }else if(r.state==="failed" || r.state==="cancelled"){
         clearInterval(pollTimer);
         if(r.error) log("终态错误: "+r.error);
         setBusy(false);
+        if(pollKind === "execute") explainExecResult(r, r.project_id);
         loadTasks();
       }
       if(onUpdate) onUpdate(r);
@@ -856,6 +1194,63 @@ function poll(taskId, onUpdate){
       log("轮询异常: "+e.message);
     }
   }, 1500);
+}
+
+/* 0 点不是"没生成"，要告诉用户是哪一环过滤掉的，否则只能干看着空列表。 */
+function explainTargeting(r){
+  const c = (r.result && r.result.counts) || {};
+  const kept = c.runtime_fp_targeted || 0;
+  const skipped = c.runtime_fp_skipped_by_target || 0;
+  if(kept || skipped){
+    log(`🎯 变更靶向：保留 ${kept} 条与本次变更相关的运行时页面/接口，剔除 ${skipped} 条无关项`
+      + (skipped ? "（如需全站巡检，把「地址通道范围」改成全站巡检）" : ""));
+  }
+}
+
+function explainZeroPoints(r){
+  const c = (r.result && r.result.counts) || {};
+  if((c.test_points||0) > 0) return;
+  const req = r.request || {};
+  const reasons = [];
+  const dropped = c.fp_dropped_unchanged || 0;
+  // 配置类原因排在最前：基线=目标时 diff 恒为空，说「XX 个功能点未变更」会让用户以为是引擎问题
+  if((req.mode||"") === "incremental" && req.base && req.target && req.base === req.target){
+    reasons.push("基线 ref 与目标 ref 是同一个点（" + req.base + "）：两者 diff 为空，增量模式必然 0 条");
+  }
+  if((req.mode||"") === "incremental"){
+    reasons.push("生成模式是「增量」：只对基线与目标之间的 diff 函数展开测试点"
+      + (dropped ? "，本次 " + dropped + " 个功能点因「未变更」被过滤" : ""));
+  }
+  const hasRun = !!(req.test_url || (req.auto_input||"").trim() || req.login_url);
+  if(!hasRun){
+    reasons.push("没有提交被测环境地址：未走运行时登录 + 元素级发现，只能靠静态代码分析");
+  }
+  // 运行时通道的失败原因藏在 result.errors 里，不读出来就只能看到「0 条」而不知道为什么。
+  const errs = ((r.result && r.result.errors) || []).join(" ");
+  if(/无法连接统一登录服务|统一登录服务.*不可达/.test(errs)){
+    // 这类失败与凭证无关：被测系统的 SSO 网关自己挂了（实测返回 503「No server is available」），
+    // 请求根本没走到动态码校验，不能再提示「动态码可能过期」。
+    reasons.push("被测系统自己的统一登录服务不可达（后端 /api/v1/auth/unified-login 报 502 crypto_gateway_error）："
+      + "账号和动态码都没问题，是它的 SSO 网关没有可用节点，等被测环境恢复后再复测");
+  }else if(/登录失败/.test(errs)){
+    reasons.push("运行时登录失败：动态码有效期通常只有 30~60 秒，很可能已过期；"
+      + "也可能是被测系统有图片验证码或风控拦截");
+  }else if(/运行时 UI 发现失败/.test(errs)){
+    reasons.push("运行时发现失败：" + errs.slice(0, 140));
+  }
+  if(hasRun && (req.runtime_scope||"targeted") === "targeted"
+     && (c.runtime_fp_skipped_by_target||0) > 0 && (c.runtime_fp_targeted||0) === 0){
+    reasons.push("「地址通道范围=仅变更靶向」把运行时页面/接口全剔除了：本次改动没映射到任何页面或接口"
+      + "（例如只改了样式/配置）。可把范围改成「全站巡检」，或确认变更是否涉及前端页面/接口");
+  }
+  if(c.functional_points===0 || c.fp_after===0){
+    reasons.push("静态分析阶段就没有产出功能点（勾选的代码文件可能不在分析范围内）");
+  }
+  if(!reasons.length) reasons.push("所有功能点都在收窄/去重阶段被过滤");
+  log("⚠ 本次 0 条测试点。原因：" + reasons.join("；"));
+  alert("本次生成 0 条测试点。\n\n原因：\n- " + reasons.join("\n- ")
+    + "\n\n建议：\n1) B 区生成模式改「全量」；\n2) D 区填被测环境地址（或智能输入框里含地址），走运行时元素级发现；"
+    + "\n3) 要坚持增量：把「基线 ref」换成比目标更早的提交——两边同一个点，diff 恒为空，永远 0 条。");
 }
 
 /* ---- 重进页面恢复 + 任务列表 ---- */
@@ -872,6 +1267,7 @@ async function restoreLastTask(){
       const r = await api("/api/v1/tasks/"+last.id);
       $("task_id").textContent = r.task_id;
       setBadge("task_state", r.state);
+      pollKind = (r.kind === "execute") ? "execute" : "generate";
       if(r.state==="pending" || r.state==="running"){
         log("检测到进行中的任务 "+r.task_id+"（"+(r.kind||"")+"），已恢复轮询");
         setBusy(true);
@@ -903,7 +1299,7 @@ async function loadTasks(){
 }
 function renderTasks(ts){
   if(!ts.length) return '<span class="hint">还没有任务记录</span>';
-  let html = '<table><tr><th>任务ID</th><th>类型</th><th>状态</th><th>阶段 / 进度</th><th>项目</th><th>操作</th></tr>';
+  let html = '<table><tr><th>创建时间</th><th>任务ID</th><th>类型</th><th>状态</th><th>阶段 / 进度</th><th>项目</th><th>操作</th></tr>';
   for(const t of ts){
     const isRun = t.state==="pending"||t.state==="running";
     let prog;
@@ -917,7 +1313,8 @@ function renderTasks(ts){
     else if(t.state==="success" && t.project_id!=null)
       ops = `<a class="link" href="${apiUrl(`/api/v1/projects/${t.project_id}/report?format=html`)}" target="_blank">报告</a> <a class="link" onclick="loadTestPoints(${t.project_id})">测试点</a>`;
     else if(t.state==="failed" && t.kind==="generate") ops = `<a class="link" onclick="regenLast()">重新生成</a>`;
-    html += `<tr${isRun?' style="background:#fef9c3"':''}><td style="font-family:monospace">${t.task_id}</td><td>${t.kind||""}</td><td>${stateBadgeHtml(t.state)}</td><td>${prog}</td><td>${pid}</td><td>${ops}</td></tr>`;
+    const when = t.created_at ? String(t.created_at).replace("T"," ").slice(5,16) : "—";
+    html += `<tr${isRun?' style="background:#fef9c3"':''}><td style="white-space:nowrap;color:var(--sub)">${when}</td><td style="font-family:monospace">${t.task_id}</td><td>${t.kind||""}</td><td>${stateBadgeHtml(t.state)}</td><td>${prog}</td><td>${pid}</td><td>${ops}</td></tr>`;
   }
   return html+"</table>";
 }
@@ -956,6 +1353,7 @@ function execPid(id){ $("exec_pid").value=id; doExecute(); }
 
 loadProjects();
 loadRepos();
+restoreLastPid();
 restoreLastTask();
 
 /* ============ LLM 厂商配置 ============ */
@@ -1023,7 +1421,7 @@ async function probeFormLLM(){
   const base_url = $("llm_base_url").value.trim();
   const api_key = $("llm_api_key").value;
   const model = ($("llm_models").value.split(",")[0]||"").trim();
-  if(!base_url){ alert("请先填 Base URL"); return; }
+  if(!base_url){ $("llm_form_result").innerHTML=""; alert("请先填 Base URL"); return; }
   const el = $("llm_form_result");
   el.innerHTML = '<div class="test-result ok" style="background:#f1f5f9;color:#65758a">测试中…</div>';
   try{
@@ -1080,9 +1478,32 @@ function onModeChange(){
 
 /* ============ 测试点查看器（P0：列表 + 全量/更新徽标 + 筛选；P3：导出） ============ */
 let currentTestPoints = [];
+let currentQuality = null;   // T5：生成期质量快照（三 KPI），由 loadQuality 拉取
+// T5 门禁原因 → 人话（与 engine/quality.py 的 GATE_* 一一对应）
+const GATE_TEXT = {
+  no_evidence: "没有证据，断言指不到改动行",
+  no_observable_expect: "预期无可观测对象，无法判定成败",
+  no_origin: "无来源标签，分不清本体/影响面/运行时",
+  best_effort: "需特殊环境（并发/双身份/慢依赖），不是缺陷",
+};
+// 三通道归属：与 engine/quality.channel_of 同口径（先看 origin 前缀，再看 runtime: 前缀）
+function channelOf(t){
+  if(String(t.origin||"").startsWith("impact")) return "impact";
+  if(String(t.source||"").startsWith("runtime:")) return "runtime";
+  return "body";
+}
+function unverifiedTip(t){
+  const reason = t.unverified_reason || "unknown";
+  return GATE_TEXT[reason] || reason;
+}
 function tagBadge(tag){
   if(tag==="更新") return '<span class="badge b-running">更新</span>';
   if(tag==="全量") return '<span class="badge b-success">全量</span>';
+  // T2 影响面：不是改动本体，而是「因改动需回归的入口」，单独配色以便一眼区分
+  if(tag==="受影响·直接") return '<span class="badge b-failed">受影响·直接</span>';
+  if(tag==="受影响·数据") return '<span class="badge b-pending">受影响·数据</span>';
+  // T4 文件级：引用方与改动文件之间只有 import 边，断言只到「区域渲染与交互」
+  if(tag==="受影响·文件级") return '<span class="badge b-running">受影响·文件级</span>';
   return '<span class="badge t-unknown">'+escapeHtml(tag||"—")+'</span>';
 }
 function catBadge(cat){
@@ -1100,11 +1521,57 @@ async function loadTestPoints(pid){
     const r = await api(`/api/v1/projects/${pid}/test-points`);
     currentTestPoints = r.test_points || [];
     $("tp_count").textContent = currentTestPoints.length + " 点";
+    renderChannels(currentTestPoints);
     renderSummary(currentTestPoints);
     renderTestPoints(currentTestPoints);
+    loadQuality(pid);   // KPI 来自报告（异步，不阻塞列表）
     window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"});
   }catch(e){
     $("tp_list").innerHTML = '<span class="hint">加载失败: '+e.message+'</span>';
+  }
+}
+/* T5：三通道计数（本体/影响面/运行时）——本页现算，不依赖后端快照 */
+function renderChannels(tps){
+  const ch = {body:0, impact:0, runtime:0};
+  let unv = 0;
+  for(const t of (tps||[])){ ch[channelOf(t)]++; if(t.unverified) unv++; }
+  const box = $("tp_channels");
+  if(!box) return;
+  box.innerHTML =
+    `<span class="pill">本体 ${ch.body}</span>`+
+    `<span class="pill">影响面 ${ch.impact}</span>`+
+    `<span class="pill">运行时 ${ch.runtime}</span>`+
+    (unv ? `<span class="pill" style="background:#fff6d6;border-color:#e0b800;color:#7a5b00">⚠ 未验证 ${unv}</span>` : "");
+}
+/* T5：三个 KPI（改动函数 / 影响入口 / 维度覆盖）+ 未验证原因分布。
+   口径见 engine/quality.py：分子只算过门禁的测试点；快照缺失时明确说「无快照」，
+   不拿当前列表硬凑——那会显示一个编出来的覆盖率。 */
+async function loadQuality(pid){
+  const box = $("tp_kpis");
+  if(!box) return;
+  try{
+    const r = await api(`/api/v1/projects/${pid}/report`);
+    const q = (r && r.report && r.report.quality) || r && r.quality || {};
+    currentQuality = q;
+    if(!q.available || !q.kpis){
+      box.innerHTML = '<span class="hint">质量快照：无（该项目最近一次生成早于 T5，或未落库）</span>';
+      return;
+    }
+    const k = q.kpis;
+    const cell = (item, label) => {
+      if(!item) return `<span class="pill">${label} —</span>`;
+      const pair = ("covered" in item) ? `${item.covered}/${item.total}` : `${item.actual}/${item.theory}`;
+      const pct = Math.round((item.value||0)*100);
+      return `<span class="pill" title="${label} ${pair}">${label} ${pct}%（${pair}）</span>`;
+    };
+    let html = cell(k.changed_func_coverage, "改动函数覆盖")
+      + cell(k.impact_entry_coverage, "影响入口覆盖")
+      + cell(k.dimension_coverage, "维度覆盖");
+    const un = q.unverified || {};
+    if(un.total) html += `<span class="pill" style="background:#fff6d6;border-color:#e0b800;color:#7a5b00">未验证 ${un.total}（门禁 ${un.blocked} / 特殊环境 ${un.best_effort}）</span>`;
+    box.innerHTML = html;
+  }catch(e){
+    box.innerHTML = '<span class="hint">质量快照加载失败: '+escapeHtml(e.message)+'</span>';
   }
 }
 function renderSummary(tps){
@@ -1114,17 +1581,21 @@ function renderSummary(tps){
     cats[t.category||"—"] = (cats[t.category||"—"]||0)+1;
   }
   let html = '<span class="pill">合计 '+tps.length+'</span>';
-  for(const k of ["全量","更新"]){ if(tags[k]!=null) html += `<span class="pill">${k} ${tags[k]}</span>`; }
+  for(const k of ["全量","更新","受影响·直接","受影响·数据","受影响·文件级"]){ if(tags[k]!=null) html += `<span class="pill">${k} ${tags[k]}</span>`; }
   for(const k of ["正常","异常","安全","边界"]){ if(cats[k]!=null) html += `<span class="pill">${k} ${cats[k]}</span>`; }
   $("tp_summary").innerHTML = html;
 }
 function renderTestPoints(tps){
   const ft = $("filter_tag").value;
   const fs = $("filter_scope").value;
+  const fv = $("filter_verify") ? $("filter_verify").value : "";
   const kw = $("filter_kw").value.trim().toLowerCase();
   const list = (tps||[]).filter(t=>{
     if(ft && (t.tag||"")!==ft) return false;
     if(fs && (t.category||"")!==fs) return false;
+    // T5：未验证 = 有 unverified 标志（含门禁拦下与「需特殊环境」两类，标黄可筛）
+    if(fv==="unverified" && !t.unverified) return false;
+    if(fv==="ok" && t.unverified) return false;
     if(kw){
       // 搜索覆盖：标题/模块/来源/子维度 + 验证内容(semantic) + 预期(expect)，按内容也能搜到点
       const hay = ((t.title||"")+" "+(t.module||"")+" "+(t.source||"")+" "+(t.dimension||"")+" "+(t.semantic||"")+" "+(t.expect||"")).toLowerCase();
@@ -1138,9 +1609,13 @@ function renderTestPoints(tps){
   for(const t of list.slice(0,500)){
     // 标题下带「验证内容(semantic) + 预期(expect)」，让每行一眼看出测什么、期望什么
     let titleCell = escapeHtml(t.title||"");
+    // T5：未验证标黄 + 直接写出原因（「没证据」和「需特殊环境」性质不同，不能混成一个哑标志）
+    if(t.unverified){
+      titleCell += `<div class="tp-warn">⚠ 未验证：${escapeHtml(unverifiedTip(t))}</div>`;
+    }
     if(t.semantic && t.semantic !== t.title) titleCell += `<div class="tp-sem">💬 ${escapeHtml(t.semantic)}</div>`;
     if(t.expect) titleCell += `<div class="tp-exp">✔ 预期：${escapeHtml(t.expect)}</div>`;
-    html += `<tr><td>${escapeHtml(t.tp_id||"")}</td>`+
+    html += `<tr${t.unverified?' style="background:#fffdf3"':''}><td>${escapeHtml(t.tp_id||"")}</td>`+
       `<td>${titleCell}</td>`+
       `<td>${catBadge(t.category)}</td>`+
       `<td>${tagBadge(t.tag)}</td>`+
@@ -1179,6 +1654,117 @@ function onCodeSrcTypeChange(){
   const show = ($("code_src_type").value==="codeup");
   $("codeup_cred_row").style.display = show ? "flex" : "none";
   $("codeup_hint").style.display = show ? "block" : "none";
+}
+
+// 被测环境配置（地址/账号/口令）浏览器本地保存 + 反显：每次打开自动回填，改后重新保存覆盖。
+const LS_ENV = "tg_testgen_env_config";
+const ENV_FIELDS = ["auto_input", "test_url", "login_url", "user", "pwd", "otp", "pname"];
+// 把分项字段拼成智能输入框可解析的标签式文本（别名与后端 core/auto_input.py 对齐）。
+// 只有填写过的字段才拼入，全空返回空串——保证「没填过则为空」。
+function composeAutoInput(){
+  const pairs = [
+    ["地址", "test_url"], ["登录页", "login_url"], ["账号", "user"],
+    ["密码", "pwd"], ["动态码", "otp"], ["项目名", "pname"],
+  ];
+  const parts = [];
+  for(const [label, id] of pairs){
+    const v = $(id) ? $(id).value.trim() : "";
+    if(v) parts.push(label + " " + v);
+  }
+  return parts.join("\n");
+}
+// 智能输入框标签 → 分项字段（与后端 core/auto_input.py 的别名对齐，取常用写法）。
+const _AI_LABELS = {
+  test_url: ["url","地址","测试地址","被测地址","环境地址","网址","链接","link","base_url"],
+  login_url: ["登录地址","登录url","登录页","登录页面","login_url"],
+  user: ["账号","账户","用户名","用户","登录账号","登录用户名","account","user","username","邮箱","email"],
+  pwd: ["密码","登录密码","口令","password","passwd","pwd"],
+  otp: ["动态码","动态口令","动态密码","验证码","一次性口令","令牌码","otp","code","mfa"],
+  pname: ["项目名","项目名称","project_name","project"],
+};
+// 智能输入框 → 分项的反向解析（仅本机展示/提交用；后端仍以 auto_input 原文再解析一遍）。
+// 支持两种写法：「标签：值」逐行式，以及「地址 X 账号 Y 密码 Z」空格混排式。
+// 标签用「行首/空白/标点」做左边界，保证「动态口令」不会被「口令」抢走、「动态密码」不会被「密码」抢走。
+function parseAutoInputLocal(text){
+  const out = {};
+  const t = (text || "").trim();
+  if(!t) return out;
+  // 地址：整段里第一个 URL（行首行中都认）
+  const u = t.match(/https?:\/\/[^\s，,;；]+/i);
+  if(u) out.test_url = u[0];
+  const pairs = [];
+  for(const field of Object.keys(_AI_LABELS)){
+    for(const lb of _AI_LABELS[field]) pairs.push([lb.toLowerCase(), field]);
+  }
+  pairs.sort((a, b) => b[0].length - a[0].length);
+  for(const [lb, field] of pairs){
+    if(out[field]) continue;
+    const esc = lb.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp("(?:^|[\\s，,;；])" + esc + "\\s*[：:]?\\s*([^\\s，,;；]+)", "i");
+    const m = t.match(re);
+    if(m && m[1]) out[field] = m[1];
+  }
+  return out;
+}
+// 智能输入框有值、分项为空时补进分项（只补空项，绝不覆盖用户手填的分项）。
+// 少了这步，只在智能框里写地址时提交的 test_url 是空的，后端虽能解析，
+// 但面板展示会出现「智能框有值、分项全空」的割裂观感。
+function syncFieldsFromAuto(){
+  if(!$("auto_input")) return;
+  const parsed = parseAutoInputLocal($("auto_input").value);
+  for(const id of Object.keys(parsed)){
+    if($(id) && !$(id).value.trim() && parsed[id]) $(id).value = parsed[id];
+  }
+}
+function saveEnvConfig(){
+  // 双向关联：① 智能框 → 补空分项；② 分项 → 智能框（仅当智能框为空时用标准标签式重建）。
+  syncFieldsFromAuto();
+  const composed = composeAutoInput();
+  if(composed && $("auto_input") && !$("auto_input").value.trim()) $("auto_input").value = composed;
+  const cfg = {};
+  for(const id of ENV_FIELDS){ cfg[id] = $(id) ? $(id).value : ""; }
+  cfg.saved_at = new Date().toLocaleString();
+  try{
+    localStorage.setItem(LS_ENV, JSON.stringify(cfg));
+    $("env_save_status").textContent = "✓ 已保存 " + cfg.saved_at;
+    log("💾 被测环境配置已保存到本机浏览器（地址/账号/口令），下次打开自动反显");
+  }catch(e){
+    $("env_save_status").textContent = "保存失败：" + e.message;
+  }
+}
+function loadEnvConfig(){
+  let cfg = null;
+  try{ cfg = JSON.parse(localStorage.getItem(LS_ENV) || "null"); }catch(e){}
+  if(!cfg){
+    // 本机 dev 首次打开：拉默认配置预填（文件含明文口令、已 gitignore，仅本地生效）。
+    // 用户点「保存环境配置」后写入 localStorage，此后一律以用户保存值为准。
+    $("env_save_status").textContent = "正在载入本机默认配置…";
+    fetch("/static/env_defaults.json", {cache:"no-store"})
+      .then(r => r.ok ? r.json() : null)
+      .then(def => {
+        if(!def) return;
+        for(const id of ENV_FIELDS){ if($(id) && def[id] != null) $(id).value = def[id]; }
+        // 分项 ↔ 智能框互相同步，避免任一侧有值另一侧空白的「未关联」观感。
+        syncFieldsFromAuto();
+        if($("auto_input") && !$("auto_input").value.trim()){
+          const composed = composeAutoInput();
+          if(composed) $("auto_input").value = composed;
+        }
+        $("env_save_status").textContent = "已预填本机默认配置（点「保存环境配置」持久化）";
+      })
+      .catch(() => { $("env_save_status").textContent = "无已保存配置"; });
+    return;
+  }
+  for(const id of ENV_FIELDS){ if($(id) && cfg[id] != null) $(id).value = cfg[id]; }
+  // 兼容旧配置：只存了智能输入框（分项为空）时，解析回填分项，保证提交参数与展示一致。
+  syncFieldsFromAuto();
+  $("env_save_status").textContent = "✓ 已载入 " + (cfg.saved_at || "已保存配置");
+}
+function clearEnvConfig(){
+  try{ localStorage.removeItem(LS_ENV); }catch(e){}
+  for(const id of ENV_FIELDS){ if($(id)) $(id).value = ""; }
+  $("env_save_status").textContent = "已清除";
+  log("🗑 已清除本机保存的被测环境配置");
 }
 
 // 浏览器临时记忆 Codeup 凭证（次选）：主存储是仓库配置（数据库），此处仅缓存手填值便于下次回填。
@@ -1229,9 +1815,19 @@ loadCodeupCreds();  // 页面加载即回填上次保存的 Codeup 凭证
 
 function srcTypeLabel(t){ return t==="codeup" ? "阿里云 Codeup" : (t==="github" ? "GitHub/Git" : "本地目录"); }
 
+/* 生效 ref：优先取「历史提交」二级下拉选中的 commit sha，否则取分支下拉值。
+   两个下拉各自独立：目标用 scan_ref / scan_ref_commit，基线用 scan_base_ref / scan_base_ref_commit。 */
+function _effectiveRefs(){
+  const pick = (branchId, commitId) => {
+    const c = $(commitId).value.trim();
+    return c || $(branchId).value.trim();
+  };
+  return { ref: pick("scan_ref", "scan_ref_commit"), base_ref: pick("scan_base_ref", "scan_base_ref_commit") };
+}
+
 function _scanRepoPayload(){
   const raw = $("repo").value.trim();
-  const refs = { ref: $("scan_ref").value.trim(), base_ref: $("scan_base_ref").value.trim() };
+  const refs = _effectiveRefs();
   const cs = _collectCodeSource();
   if(cs === null) return null;
   if(!raw){ alert("请先在「代码目录」填入本地目录或仓库地址"); return null; }
@@ -1362,7 +1958,11 @@ async function enrichScanDescriptions(){
       functions: (it.functions||[]).slice(0, 20),
       classes: (it.classes||[]).slice(0, 12),
     }));
-    const r = await api("/api/v1/describe", {method:"POST", body:JSON.stringify({items, repo_url: lastRepoUrl})});
+    // 多仓模式（项目注入了仓库清单）：lastRepoUrl 是单值，无法区分同名文件属于哪个仓，
+    // 传空 repo_url 禁用缓存（全部走 LLM），避免跨仓描述串味；单仓模式照旧用缓存。
+    const descRepoUrl = (Array.isArray(window.MULTI_REPO_SPECS) && window.MULTI_REPO_SPECS.length)
+      ? "" : lastRepoUrl;
+    const r = await api("/api/v1/describe", {method:"POST", body:JSON.stringify({items, repo_url: descRepoUrl})});
     if(r && r.ok && r.descriptions && Object.keys(r.descriptions).length){
       scanDescMap = Object.assign({}, scanDescMap, r.descriptions);
       if(r.cached) Object.assign(scanCachedMap, r.cached);  // 记录每条是「历史缓存」还是「本次新生成」
@@ -1488,15 +2088,99 @@ function _isIncrementalMode(){
 }
 
 /* ============ 分支选择（扫描前） ============ */
+/* B 区提醒条：点「获取分支」后告诉用户下一步做什么，避免只选一个 ref 就去生成 */
+function setTipBox(id, html, tone){
+  const el = $(id);
+  if(!el) return;
+  if(!html){ el.style.display = "none"; el.innerHTML = ""; return; }
+  const tones = {
+    info: ["#eef4ff", "#c9dcff", "#1b4f9c"],
+    ok:   ["#eaf7ee", "#bfe3c9", "#1c6b32"],
+    warn: ["#fff6e5", "#ffd699", "#8a5a00"],
+    err:  ["#fdecec", "#f5bdbd", "#9c1b1b"]
+  };
+  const t = tones[tone||"info"] || tones.info;
+  el.style.display = "block";
+  el.style.background = t[0]; el.style.borderColor = t[1]; el.style.color = t[2];
+  el.innerHTML = html;
+}
+function setBranchTip(html, tone){ setTipBox("branch_tip", html, tone); }
+function setExecTip(html, tone){ setTipBox("exec_tip", html, tone); }
+/* 目标分支 + 基线 ref 都选好 → 自动切到「增量」（用户不必再手动点） */
+function _autoSwitchToIncremental(){
+  const t = $("scan_ref").value.trim();
+  const b = $("scan_base_ref").value.trim();
+  if(!t || !b || _isIncrementalMode()) return false;
+  const radio = document.querySelector('input[name="gen_mode"][value="incremental"]');
+  if(!radio) return false;
+  radio.checked = true;
+  onModeChange();
+  log(`🔄 目标分支「${t}」+ 基线 ref「${b}」都已选 → 自动切到「增量」模式（只对两者 diff 生成）`);
+  return true;
+}
+/* 当前选中的「目标 / 基线」到底是什么点：优先看二级下拉的历史提交，回退到分支名。
+   返回 {ref, text}——ref 用于和后端 ref 比对（判断是否同一个点），text 用于给人看。 */
+function _refDisplay(kind){
+  const bsel = kind === "target" ? "scan_ref" : "scan_base_ref";
+  const csel = kind === "target" ? "scan_ref_commit" : "scan_base_ref_commit";
+  const cs = $(csel), bs = $(bsel);
+  const labelOf = (sel, val) => {
+    if(!sel || !val) return "";
+    const opt = [...sel.options].find(o => o.value === val);
+    return opt ? String(opt.textContent || "").trim() : val;
+  };
+  const cv = cs ? String(cs.value || "").trim() : "";
+  if(cv) return { ref: cv, text: labelOf(cs, cv) || cv };
+  const bv = bs ? String(bs.value || "").trim() : "";
+  if(bv) return { ref: bv, text: labelOf(bs, bv) || bv };
+  return { ref: "", text: "" };
+}
+/* 目标与基线指向同一个提交 → diff 为空 → 增量必然 0 条（历史现场：两边都选了 master 最新） */
+function _sameRefPoint(){
+  const t = _refDisplay("target");
+  const b = _refDisplay("base");
+  if(t.ref && b.ref && t.ref === b.ref) return { t, b };
+  return null;
+}
+function refreshBranchTip(){
+  const t = ($("scan_ref").value||"").trim();
+  const b = ($("scan_base_ref").value||"").trim();
+  const same = _sameRefPoint();
+  if(same){
+    setBranchTip(
+      `⚠️ <b>目标与基线选的是同一个点</b>（「${escapeHtml(same.t.text)}」）：两者之间 diff 为空，`
+      + "增量模式会生成 <b>0 条</b>测试点。请把「基线 ref」换成更早的提交（下拉里往下选一条，或选上一版分支），"
+      + "不改基线就把生成模式切「全量」。", "warn");
+    return;
+  }
+  if(t && b){
+    setBranchTip(
+      `✅ 目标分支「${escapeHtml(t)}」+ 基线「${escapeHtml(b)}」已就绪`
+      + (_isIncrementalMode() ? "，已自动切到「增量」模式。" : "，请把生成模式切到「增量」。")
+      + "下一步：点「🔍 扫描」列出变更文件，再用「仅变更文件」勾选范围后生成。", "ok");
+  }else if(t){
+    setBranchTip(
+      `已选目标分支「${escapeHtml(t)}」，但<b>还缺「基线 ref」</b>：没有基线就 diff 不出变更，只能整仓生成。`
+      + "请在下方「基线 ref」里选一个对比基线（选好后会自动切到增量）。", "warn");
+  }else if(b){
+    setBranchTip(`已选基线「${escapeHtml(b)}」，但<b>还没选目标「分支」</b>，请在上方选一个目标分支。`, "warn");
+  }
+}
 async function loadBranches(){
   const payload = _scanRepoPayload();
   if(!payload) return;
-  if(!payload.repo_url && !payload.local_path){ alert("列分支需要 git 仓库地址或本地 git 目录"); return; }
+  if(!payload.repo_url && !payload.local_path){
+    setBranchTip("请先在上方 A 区选择「仓库配置」或填写代码仓库地址 / 本地 git 目录，再来获取分支。", "warn");
+    alert("列分支需要 git 仓库地址或本地 git 目录"); return;
+  }
   $("btn_branches").disabled = true;
+  setBranchTip("⏳ 正在请求远程仓库的分支列表…（需要只读凭证；仓库较大时可能要几十秒，请勿重复点击）", "info");
   try{
     const r = await api("/api/v1/branches", {method:"POST", body:JSON.stringify({repo_url: payload.repo_url, local_path: payload.local_path, code_source: payload.code_source || {}})});
     if(!r.ok){
       log("❌ 获取分支失败: "+(r.error||"未知"));
+      setBranchTip("❌ 获取分支失败：" + escapeHtml(r.error||"未知")
+        + "。远程仓库通常需要只读凭证（code_source / 仓库配置里的 PAT），配好后再点一次「获取分支」。", "err");
       alert("获取分支失败: "+(r.error||"远程仓库可能需要只读凭证（code_source）")); return;
     }
     const sel = $("scan_ref");
@@ -1520,21 +2204,93 @@ async function loadBranches(){
     }).join("");
     if(curB) bsel.value = curB;
     log(`✅ 获取到 ${(r.branches||[]).length} 个分支（来源：${r.source||"unknown"}）`);
-  }catch(e){ log("❌ 获取分支异常: "+e.message); }
+    // 恢复已选分支时自动带出历史提交（首次选中会走 onBranchChange/syncRefs）
+    if(cur) loadBranchCommits("target");
+    if(curB) loadBranchCommits("base");
+    const n = (r.branches||[]).length;
+    setBranchTip(
+      `✅ 已获取 <b>${n}</b> 个分支。下一步：① 上方「分支」选<b>目标</b>（要测的版本）`
+      + " ② 「基线 ref」选<b>对比基线</b>（比如上一个发布点）"
+      + " —— <b>两处都选好后会自动切到「增量」模式</b>，再点「🔍 扫描」列出变更文件。", "info");
+    if(_autoSwitchToIncremental()) refreshBranchTip();
+  }catch(e){
+    log("❌ 获取分支异常: "+e.message);
+    setBranchTip("❌ 获取分支异常：" + escapeHtml(e.message) + "（检查仓库地址 / 凭证 / 网络）", "err");
+  }
   finally{ $("btn_branches").disabled = false; }
 }
+/* 选分支后：加载该分支的历史提交到二级下拉（目标/基线各自独立）。
+   二级下拉首项固定为「该分支最新提交」(value='')，即不指定 commit，回退到分支名。
+   commit 用完整 id 作 value（避免缩小写 sha 的前缀误判），展示 短sha + 时间 + 标题。 */
+async function loadBranchCommits(kind){
+  const branchSel = kind === "target" ? "scan_ref" : "scan_base_ref";
+  const commitSel = kind === "target" ? "scan_ref_commit" : "scan_base_ref_commit";
+  const branch = $(branchSel).value.trim();
+  const csel = $(commitSel);
+  const placeholder = '<option value="">（该分支最新提交）</option>';
+  csel.innerHTML = placeholder;
+  if(!branch){ return; }
+  const payload = _scanRepoPayload();
+  if(!payload){ return; }
+  try{
+    csel.innerHTML = '<option value="">（加载该分支历史提交中…）</option>';
+    const r = await api("/api/v1/commits", {method:"POST", body:JSON.stringify({
+      repo_url: payload.repo_url, local_path: payload.local_path,
+      code_source: payload.code_source || {}, ref: branch
+    })});
+    if(!r.ok || !r.commits || !r.commits.length){
+      csel.innerHTML = placeholder;
+      log(`ℹ️ 分支 ${branch} 无历史提交可列，使用最新提交`);
+      return;
+    }
+    const fmtDate = iso => { try{ return iso.slice(5,10).replace("-","/") + " " + iso.slice(11,16); }catch(e){ return ""; } };
+    csel.innerHTML = placeholder + r.commits.map(c=>{
+      const id = c.id || c.short_id || "";
+      const short = (c.short_id || String(id).slice(0,8) || "");
+      const when = fmtDate(c.committed_date || c.authored_date);
+      const title = String(c.title || "").slice(0,24).replace(/[<>&"]/g,"");
+      return `<option value="${id}">${short} · ${when}${title ? " · "+title : ""}</option>`;
+    }).join("");
+    log(`✅ 分支 ${branch} 加载到 ${r.commits.length} 条历史提交（可选任一时间点作对比）`);
+  }catch(e){
+    csel.innerHTML = placeholder;
+    log(`❌ 加载 ${branch} 历史提交失败: ${e.message}（仍可用分支最新提交）`);
+  }
+}
+
+function onCommitChange(kind){
+  const eff = _effectiveRefs();
+  if(kind === "target") $("target_ref").value = eff.ref;
+  else $("base_ref").value = eff.base_ref;
+  const sha = (kind === "target" ? $("scan_ref_commit") : $("scan_base_ref_commit")).value.trim();
+  if(sha) log(`已选${kind === "target" ? "目标" : "基线"}历史提交：${sha.slice(0,8)}`);
+  refreshBranchTip();   // 选了同一个提交要立刻提示「diff 为空」
+}
+
 function onBranchChange(){
   const v = $("scan_ref").value;
   if(v){ $("target_ref").value = v; log("已把目标 ref 同步为分支："+v); }
+  else { $("target_ref").value = ""; }
+  $("scan_ref_commit").innerHTML = '<option value="">（该分支最新提交）</option>';
+  if(v) loadBranchCommits("target");
+  // 目标 + 基线都选好时自动切增量；只选了一个则提醒还缺什么
+  _autoSwitchToIncremental();
+  refreshBranchTip();
 }
 function syncRefs(){
   const v = $("scan_base_ref").value.trim();
   if(v){ $("base_ref").value = v; }
+  else { $("base_ref").value = ""; }
+  $("scan_base_ref_commit").innerHTML = '<option value="">（该分支最新提交）</option>';
+  if(v) loadBranchCommits("base");
+  _autoSwitchToIncremental();
+  refreshBranchTip();
 }
 
 /* ============ 一键闭环：生成 → 执行 → 报告 ============ */
 async function doScanAndTest(){
   const body = buildBody();
+  if(!body) return;  // 凭证缺失时 buildBody 已 alert
   if(!body.auto_input && !body.local_path && !body.repo_url && !body.test_url){
     alert("请至少填写代码目录、仓库地址或被测环境地址"); return;
   }
@@ -1543,10 +2299,12 @@ async function doScanAndTest(){
   setBusy(true);
   try{
     log("⚡ 一键闭环：生成 → 执行 → 报告（含执行验证，耗时较久）…");
+    pollKind = "execute";
     const r = await api("/api/v1/execute", {method:"POST", body:JSON.stringify(body)});
     $("task_id").textContent = r.task_id;
     setBadge("task_state","running");
     log("已接受，任务 "+r.task_id);
+    markReused(r);
     saveLastTask(r.task_id, "execute");
     try{ localStorage.setItem(LS_LAST_BODY, JSON.stringify(body)); }catch(e){}
     poll(r.task_id, (res)=>{
@@ -1709,7 +2467,10 @@ async function rerunFlaky(){
 // 恢复「扫描后自动生成」复选框状态（默认关：避免无人察觉地批量消耗模型额度）
 try{ $("auto_describe").checked = autoDescribeEnabled(); }catch(e){ /* 元素缺失不阻塞控制台 */ }
 
-log("控制台就绪。填写左侧被测对象后点「生成用例」；常用仓库/厂商可在「代码仓库」「LLM 配置」菜单管理。");
+// 反显上次保存的被测环境配置（地址/账号/口令）
+try{ loadEnvConfig(); }catch(e){ /* 元素缺失不阻塞控制台 */ }
+
+log("控制台就绪。填写左侧被测对象后点「生成用例」；被测环境配置可在 D 区点「保存环境配置」持久化。");
 </script>
 </body>
 </html>

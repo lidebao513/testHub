@@ -74,10 +74,20 @@ class StageSnapshot:
 
 
 class StageStore:
-    """manifest 清单管理：analysis_root/<slug>/stages.json。"""
+    """manifest 清单管理：analysis_root/<slug>/stages.json。
 
-    def __init__(self, analysis_root: str | Path) -> None:
-        self.root = Path(analysis_root)
+    多仓改造（v1.7）：`namespace` 给同一 analysis_root 下的不同项目/仓库一个隔离
+    前缀（如 `p12/backend`）。缺省空串时 root 不变——旧单仓零回归。这样即使
+    两个仓 URL 末段同名（`_slug` 相同），快照也不会互相覆盖。
+    """
+
+    def __init__(self, analysis_root: str | Path, namespace: str = "") -> None:
+        root = Path(analysis_root)
+        # namespace 只保留 alnum/_/-，去掉 '.'（避免 `..` 路径穿越）和 '/'（扁平化，
+        # 调用方想分层可用 '_' 连接）。空串时不加任何前缀（单仓零回归）。
+        safe = re.sub(r"[^A-Za-z0-9_-]+", "_", str(namespace or "")).strip("_")
+        self.namespace = safe
+        self.root = root / safe if safe else root
 
     def _manifest_path(self, repo: str) -> Path:
         return self.root / _slug(repo) / "stages.json"

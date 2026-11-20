@@ -76,13 +76,20 @@ _TEST_TYPE_ALIASES: dict[str, str] = {
 # ============================================================================
 # 编号算法（冻结，不可改）
 # ============================================================================
-def fp_id_of(ftype: str, file_path: str, name: str) -> str:
+def fp_id_of(ftype: str, file_path: str, name: str, *, repo_key: str = "") -> str:
     """功能点稳定编号：`FP-` + md5(ftype|file_path|name) 前 8 位。
 
     用哈希而非自增，是为了跨运行、跨机器稳定，且规避路径中的中文/空格/分隔符干扰。
     md5 在此**仅作指纹用途，非安全用途**。
+
+    `repo_key` 是多仓改造新增的**关键字参数**（项目内仓库稳定短名，如
+    `backend`/`frontend`）：传值时并入指纹首段，使跨仓「同路径 + 同函数/接口」
+    产出不同 `fp_id`，从根上消除跨仓编号碰撞。缺省空串时指纹构造与冻结版本
+    **逐字节一致**——旧单仓调用方零变化（契约冻结红线，见 `test_fp_id_repo_key`）。
     """
     key = f"{ftype}|{file_path}|{name}"
+    if repo_key:
+        key = f"{repo_key}|{key}"
     digest = hashlib.md5(key.encode("utf-8")).hexdigest()[:8]  # nosec B324  # 非安全用途：仅生成稳定 ID 指纹
     return "FP-" + digest
 
@@ -142,6 +149,28 @@ class FunctionalPoint:
     description: str = ""
     commit_ref: str = ""
     review_status: str = "approved"
+    # v1.1 预留（只增不改；缺省即 v1.0 语义）：业务函数从 AST 提取的真实签名摘要
+    # （如「入参 domain_id、top_n；返回 DomainDetail」），供测试点标题/预期具体化消费。
+    signature_hint: str = ""
+    # v1.4（只增不改，缺省 True 即 v1.0 语义）：该 PAGE 功能点是否来自**显式路由声明**。
+    # True = `name` 是真实可达 URL（可展开「页面可达/未授权/极端视口」等需要地址的维度）；
+    # False = 只是「位于 pages/views 目录但没写 path 的屏幕文件」，地址未知——此时不生成
+    # 需要 URL 的维度，改为验证其交互元素，避免对不存在的地址产出必然失败的假用例。
+    # 缺省 True 的原因：旧行为对所有 PAGE 一律按「有路由」展开，默认 False 会静默改变
+    # 所有历史调用方（含手工构造 fp 的测试与 runtime_ui 产出的真实页面）的展开结果。
+    has_route: bool = True
+    # v1.5（只增不改，缺省空串＝未推断）：T4 从仓库静态路由表反查到的真实路由。
+    # 与 `has_route` 的分工：`has_route` 只回答「能不能展开需要地址的维度」，
+    # `route_hint` 才是那个地址本身（如 `/pc/chat`）。推断必须被路由表印证
+    # （`<Route path="/x" element={<Page/>}>` 的组件名或文件名候选双向匹配），
+    # 不做纯文件名猜测；`route_source="inferred"` 标明来源，便于报告区分
+    # 「代码里写的路由」与「工具推断的路由」。
+    route_hint: str = ""
+    route_source: str = ""
+    # v1.7（只增不改，缺省空串＝单仓兼容）：多仓改造，功能点归属仓的项目内短名
+    # （backend/frontend/shared）。为空即旧单仓；非空时 fp_id 已含 repo 分量，
+    # 供报告分组 / 存储替换粒度 / 跨仓命名空间隔离消费。
+    repo_key: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -183,6 +212,24 @@ class TestPoint:
     # v1.3：专家归因（测试专家系统）：标记该测试点由哪个专家模块产出
     # （"PageExpert" / "CodeExpert"），缺省空串表示非专家产出。旧消费方忽略。
     expert: str = ""
+    # v1.6（只增不改，缺省空串＝未标注）：T5 三通道归属，供报告与前端把
+    # 「本体 / 影响面 / 运行时」分开计数。
+    #   body    = 改动本体（代码或 PRD 展开出来的功能点）
+    #   impact  = 影响面回归（origin=impact/impact_file）
+    #   runtime = 运行时 UI 发现出来的页面/元素（功能点来自 `runtime:` 前缀）
+    # 为什么单独存一列而不是靠 origin 推：origin 回答「怎么来的」，channel 回答
+    # 「这份覆盖算在哪一栏」。两者不等价——运行时发现的页面同样 origin=rule，
+    # 但报告里必须归到「运行时」而不是「本体」，否则三栏计数会重复或遗漏。
+    channel: str = ""
+    # v1.6（只增不改，缺省空串＝未标记）：T5 生成后自检（门禁）的落榜原因，可审计。
+    # 取值见 engine/quality.py 的 GATE_* 常量：
+    #   no_evidence / no_observable_expect / no_origin（本批新增的三道门禁）
+    #   best_effort（T3 既有：该维度需特殊环境，诚实标未验证，不是水货）
+    # 为空 = 过门禁。与 `unverified` 的分工：`unverified` 回答「能不能直接跑」，
+    # `unverified_reason` 回答「为什么」，KPI 据此决定是否计入分母。
+    unverified_reason: str = ""
+    # v1.7（只增不改，缺省空串＝单仓兼容）：多仓改造，测试点归属仓的项目内短名。
+    repo_key: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

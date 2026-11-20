@@ -8,6 +8,7 @@ from apps.testgen_integration.proxy import (
     testgen_web_proxy,
     testgen_api_proxy,
 )
+from apps.testgen_integration.views import testgen_console_view
 from drf_spectacular.views import (
     SpectacularAPIView,
     SpectacularRedocView,
@@ -44,6 +45,9 @@ urlpatterns = [
     path('api/mcp/', include('apps.mcp.urls')),
     path('api/testgen/', include('apps.testgen_integration.urls')),  # testgen 代码生成 sidecar 集成
     path('api/taskcenter/', include('apps.taskcenter.urls')),  # 后台任务中心
+    # testgen 分支阶段对比完整控制台（Django 自渲染，UI 走 /api/testgen/*）
+    #   与下方 /testgen/（sidecar 反代）并存；?embed=1&zone=stage-compare 可只渲染阶段对比区
+    path('testgen-console/', testgen_console_view, name='testgen-console'),
     # testgen 控制台反向代理（同源嵌入）
     #   页面：/testgen/              → sidecar 根（转发时注入 X-Testhub-Api-Prefix）
     #   API ：/testgen-api/v1/       → sidecar /api/v1/（专属命名空间，不与平台 /api/* 冲突）

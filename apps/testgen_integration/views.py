@@ -18,6 +18,7 @@ import logging
 from typing import Any, ClassVar
 
 from django.db import transaction
+from django.shortcuts import render
 from rest_framework.parsers import JSONParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -571,3 +572,12 @@ class TestgenTaskStatusView(APIView):
         except Exception as exc:  # noqa: BLE001 - 不可达 503、其它 502
             return _sidecar_error_response(exc)
         return Response({"ok": True, **data})
+
+
+def testgen_console_view(request):
+    """分支阶段对比完整控制台（独立页面，恢复自 console.html）。
+
+    UI 走 Django 侧 /api/testgen/*（IsAuthenticated），与 /testgen/（sidecar 反代）
+    并存、互不干扰。支持 ?embed=1&zone=stage-compare 只渲染阶段对比功能区。
+    """
+    return render(request, "testgen/console.html")

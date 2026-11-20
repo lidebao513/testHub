@@ -29,6 +29,23 @@ SCHEMA: tuple[str, ...] = (
         created_at  TEXT
     )
     """,
+    # 多仓改造（v1.7）：project 退化为「容器」，一个项目下绑定 N 个仓库。
+    # repo_key 是项目内稳定短名（backend/frontend/shared），唯一键 (project_id, repo_key)；
+    # 旧单仓 project 由迁移脚本建一条 repo_key='default' 的隐式 binding，行为不变。
+    """
+    CREATE TABLE IF NOT EXISTS repo_bindings (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id   INTEGER NOT NULL,
+        repo_key     TEXT NOT NULL,
+        local_path   TEXT,
+        repo_url     TEXT,
+        base         TEXT,
+        target       TEXT,
+        ref          TEXT,
+        created_at   TEXT,
+        UNIQUE (project_id, repo_key)
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS functional_points (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,8 +233,8 @@ SCHEMA: tuple[str, ...] = (
     """,
 )
 
-# schema 版本：新增 runs / run_batches（F12 执行留痕）→ 1 → 2；repo_configs（仓库管理）→ 3；llm_providers（多厂商独立 key）→ 4；repo_configs 存 Codeup 只读凭证 → 5；file_descriptions（描述缓存）→ 6
-SCHEMA_VERSION = "6"
+# schema 版本：新增 runs / run_batches（F12 执行留痕）→ 1 → 2；repo_configs（仓库管理）→ 3；llm_providers（多厂商独立 key）→ 4；repo_configs 存 Codeup 只读凭证 → 5；file_descriptions（描述缓存）→ 6；多仓改造 repo_bindings + repo_binding_id → 7
+SCHEMA_VERSION = "7"
 
 INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_fp_project ON functional_points(project_id)",
@@ -228,16 +245,29 @@ INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_cases_project ON cases(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_cases_tp ON cases(tp_id)",
     "CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status)",
-    # 唯一性防线：同一项目下编号必须唯一。
+    # 唯一性防线：同一项目 + 同一仓下编号必须唯一。
     # 历史教训：编号算法一旦碰撞（如同名方法共用 fp_id），同一 tp_id 会落出多条用例行，
     # 而对账逻辑以 tp_id 为键，重复行永远匹配不上 → 永久残留成「孤儿用例」。
     # 用唯一索引把问题挡在写入侧，而不是靠事后体检。
+    # 多仓改造（v1.7）：唯一键从 (project_id, xxx_id) 扩为 (project_id, repo_binding_id, xxx_id)。
+    # 关键：SQLite 唯一索引里 NULL 互不相等，旧单仓行 repo_binding_id=NULL 会让唯一性失效，
+    # 故用 COALESCE(repo_binding_id, 0)——旧行归到 0 桶，仍按 (project_id, 0, id) 唯一；
+    # 多仓行用真实 binding id，跨仓同编号得以共存。此处必须与 contracts.fp_id_of 的
+    # repo 分量形成双保险（ID 不同 + 唯一索引按仓隔离）。
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_fp_project_contract"
-    " ON functional_points(project_id, contract_id) WHERE contract_id IS NOT NULL",
+    " ON functional_points(project_id, COALESCE(repo_binding_id, 0), contract_id)"
+    " WHERE contract_id IS NOT NULL",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_tp_project_tp_id"
-    " ON test_points(project_id, tp_id) WHERE tp_id IS NOT NULL",
+    " ON test_points(project_id, COALESCE(repo_binding_id, 0), tp_id)"
+    " WHERE tp_id IS NOT NULL",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_cases_project_tp_id"
-    " ON cases(project_id, tp_id) WHERE tp_id IS NOT NULL",
+    " ON cases(project_id, COALESCE(repo_binding_id, 0), tp_id)"
+    " WHERE tp_id IS NOT NULL",
+    # 多仓改造：按仓查询行 / 按仓删除的普通索引。
+    "CREATE INDEX IF NOT EXISTS idx_fp_repo ON functional_points(repo_binding_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tp_repo ON test_points(repo_binding_id)",
+    "CREATE INDEX IF NOT EXISTS idx_cases_repo ON cases(repo_binding_id)",
+    "CREATE INDEX IF NOT EXISTS idx_repo_bindings_project ON repo_bindings(project_id)",
     # F12：执行留痕查询索引（按项目列批次、按批次取逐条、按用例追溯历史）
     "CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_runs_batch ON runs(batch_id)",
@@ -252,10 +282,23 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("test_points", "confidence", "REAL"),
     ("test_points", "origin", "TEXT"),
     ("test_points", "unverified", "INTEGER DEFAULT 0"),
+    # T5（只加不改）：三通道归属 / 门禁原因 / 执行层。原先把它们只留在内存对象上，
+    # 报告与前端读库时全部丢失——「未验证」变成 0/1 的哑标志，说不清是「没证据」
+    # 还是「需要特殊环境」，只能靠人回忆，等于没有可审计性。
+    ("test_points", "channel", "TEXT"),
+    ("test_points", "unverified_reason", "TEXT"),
+    ("test_points", "verify_layer", "TEXT"),
     ("functional_points", "semantic", "TEXT"),
     # 仓库配置存 Codeup 只读凭证（2026-10-10 用户确认）：列表/导出接口只回传掩码，绝不回明文
     ("repo_configs", "codeup_org_id", "TEXT DEFAULT ''"),
     ("repo_configs", "codeup_access_key", "TEXT DEFAULT ''"),
+    # 多仓改造（v1.7）：所有跨仓持久化数据行增归属列（可空＝旧单仓，零回归）。
+    ("functional_points", "repo_binding_id", "INTEGER"),
+    ("test_points", "repo_binding_id", "INTEGER"),
+    ("cases", "repo_binding_id", "INTEGER"),
+    ("change_log", "repo_binding_id", "INTEGER"),
+    ("runs", "repo_binding_id", "INTEGER"),
+    ("gen_tasks", "repo_binding_id", "INTEGER"),
 )
 
 
@@ -302,10 +345,13 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         cur = conn.cursor()
         for ddl in SCHEMA:
             cur.execute(ddl)
-        for ddl in INDEXES:
-            cur.execute(ddl)
+        # 必须先补列再建索引：多仓改造的唯一索引是 COALESCE(repo_binding_id, 0)
+        # 表达式索引，依赖 ADDITIVE_COLUMNS 加的列；顺序反了会抛 OperationalError
+        # 被下方 except 吞掉，导致加列与索引都不生效（静默回归）。
         for table, column, coltype in _ADDITIVE_COLUMNS:
             ensure_column(conn, table, column, coltype)
+        for ddl in INDEXES:
+            cur.execute(ddl)
         cur.execute(
             "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', ?)",
             (SCHEMA_VERSION,),

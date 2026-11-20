@@ -150,10 +150,16 @@ def test_report_snapshot_is_raw_data_only(fresh_db):
         "run_index",
         "last_change",
         "traceability",
+        # T5：生成期质量快照（门禁 + 三 KPI）。它是 DB 里的事实记录，不是这里算出来的
+        "quality",
     }
     # 业务结论（摘要 / 覆盖率 / 趋势）**不得**在仓储层出现
     for computed in ("exec_summary", "coverage", "trend", "flaky", "reuse"):
         assert computed not in snap
+    # 测试点行要带 T5 字段（未验证原因 / 三通道 / 执行层），否则报告无法解释「为什么不算数」
+    assert {"origin", "unverified", "channel", "unverified_reason", "verify_layer"} <= set(
+        snap["test_points"][0]
+    )
     # 证据行要能一路回溯到功能点
     assert snap["runs"][0]["fp_contract_id"] == "FP-1"
     assert snap["runs"][0]["case_title"] == "用例 TP-1"
@@ -493,7 +499,8 @@ def test_render_markdown_has_key_sections_and_escapes(fresh_db):
         "## 五、追溯体检",
         "## 六、执行证据",
         "## 七、用例复用占比",
-        "## 八、变更摘要",
+        "## 八、生成质量（门禁 + 三 KPI）",
+        "## 九、变更摘要",
     ):
         assert heading in md
     assert "A \\| B <C>" in md, "竖线必须转义，否则会破坏 Markdown 表格"

@@ -74,7 +74,9 @@ def test_illegal_prefix_falls_back_and_is_not_injected(client, evil):
     assert resp.status_code == 200
     assert _injected(resp.text) == "/api/v1"
     assert "alert(1)" not in resp.text
-    assert "passwd" not in resp.text
+    # 断言「整段非法前缀」未被回显：页面本身含解析用的标签别名（如 pwd/passwd），
+    # 只查单词 'passwd' 会误报，须比对完整注入串。
+    assert evil not in resp.text
 
 
 def test_trailing_slash_is_normalized(client):

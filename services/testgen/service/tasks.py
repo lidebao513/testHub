@@ -43,6 +43,8 @@ _STAGE_FRACTION: dict[str, float] = {
     "prd_ingest": 0.72,
     "llm_design": 0.82,
     "runtime_ui": 0.78,
+    "target_runtime": 0.82,
+    "expert_review": 0.84,
     "case_gen": 0.90,
     "persist": 0.97,
     "done": 1.0,

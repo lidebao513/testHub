@@ -361,9 +361,69 @@ def _md_reuse(report: dict[str, Any]) -> list[str]:
     ]
 
 
+def _md_quality(report: dict[str, Any]) -> list[str]:
+    """T5：生成质量（三 KPI + 三通道 + 未验证原因）。"""
+    q = report.get("quality") or {}
+    kpis = q.get("kpis") or {}
+    channels = q.get("channels") or {}
+    unverified = q.get("unverified") or {}
+
+    def _kpi(name: str) -> list[Any]:
+        item = kpis.get(name) or {}
+        return [
+            f"{item.get('covered', 0)}/{item.get('total', 0)}"
+            if "covered" in item
+            else f"{item.get('actual', 0)}/{item.get('theory', 0)}",
+            _rate_text(round(float(item.get("value") or 0) * 100, 1)) if item else "—",
+        ]
+
+    lines = ["## 八、生成质量（门禁 + 三 KPI）", ""]
+    if not q.get("available"):
+        lines += [
+            "> 本项目的最近一次生成未产出质量快照（早于 T5 的历史任务，或生成走的是 CLI 不落库）。",
+            "",
+        ]
+    lines += [
+        _md_table(
+            ["KPI", "覆盖", "覆盖率"],
+            [
+                ["改动函数覆盖", *_kpi("changed_func_coverage")],
+                ["影响入口覆盖", *_kpi("impact_entry_coverage")],
+                ["维度覆盖", *_kpi("dimension_coverage")],
+            ],
+        ),
+        "",
+        _md_table(
+            ["通道", "测试点", "过门禁"],
+            [
+                [
+                    channels.get(n, {}).get("label", n),
+                    channels.get(n, {}).get("tp", 0),
+                    channels.get(n, {}).get("gate_ok", 0),
+                ]
+                for n in ("body", "impact", "runtime")
+            ]
+            + [["合计", channels.get("total", 0), "—"]],
+        ),
+        "",
+        f"> 未验证 {unverified.get('total', 0)} 条（门禁拦下 {unverified.get('blocked', 0)} 条、"
+        f"需特殊环境 {unverified.get('best_effort', 0)} 条）："
+        + (
+            " / ".join(
+                f"{unverified.get('text', {}).get(k, k)}×{v}"
+                for k, v in (unverified.get("by_reason") or {}).items()
+            )
+            or "（无）"
+        ),
+        f"> 口径：{(kpis.get('note') or '')}",
+        "",
+    ]
+    return lines
+
+
 def _md_change(report: dict[str, Any]) -> list[str]:
     change = report.get("change")
-    lines = ["## 八、变更摘要", ""]
+    lines = ["## 九、变更摘要", ""]
     if change:
         lines.append(
             f"- 最近一次对账（`{change.get('kind')}`，{change.get('created_at')}）："
@@ -371,6 +431,31 @@ def _md_change(report: dict[str, Any]) -> list[str]:
         )
     else:
         lines.append("暂无变更对账记录（本服务不做 diff 落库，变更信息来自 change_log）。")
+    lines.append("")
+    return lines
+
+
+def _md_repo(report: dict[str, Any]) -> list[str]:
+    """多仓改造（v1.7）：仓库分组章节。旧单仓（single_repo=True）不输出，保持字节级一致。"""
+    summary = report.get("repo_summary") or {}
+    if summary.get("single_repo", True):
+        return []
+    repos = summary.get("repos") or []
+    lines = ["## 十、仓库分组（本次涉及 N 个仓）".replace("N", str(len(repos))), ""]
+    lines.append(
+        _md_table(
+            ["仓库 (repo_key)", "功能点", "测试点", "用例"],
+            [
+                [
+                    r.get("repo_key"),
+                    r.get("functional_points", 0),
+                    r.get("test_points", 0),
+                    r.get("cases", 0),
+                ]
+                for r in repos
+            ],
+        )
+    )
     lines.append("")
     return lines
 
@@ -387,7 +472,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         _md_trace,
         _md_evidence,
         _md_reuse,
+        _md_quality,
         _md_change,
+        _md_repo,
     ):
         lines += section(report)
     return "\n".join(lines).rstrip() + "\n"
@@ -530,6 +617,56 @@ def _html_evidence(report: dict[str, Any]) -> str:
     return f"<h3>执行证据（逐条，共 {_esc(len(evidence))} 条）</h3>{body}"
 
 
+def _html_quality(report: dict[str, Any]) -> str:
+    """T5：三 KPI + 三通道 + 未验证原因（生成质量一眼可见）。"""
+    q = report.get("quality") or {}
+    kpis = q.get("kpis") or {}
+    channels = q.get("channels") or {}
+    unverified = q.get("unverified") or {}
+
+    def cell(name: str, label: str) -> str:
+        item = kpis.get(name) or {}
+        pair = (
+            f"{_esc(item.get('covered', 0))}/{_esc(item.get('total', 0))}"
+            if "covered" in item
+            else f"{_esc(item.get('actual', 0))}/{_esc(item.get('theory', 0))}"
+        )
+        pct = _rate_text(round(float(item.get("value") or 0) * 100, 1)) if item else "—"
+        return f"<td><b>{_esc(pct)}</b><br><span class='muted'>{_esc(label)} {pair}</span></td>"
+
+    head = (
+        "<tr><th>改动函数覆盖</th><th>影响入口覆盖</th><th>维度覆盖</th>"
+        "<th>本体</th><th>影响面</th><th>运行时</th></tr>"
+    )
+    body = (
+        "<tr>"
+        + cell("changed_func_coverage", "已覆盖/改动函数")
+        + cell("impact_entry_coverage", "已覆盖/受影响入口")
+        + cell("dimension_coverage", "实际/适用维度")
+        + "".join(
+            f"<td>{_esc(channels.get(n, {}).get('tp', 0))}"
+            f"<br><span class='muted'>过门禁 {_esc(channels.get(n, {}).get('gate_ok', 0))}</span></td>"
+            for n in ("body", "impact", "runtime")
+        )
+        + "</tr>"
+    )
+    reasons = " / ".join(
+        f"{_esc(unverified.get('text', {}).get(k, k))}×{_esc(v)}"
+        for k, v in (unverified.get("by_reason") or {}).items()
+    )
+    note = (
+        "<div class='card muted'>"
+        f"未验证 <b>{_esc(unverified.get('total', 0))}</b> 条（门禁拦下 "
+        f"{_esc(unverified.get('blocked', 0))} / 需特殊环境 "
+        f"{_esc(unverified.get('best_effort', 0))}）：{reasons or '（无）'}<br>"
+        f"口径：{_esc(kpis.get('note') or '')}"
+        "</div>"
+    )
+    if not q.get("available"):
+        note += "<div class='card muted'>质量快照缺失（历史任务早于 T5，或本次未落库）。</div>"
+    return f"<h3>生成质量（门禁 + 三 KPI）</h3><table>{head}{body}</table>{note}"
+
+
 def _html_footer(report: dict[str, Any]) -> str:
     tr = report.get("traceability") or {}
     reuse = report.get("reuse") or {}
@@ -584,6 +721,7 @@ def render_html(report: dict[str, Any]) -> str:
         _html_coverage(report),
         _html_trend(report),
         _html_flaky(report),
+        _html_quality(report),
         _html_evidence(report),
         _html_footer(report),
         "</body></html>",

@@ -138,11 +138,39 @@ class AuthProfile:
 
 
 def _norm(path: str) -> str:
-    return (path or "").replace("\\", "/")
+    """路径归一化（B5）：去 `./` 前缀、统一分隔符，让 mode_for 精确匹配得上。
+
+    `SourceFile.rel` 通常是 `app/api.py`，而调用方可能传 `./app/api.py` 或 Windows
+    反斜杠路径，此前精确匹配不上 → 误判 ABSENT → 安全用例走「公开即通过」漏报。
+    """
+    p = (path or "").replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
+def _strip_comments(text: str) -> str:
+    """去掉整行注释（# / // / /* */），避免注释里的 Authorization 算鉴权信号（B5）。"""
+    lines: list[str] = []
+    in_block = False
+    for line in text.splitlines():
+        s = line.strip()
+        if in_block:
+            if "*/" in s:
+                in_block = False
+            continue
+        if s.startswith("/*"):
+            in_block = "*/" not in s
+            continue
+        if s.startswith(("#", "//", "*")):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _count(patterns: tuple[re.Pattern[str], ...], text: str) -> int:
-    return sum(len(p.findall(text)) for p in patterns)
+    # B5：注释里的 "Authorization"/"Bearer" 不算接线信号；与 _evidence_of 口径一致
+    return sum(len(p.findall(_strip_comments(text))) for p in patterns)
 
 
 def _evidence_of(sf: SourceFile, patterns: tuple[re.Pattern[str], ...], label: str) -> list[str]:

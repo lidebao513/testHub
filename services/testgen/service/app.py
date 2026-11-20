@@ -12,13 +12,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
-from functools import partial
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -58,6 +59,7 @@ from engine.remote_scan import (
     CHANGE_MODIFIED,
     CHANGE_UNCHANGED,
     client_from_code_source,
+    scan_git_repo,
     scan_local,
     scan_repository,
 )
@@ -89,6 +91,35 @@ _DESCRIBE_DB_LOCK = threading.Lock()
 # P5 服务化：进程内后台执行器（生成任务异步化）。生产升级路径为 broker + 多 consumer。
 task_store = TaskStore()
 executor = BackgroundExecutor(task_store)
+
+# 专家审阅阶段（逐页大模型调用）的进度区间：把 0.84~0.89 按「第 i/N 页」细分，
+# 否则该阶段一跑十几分钟而进度条纹丝不动，前端看起来就是「卡死」。
+_EXPERT_STAGE_BASE = 0.84
+_EXPERT_STAGE_SPAN = 0.05
+
+
+def _stage_progress(stage: str, info: dict[str, Any], best: float) -> float:
+    """阶段名 + 阶段内细粒度信息 → 单调不减的进度（0~1）。"""
+    frac = stage_fraction(stage, best)
+    if stage == "expert_review":
+        page = int(info.get("page") or 0)
+        total = int(info.get("total") or 0)
+        if page > 0 and total > 0:
+            frac = max(frac, _EXPERT_STAGE_BASE + _EXPERT_STAGE_SPAN * min(1.0, page / total))
+    return max(best, min(1.0, frac))
+
+
+def _stage_with_detail(stage: str, info: dict[str, Any]) -> str:
+    """把阶段内细粒度信息编码进 stage（表里没有 stage_info 列，避免为它做迁移）。
+
+    形如 `expert_review:2/3`。前端拆出页码显示「第 2/3 页」，用户能看出还在推进，
+    而不是盯着一动不动的阶段名等十几分钟。
+    """
+    page = int(info.get("page") or 0)
+    total = int(info.get("total") or 0)
+    if page > 0 and total > 0:
+        return f"{stage}:{page}/{total}"
+    return stage
 
 
 @asynccontextmanager
@@ -200,10 +231,35 @@ def _is_managed(local_path: str) -> bool:
 # ============================================================================
 # 请求模型
 # ============================================================================
+class RepoSpecRequest(BaseModel):
+    """多仓改造（v1.7）：项目下单个仓库的取码/对比输入。"""
+
+    repo_key: str = Field(
+        "", description="项目内稳定短名（backend/frontend/shared）；必填且项目内唯一"
+    )
+    local_path: str = Field("", description="本仓代码目录")
+    repo_url: str = Field("", description="本仓仓库地址")
+    base: str | None = Field(None, description="本仓增量基线 ref")
+    target: str | None = Field(None, description="本仓增量目标 ref")
+    ref: str = Field("", description="本仓默认分支/提交")
+    changed_files: list[str] = Field(default_factory=list, description="本仓显式变更文件清单")
+    selected_paths: list[str] = Field(default_factory=list, description="本仓勾选范围")
+
+
 class PipelineRequest(BaseModel):
     local_path: str = Field("", description="被测代码所在目录（可选；与 test_url 至少给一个）")
+    repos: list[RepoSpecRequest] = Field(
+        default_factory=list,
+        description=(
+            "多仓改造：一个项目下关联 N 个仓库。非空时优先（每仓各自取码/扫描/生成，"
+            "共享同一 project、按 repo_key 隔离产物）；空则回落旧单仓字段。"
+        ),
+    )
     repo_url: str = Field(
         "", description="仓库地址（F1）：先取码到 local_path（缺省落到工作区根/仓库名）"
+    )
+    code_source: dict[str, Any] = Field(
+        default_factory=dict, description="取码凭证（PAT）；空则由后端按 repo_url 从仓库配置带出"
     )
     pull_deepen: int = Field(0, ge=0, description="浅克隆加深的提交数（0=不加深）")
     changed_files: list[str] = Field(
@@ -227,6 +283,13 @@ class PipelineRequest(BaseModel):
     extract_pages: bool = Field(True, description="是否提取前端路由")
     persist: bool = Field(True, description="是否落库")
     llm_enhance: bool = Field(False, description="是否启用 LLM 增强通道")
+    expert_ui: bool = Field(
+        False,
+        description=(
+            "是否启用「逐页大模型专家审阅」（PageExpert）。每页一次调用（30~60s），"
+            "默认关闭：不勾就不烧 token、也不会把任务拖成十分钟以上。"
+        ),
+    )
     readonly_lock: bool = Field(False, description="分析完成后是否把目录置只读")
     # —— 地址通道（A1）：凭证字段只用于本次运行，**绝不回显、不落库、不入产物** ——
     test_url: str = Field("", description="被测环境地址（走运行时 UI 发现）")
@@ -236,6 +299,13 @@ class PipelineRequest(BaseModel):
     login_otp: str = Field("", description="动态口令（更推荐用环境变量注入）")
     runtime_routes: list[str] = Field(default_factory=list, description="显式路由（优先级最高）")
     runtime_ui: bool = Field(False, description="启用运行时 UI 发现（等价 RUNTIME_UI_ENABLED=on）")
+    runtime_scope: str = Field(
+        "targeted",
+        description=(
+            "地址通道范围：targeted=只测与本次变更相关的页面/接口（默认，增量模式下生效）；"
+            "full=全站巡检（39 页/28 接口那种，产出与变更无关）"
+        ),
+    )
     auto_input: str = Field("", description="统一智能输入框：一段混排文本（地址+账号+密码+口令）")
     execute: bool = Field(False, description="执行生成的用例（接口层 + UI 层）")
     allow_write: bool = Field(False, description="放行写操作；默认只跑只读请求")
@@ -337,12 +407,12 @@ def _run_execution_job(
     """后台作业：对已有项目执行验证（不重新生成），进度写回任务表。"""
     best = {"frac": 0.0}
 
-    def _progress(stage: str, _info: dict[str, Any]) -> None:
+    def _progress(stage: str, info: dict[str, Any]) -> None:
         if task_store.is_cancelled(task_id):
             raise TaskCancelledError(task_id)
-        frac = stage_fraction(stage, best["frac"])
+        frac = _stage_progress(stage, info, best["frac"])
         best["frac"] = frac
-        task_store.update(task_id, progress=round(frac, 3), stage=stage)
+        task_store.update(task_id, progress=round(frac, 3), stage=_stage_with_detail(stage, info))
 
     return pipeline.run_execution(project_id, opts, progress=_progress)
 
@@ -441,6 +511,43 @@ def _apply_code_sources(req: PipelineRequest, opts: pipeline.PipelineOptions) ->
         opts.selected_paths = sel
     if req.pull_deepen:
         opts.pull_deepen = int(req.pull_deepen)
+    # 取码凭证：与扫描链路共用同一 PAT。请求带 code_source 时用其 access_key，
+    # 否则按 repo_url 从仓库配置带出——避免 generate 用 CODEUP_TOKEN（可能失效）
+    # 而 scan 用 repo_configs 有效 PAT 导致的「扫描成功、取码 invalid token」割裂。
+    # 凭证只存 opts 内存供 git 注入，绝不回显 / 落库 / 入产物。
+    if opts.repo_url and "codeup.aliyun.com" in opts.repo_url.lower():
+        cs = _resolve_code_source(opts.repo_url, req.code_source or {})
+        opts.codeup_token = (cs.get("access_key") or "").strip()
+    _apply_repo_specs(req, opts)
+
+
+def _apply_repo_specs(req: PipelineRequest, opts: pipeline.PipelineOptions) -> None:
+    """多仓改造（v1.7）：把请求 repos 转成引擎 RepoSpec；空则保持 []（单仓零回归）。
+
+    每个仓的 PAT 按本仓 repo_url 单独带出，避免多仓共用一份失效凭证。
+    """
+    if not req.repos:
+        return
+    opts.repo_specs = []
+    for r in req.repos:
+        token = ""
+        if "codeup.aliyun.com" in r.repo_url.lower():
+            token = (
+                _resolve_code_source(r.repo_url, req.code_source or {}).get("access_key") or ""
+            ).strip()
+        opts.repo_specs.append(
+            pipeline.RepoSpec(
+                repo_key=str(r.repo_key or "").strip(),
+                local_path=r.local_path,
+                repo_url=r.repo_url,
+                base=r.base,
+                target=r.target,
+                ref=r.ref,
+                codeup_token=token,
+                changed_files=[str(f).replace("\\", "/") for f in r.changed_files],
+                selected_paths=[str(p).replace("\\", "/") for p in r.selected_paths],
+            )
+        )
 
 
 def _apply_request(req: PipelineRequest, opts: pipeline.PipelineOptions) -> None:
@@ -483,6 +590,12 @@ def build_opts_from_request(req: PipelineRequest) -> pipeline.PipelineOptions:
     opts.extract_pages = req.extract_pages
     opts.persist = req.persist
     opts.llm.enabled = bool(req.llm_enhance and settings.llm_enhance)
+    # 专家审阅（逐页大模型）改为「请求显式开启」：默认关，避免 URL 通道下 39 页 × 50s
+    # 串行调用导致任务长时间无进度、并迅速吃满当日 LLM token 预算。
+    opts.expert_mode = bool(req.expert_ui and settings.expert_mode)
+    # 地址通道范围：默认「只测与变更相关的页面/接口」，避免增量模式下整站巡检刷出几百条
+    # 与本次改动无关的用例；显式传 full 才回到全站巡检。
+    opts.target_runtime = str(req.runtime_scope or "targeted").strip().lower() != "full"
     return opts
 
 
@@ -500,7 +613,7 @@ def run_pipeline(req: PipelineRequest) -> Any:
         idem = _idem_key_for_generate(req)
         existing = task_store.find_by_idempotency(idem)
         if existing and existing.state != TaskState.CANCELLED.value:
-            return _task_accepted(existing, status_code=202)
+            return _task_accepted(existing, status_code=202, reused=True)
         task = task_store.create(
             kind="pipeline",
             idempotency_key=idem,
@@ -517,7 +630,7 @@ def run_pipeline(req: PipelineRequest) -> Any:
         )
         return _task_accepted(task, 202)
 
-    result = pipeline.run_pipeline(opts)
+    result = pipeline.run_pipeline_auto(opts)
 
     payload: dict[str, Any] = {"result": result.to_dict()}
     if result.project_id:
@@ -537,9 +650,14 @@ def run_pipeline(req: PipelineRequest) -> Any:
 # ============================================================================
 # P5 服务化：异步生成任务（仅「生成测试用例」环节）
 # ============================================================================
-def _task_accepted(task: GenerationTask, status_code: int = 202) -> JSONResponse:
+def _task_accepted(
+    task: GenerationTask, status_code: int = 202, reused: bool = False
+) -> JSONResponse:
     body = task.to_dict()
     body["poll_url"] = f"/api/v1/tasks/{task.task_id}"
+    # reused=True 表示命中幂等键、直接复用历史任务（不会重新跑管道）。
+    # 面板据此提示「这是旧产物」，避免把历史点数误判成「本次生成的」。
+    body["reused"] = reused
     return JSONResponse(status_code=status_code, content=body)
 
 
@@ -552,11 +670,105 @@ def _redacted_request(req: PipelineRequest) -> str:
     return json.dumps(data, ensure_ascii=False)
 
 
+def _runtime_sig(req: PipelineRequest) -> str:
+    """运行时/执行侧实质输入的指纹（决定是否走真实登录 + 元素级发现）。
+
+    幂等键缺这段会让「同一仓库但换了被测地址」命中旧任务，直接返回上一次产物
+    （历史缺陷：面板填了新地址、按了生成，结果仍是 0 点旧项目）。
+    口令只记「是否提供」，不把明文写进键。
+    """
+    return "|".join(
+        [
+            req.test_url or "",
+            req.login_url or "",
+            req.login_user or "",
+            "1" if req.login_otp else "0",
+            "1" if req.runtime_ui else "0",
+            "1" if req.ui_click else "0",
+            req.exec_url or "",
+            "1" if req.execute else "0",
+            "1" if req.allow_write else "0",
+            "1" if req.llm_enhance else "0",
+            "1" if req.expert_ui else "0",
+            str(req.runtime_scope or "targeted"),
+            "1" if req.include_business else "0",
+            "1" if req.extract_pages else "0",
+        ]
+    )
+
+
+@lru_cache(maxsize=1)
+def _engine_rev() -> str:
+    """引擎代码指纹（`engine/`、`core/` 下 .py 的 mtime+大小摘要）。
+
+    幂等键必须带上它：引擎改过之后，同样的请求参数会产出不同结果。若不带，面板会
+    一直复用改造前的旧任务（历史现场：修完「变更靶向」后重新生成，点数仍是旧的 208）。
+    """
+    root = Path(__file__).resolve().parent.parent
+    items: list[str] = []
+    for sub in ("engine", "core"):
+        for path in sorted((root / sub).glob("*.py")):
+            try:
+                st = path.stat()
+            except OSError:  # pragma: no cover - 文件被并发删除时忽略
+                continue
+            items.append(f"{path.name}:{int(st.st_mtime)}:{st.st_size}")
+    if not items:  # pragma: no cover - 目录结构异常时的兜底
+        return "na"
+    return hashlib.sha1("\n".join(items).encode("utf-8")).hexdigest()[:8]  # nosec B324 - 仅幂等键指纹，非安全用途
+
+
+def _idem_key_for_execute(req: ExecuteRequest) -> str:
+    """执行验证的幂等键：项目 + 执行侧实质输入 + 引擎版本。
+
+    「只有项目ID」是不够的：同一项目换地址、开/关「放行写」「真实点击」都会改变执行结论，
+    此时若仍命中第一次的执行任务，面板会直接复用旧结论（看起来像点了没反应）。
+    """
+    return "exec:" + "|".join(
+        [
+            str(req.project_id),
+            req.test_url or "",
+            req.exec_url or "",
+            req.login_url or "",
+            req.login_user or "",
+            "1" if req.login_otp else "0",
+            "1" if req.allow_write else "0",
+            "1" if req.ui_click else "0",
+            _engine_rev(),
+        ]
+    )
+
+
 def _idem_key_for_generate(req: PipelineRequest) -> str:
     # M11 修复：补充 selected_paths，否则「同一仓库 + 不同勾选子集」会命中旧的幂等任务，
     # 返回与本次请求范围不符的历史产物。
+    # 追加：运行时/执行输入 + 智能输入框摘要，避免「换了被测环境仍返回旧产物」。
+    auto = (req.auto_input or "").strip()
+    auto_digest = (
+        hashlib.sha1(auto.encode("utf-8")).hexdigest()[:10]  # nosec B324 - 幂等键摘要，非安全用途
+        if auto
+        else ""
+    )
+    # 多仓改造（v1.7）：同一 project 下不同仓集合/顺序 = 不同任务，不得命中旧产物。
+    # 用有序 (repo_key, path, url, base, target) 元组的摘要，repo_key 排序保证与输入顺序无关。
+    repo_signature = ""
+    if req.repos:
+        signature = sorted(
+            (
+                str(r.repo_key or ""),
+                str(r.local_path or ""),
+                str(r.repo_url or ""),
+                str(r.base or ""),
+                str(r.target or ""),
+            )
+            for r in req.repos
+        )
+        repo_signature = hashlib.sha1(  # nosec B324 - 仅幂等键摘要，非安全用途
+            repr(signature).encode("utf-8")
+        ).hexdigest()[:12]
     return "gen:" + "|".join(
         [
+            repo_signature,
             req.local_path,
             req.repo_url,
             req.mode or "full",
@@ -566,6 +778,10 @@ def _idem_key_for_generate(req: PipelineRequest) -> str:
             ",".join(sorted(req.changed_files)),
             ",".join(sorted(req.selected_paths)),
             req.project_name,
+            _runtime_sig(req),
+            auto_digest,
+            # 引擎版本：代码改动后不得复用旧任务产物（否则修了逻辑面板还显示旧点数）
+            _engine_rev(),
         ]
     )
 
@@ -584,14 +800,14 @@ def _run_generation_job(
         opts.persist = True
     best = {"frac": 0.0}
 
-    def _progress(stage: str, _info: dict[str, Any]) -> None:
+    def _progress(stage: str, info: dict[str, Any]) -> None:
         if task_store.is_cancelled(task_id):
             raise TaskCancelledError(task_id)
-        frac = stage_fraction(stage, best["frac"])
+        frac = _stage_progress(stage, info, best["frac"])
         best["frac"] = frac
-        task_store.update(task_id, progress=round(frac, 3), stage=stage)
+        task_store.update(task_id, progress=round(frac, 3), stage=_stage_with_detail(stage, info))
 
-    result = pipeline.run_pipeline(opts, progress=_progress)
+    result = pipeline.run_pipeline_auto(opts, progress=_progress)
     payload: dict[str, Any] = result.to_dict()
     if result.project_id:
         task_store.update(task_id, project_id=result.project_id)
@@ -624,7 +840,7 @@ def submit_generate_core(req: PipelineRequest) -> JSONResponse:
     idem = _idem_key_for_generate(req)
     existing = task_store.find_by_idempotency(idem)
     if existing and existing.state != TaskState.CANCELLED.value:
-        return _task_accepted(existing, status_code=202)
+        return _task_accepted(existing, status_code=202, reused=True)
     task = task_store.create(kind="generate", idempotency_key=idem, request=_redacted_request(req))
     executor.submit(task.task_id, lambda: _run_generation_job(task.task_id, opts))
     return _task_accepted(task, status_code=202)
@@ -674,10 +890,10 @@ def submit_execute(req: ExecuteRequest) -> JSONResponse:
     """
     if req.project_id:
         opts = _build_exec_opts_from_request(req)
-        idem = "exec:" + str(req.project_id)
+        idem = _idem_key_for_execute(req)
         existing = task_store.find_by_idempotency(idem)
         if existing and existing.state != TaskState.CANCELLED.value:
-            return _task_accepted(existing, status_code=202)
+            return _task_accepted(existing, status_code=202, reused=True)
         task = task_store.create(
             kind="execute",
             idempotency_key=idem,
@@ -708,7 +924,7 @@ def submit_execute(req: ExecuteRequest) -> JSONResponse:
     )
     existing = task_store.find_by_idempotency(idem)
     if existing and existing.state != TaskState.CANCELLED.value:
-        return _task_accepted(existing, status_code=202)
+        return _task_accepted(existing, status_code=202, reused=True)
     task = task_store.create(kind="execute", idempotency_key=idem, request=_redacted_request(pr))
     executor.submit(
         task.task_id, lambda: _run_generation_job(task.task_id, opts, force_execute=True)
@@ -775,7 +991,7 @@ def verify_webhook(req: WebhookRequest) -> JSONResponse:
     )
     existing = task_store.find_by_idempotency(idem)
     if existing and existing.state != TaskState.CANCELLED.value:
-        return _task_accepted(existing, status_code=202)
+        return _task_accepted(existing, status_code=202, reused=True)
     opts = pipeline.default_options(req.local_path or "", mode=req.mode or MODE_FULL)
     if req.repo_url:
         opts.repo_url = req.repo_url
@@ -940,6 +1156,10 @@ class StageAnalyzeRequest(BaseModel):
     commit: str = Field("", description="显式 commit（缺省取当前 HEAD）")
     include_business: bool = True
     extract_pages: bool = True
+    # 多仓改造（v1.7）：project/repo 归属，用于快照目录隔离（同名仓不撞）。
+    # 缺省空串＝旧单仓行为（快照落在默认命名空间）。
+    project_id: int | None = Field(None, description="项目 id（快照命名空间）")
+    repo_key: str = Field("", description="项目内仓库短名（快照命名空间）")
 
 
 class StageCompareRequest(BaseModel):
@@ -949,12 +1169,15 @@ class StageCompareRequest(BaseModel):
     from_ref: str
     to_ref: str
     repo_path: str = Field("", description="可选；提供时附带两 commit 的 git diff 统计")
+    project_id: int | None = Field(None, description="项目 id（快照命名空间，与 analyze 一致）")
+    repo_key: str = Field("", description="项目内仓库短名（快照命名空间）")
 
 
-def _stage_store():
+def _stage_store(project_id: int | None = None, repo_key: str = ""):
     from engine.stage_snapshot import StageStore
 
-    return StageStore(settings.workspace_root / "stages")
+    namespace = f"p{project_id}_{repo_key}" if project_id is not None and repo_key else ""
+    return StageStore(settings.workspace_root / "stages", namespace=namespace)
 
 
 @app.post("/api/v1/stage-analyze", dependencies=[Depends(require_auth)])
@@ -977,7 +1200,7 @@ def stage_analyze(req: StageAnalyzeRequest) -> dict[str, Any]:
         fps, _ = fp_merge.dedupe_functional_points(fps)
 
     repo = str(Path(req.local_path).resolve())
-    store_stages = _stage_store()
+    store_stages = _stage_store(req.project_id, req.repo_key)
     snap = create_snapshot(store_stages, repo, req.branch, commit=req.commit or None)
     analysis = {
         "stage_id": snap.stage_id,
@@ -1014,7 +1237,7 @@ def stage_compare(req: StageCompareRequest) -> dict[str, Any]:
 
     repo = str(Path(req.repo).resolve())
     report = compare_stages(
-        _stage_store(),
+        _stage_store(req.project_id, req.repo_key),
         repo,
         req.from_ref,
         req.to_ref,
@@ -1024,9 +1247,14 @@ def stage_compare(req: StageCompareRequest) -> dict[str, Any]:
 
 
 @app.get("/api/v1/stages", dependencies=[Depends(require_auth)])
-def list_stages(repo: str, branch: str = "") -> dict[str, Any]:
+def list_stages(
+    repo: str,
+    branch: str = "",
+    project_id: int | None = None,
+    repo_key: str = "",
+) -> dict[str, Any]:
     """列某仓库（可选某分支）的全部阶段快照（前端 from/to 下拉数据源）。"""
-    store_stages = _stage_store()
+    store_stages = _stage_store(project_id, repo_key)
     repo = str(Path(repo).resolve())
     snaps = store_stages.list_by_branch(repo, branch) if branch else store_stages.list_all(repo)
     return {"ok": True, "stages": [s.to_dict() for s in snaps]}
@@ -1671,19 +1899,111 @@ class ScanRequest(BaseModel):
 
 
 def _dispatch_scan(req: ScanRequest) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
-    """执行扫描并返回 (items, source, meta)；远端/本地异常由调用方统一处理。"""
+    """执行扫描并返回 (items, source, meta)；远端/本地异常由调用方统一处理。
+
+    分派口径与「列分支」一致（三类仓库都可用）：
+      1) 本地目录 → ``scan_local``；
+      2) Codeup 地址（含域名或显式 PAT）→ 原只读 HTTP API（不克隆，需 PAT）；
+      3) 通用 git 地址（git@ / ssh:// / https://*.git）→ 浅克隆到临时目录后本地扫描，
+         复用本机 git 凭据（与 generate 的 ``pull`` 同口径），**不要求 PAT**。
+    """
     if req.local_path:
         items, meta = scan_local(req.local_path, base_ref=req.base_ref)
         return items, "local", meta
     if req.repo_url:
-        cs = _resolve_code_source(req.repo_url, req.code_source or {})
-        if not (cs.get("access_key") or "").strip():
-            raise ValidationError("远程扫描：凭证（access_key）为空")
-        items, meta = scan_repository(
-            cs, req.repo_url, ref=req.ref, base_ref=req.base_ref, verify_ssl=False
-        )
-        return items, "remote", meta
+        url = req.repo_url.strip()
+        cs = _resolve_code_source(url, req.code_source or {})
+        access_key = (cs.get("access_key") or "").strip()
+        is_codeup = "codeup.aliyun.com" in url.lower() or bool(access_key)
+        if is_codeup:
+            if not access_key:
+                raise ValidationError("远程扫描：凭证（access_key）为空")
+            items, meta = scan_repository(
+                cs, url, ref=req.ref, base_ref=req.base_ref, verify_ssl=False
+            )
+            return items, "remote", meta
+        if service_repos.is_git_url(url):
+            items, meta = scan_git_repo(url, ref=req.ref, base_ref=req.base_ref)
+            return items, "remote", meta
+        raise ValidationError("无法识别仓库类型：请提供 Codeup access_key 或有效的 git 地址")
     raise ValidationError("repo_url 或 local_path 至少给一个")
+
+
+class RepoRefsRequest(BaseModel):
+    """多仓只读批量请求（v1.7）：一次列出项目下所有仓的分支/提交/扫描树。"""
+
+    project_id: int = Field(..., description="项目 id（从 repo_bindings 读仓库清单）")
+    kind: str = Field("branches", description="branches / commits / scan")
+    ref: str = Field("", description="commits/scan 用；各仓可带自己的（binding.ref 优先）")
+    base_ref: str = Field("", description="scan 用：基线 ref")
+    code_source: dict[str, Any] = Field(
+        default_factory=dict, description="只读凭证（按各仓 repo_url 带出，为空则从仓库配置取）"
+    )
+
+
+@app.post("/api/v1/repos/refs", dependencies=[Depends(require_auth)])
+def list_repo_refs(req: RepoRefsRequest) -> dict[str, Any]:
+    """多仓只读批量端点：按 repo_bindings 逐仓列分支/提交/扫描树，按 repo_key 分组。
+
+    单仓失败不阻断其他仓（错误记在该仓条目的 `error` 字段）；凭证按各仓 repo_url
+    从 code_source / 仓库配置带出。旧单仓端点（`/branches`、`/commits`、`/scan`）不变。
+    """
+    if req.kind not in ("branches", "commits", "scan"):
+        raise ValidationError(f"非法 kind：{req.kind}，允许 branches/commits/scan")
+    with store.connect() as conn:
+        bindings = store.list_repo_bindings(req.project_id, conn)
+    if not bindings:
+        return {"ok": True, "project_id": req.project_id, "kind": req.kind, "repos": {}}
+
+    repos: dict[str, Any] = {}
+    for b in bindings:
+        key = str(b["repo_key"])
+        entry: dict[str, Any] = {"source": "", "error": ""}
+        try:
+            if req.kind == "branches":
+                refs_req = RefsRequest(
+                    repo_url=b["repo_url"] or "",
+                    local_path=b["local_path"] or "",
+                    code_source=req.code_source,
+                    ref="",
+                )
+                result = list_repo_branches(refs_req)
+                entry.update(
+                    branches=result.get("branches", []),
+                    source=result.get("source", ""),
+                )
+                if not result.get("ok"):
+                    entry["error"] = str(result.get("error") or "")
+            elif req.kind == "commits":
+                refs_req = RefsRequest(
+                    repo_url=b["repo_url"] or "",
+                    local_path=b["local_path"] or "",
+                    code_source=req.code_source,
+                    ref=req.ref or b["ref"] or "",
+                )
+                result = list_repo_commits(refs_req)
+                entry.update(commits=result.get("commits", []), ref=refs_req.ref)
+                if not result.get("ok"):
+                    entry["error"] = str(result.get("error") or "")
+            else:  # scan
+                scan_req = ScanRequest(
+                    repo_url=b["repo_url"] or "",
+                    local_path=b["local_path"] or "",
+                    code_source=req.code_source,
+                    ref=req.ref or b["ref"] or "",
+                    base_ref=req.base_ref,
+                )
+                items, source, meta = _dispatch_scan(scan_req)
+                entry.update(items=items, source=source, meta=meta)
+        except (CodeupError, ValidationError) as exc:
+            entry["error"] = str(exc)[:200]
+        except Exception as exc:  # noqa: BLE001 - 单仓失败不阻断其他仓
+            log.warning(
+                "多仓只读端点单仓失败", extra=log_extra(repo_key=key, err=type(exc).__name__)
+            )
+            entry["error"] = str(exc)[:200]
+        repos[key] = entry
+    return {"ok": True, "project_id": req.project_id, "kind": req.kind, "repos": repos}
 
 
 @app.post("/api/v1/scan", dependencies=[Depends(require_auth)])

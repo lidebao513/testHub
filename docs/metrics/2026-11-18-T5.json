@@ -1,0 +1,522 @@
+{
+  "tag": "T5",
+  "captured_at": "2026-11-18T18:01:47",
+  "preset": {
+    "base": "21fb554c2586d7a1ab2ffbb0c3a13d726b0b5b88",
+    "target": "31344820c81c5e6ea7a8f03eb18d92626be224aa",
+    "selected_paths": [
+      "backend/research-agent-source/server.py",
+      "frontend/app/src/api/adapter.ts",
+      "frontend/app/src/api/backend.ts",
+      "frontend/app/src/pages/pc/PcChatPage.tsx",
+      "frontend/app/src/pages/pc/PcShell.tsx"
+    ],
+    "mode": "incremental",
+    "scopes": [
+      "正常",
+      "异常",
+      "边界"
+    ],
+    "runtime_ui": false,
+    "expert_ui": false,
+    "llm_enhance": false
+  },
+  "a_server": {
+    "task_id": "gen-5b6da3c3eaab",
+    "state": "success",
+    "project_id": 30,
+    "counts": {
+      "pull_changed_files": 7,
+      "repo_front_files": 247,
+      "repo_route_files": 1,
+      "repo_route_bindings": 55,
+      "repo_import_files": 215,
+      "repo_import_specs": 1184,
+      "repo_import_truncated": 0,
+      "files": 5,
+      "auth_wired_files": 2,
+      "fp_merged": 0,
+      "business_absorbed": 8,
+      "functional_points": 91,
+      "fp_before": 91,
+      "fp_after": 3,
+      "fp_attributed": 1,
+      "hunk_uncovered": 2,
+      "fp_dropped_unchanged": 88,
+      "fp_narrowed_dimensions": 2,
+      "locatable": 89,
+      "hunk_files": 7,
+      "changed_files": 7,
+      "route_inferred": 1,
+      "semantic_fp": 3,
+      "semantic_dims": 9,
+      "impact_items": 1,
+      "impact_direct": 0,
+      "impact_data": 1,
+      "impact_truncated": 0,
+      "impact_reachable_entries": 1,
+      "impact_entry_coverage_pct": 100,
+      "file_impact_identified": 2,
+      "file_impact_truncated": 0,
+      "file_impact_items": 2,
+      "file_impact_precise": 0,
+      "test_points": 15,
+      "llm_added": 0,
+      "llm_rejected": 0,
+      "cases_with_runtime_detail": 0,
+      "cases": 15,
+      "gate_blocked": 0,
+      "gate_best_effort": 6,
+      "kpi_changed_func_pct": 60,
+      "kpi_impact_entry_pct": 100,
+      "kpi_dimension_pct": 60,
+      "changed_func_covered": 3,
+      "changed_func_total": 5,
+      "impact_entry_covered": 3,
+      "impact_entry_total": 3,
+      "dimension_actual": 12,
+      "dimension_theory": 20,
+      "channel_body": 12,
+      "channel_impact": 3,
+      "channel_runtime": 0
+    },
+    "case_stats": {
+      "created": 0,
+      "updated": 0,
+      "reused": 15,
+      "obsolete": 321
+    },
+    "traceability": {
+      "fp_count": 3,
+      "tp_count": 15,
+      "case_count": 15,
+      "orphan_tp": [],
+      "orphan_case": [],
+      "orphan_tp_count": 0,
+      "orphan_case_count": 0
+    },
+    "channel_summary": {
+      "code": {
+        "fp": 3,
+        "tp": 15,
+        "case": 15
+      },
+      "url": {
+        "fp": 0,
+        "tp": 0,
+        "case": 0
+      },
+      "source_kind": "code"
+    },
+    "scope_summary": {
+      "正常": 11,
+      "异常": 2,
+      "边界": 2
+    },
+    "tag_summary": {
+      "更新": 12,
+      "受影响·数据": 1,
+      "受影响·文件级": 2
+    },
+    "quality": {
+      "enabled": true,
+      "gate": {
+        "quality_gated": 15,
+        "gate_blocked": 0,
+        "no_evidence": 0,
+        "no_observable_expect": 0,
+        "no_origin": 0,
+        "best_effort": 6
+      },
+      "kpis": {
+        "changed_func_coverage": {
+          "value": 0.6,
+          "covered": 3,
+          "total": 5,
+          "uncovered": [
+            {
+              "file": "frontend/app/src/api/adapter.ts",
+              "symbol": "threadToSession"
+            },
+            {
+              "file": "frontend/app/src/api/backend.ts",
+              "symbol": "listThreadsPage"
+            }
+          ]
+        },
+        "impact_entry_coverage": {
+          "value": 1.0,
+          "covered": 3,
+          "total": 3,
+          "backend": {
+            "covered": 1,
+            "total": 1
+          },
+          "frontend": {
+            "covered": 2,
+            "total": 2
+          }
+        },
+        "dimension_coverage": {
+          "value": 0.6,
+          "actual": 12,
+          "theory": 20,
+          "missing": [
+            "边界-极端视口渲染",
+            "异常-网络中断",
+            "异常-错误回显",
+            "异常-空状态",
+            "异常-错误页",
+            "边界-参数缺失/非法",
+            "异常-限流",
+            "异常-幂等",
+            "异常-降级",
+            "异常-超时兜底"
+          ]
+        },
+        "note": "分子只统计过门禁的测试点；changed_func 的分母是本次 hunk 落到的函数（前端无 AST 时按顶层声明近似），dimension 的分母是按维度去重后的适用矩阵（未按每功能点上限截断，故 <100% 属预算收敛的正常结果）。"
+      },
+      "channels": {
+        "body": {
+          "tp": 12,
+          "gate_ok": 6
+        },
+        "impact": {
+          "tp": 3,
+          "gate_ok": 3
+        },
+        "runtime": {
+          "tp": 0,
+          "gate_ok": 0
+        },
+        "total": 15,
+        "consistent": true
+      },
+      "summary": {
+        "total": 15,
+        "gate_ok": 15,
+        "blocked": 0,
+        "gate_pass_rate": 1.0
+      }
+    },
+    "errors": [],
+    "notes": [
+      "取码[update] ok：本地 C:\\Users\\EDY\\WorkBuddy\\testhub_platform\\services\\testgen\\data\\workspaces\\research-agent，变更 7 个文件",
+      "增量变更集取自取码结果（7 个文件）；如需覆盖请显式给 --changed-files",
+      "仓库事实：静态路由表 55 条绑定（1 个路由文件）、前端 import 1184 条（215 个文件）",
+      "按子集生成：勾选 5 条路径，命中 5 个文件，滤除 668 个未勾选文件",
+      "鉴权接线扫描（F8）：模式=required，全局接线=是，占位实现=否，含接线文件 2 个（信号：令牌校验 38、全局接线 2、路由依赖/装饰器 64）",
+      "鉴权接证据（示例）：backend/research-agent-source/server.py:438 [全局接线] app.add_middleware(；backend/research-agent-source/server.py:7816 [全局接线] app.add_middleware(BrowserSecurityHeaders)；backend/research-agent-source/server.py:765 [路由接线] async def query_test_ask(payload: QueryTestRequest, current: User = Depends(get_",
+      "业务调用图吞并（F6）：8 个辅助函数融入其调用方，未单独产出功能点（示例：_ChatRunner.subscribe @ backend/research-agent-source/server.py、_ChatRunner.unsubscribe @ backend/research-agent-source/server.py、_ChatRunner.mark_done @ backend/research-agent-source/server.py）",
+      "增量通道（显式变更集）：变更文件 7 个，仅做文件级打标（无 hunk 行号，未对齐到行）",
+      "改动归属：backend/research-agent-source/server.py:1378 的改动落在无功能点函数 _record_thread_activity（私有/被调用图吞并），已按同文件调用图归属到入口 chat（1 跳）→ FP-88d04b03",
+      "增量收窄（函数级）：过滤 88 个未变更函数功能点，保留 3/91 个（依据 7 个文件的 diff hunk 行号）",
+      "增量收窄（维度收敛）：2 个无行号功能点（前端/无法定位函数）仅展开核心维度，避免泛化模板膨胀",
+      "路由推断：frontend/app/src/pages/pc/PcChatPage.tsx 未在本文件声明 path，按仓库路由表反查到 /chat（依据 frontend/app/src/App.tsx 声明 /chat/:id? → 组件 PcChatPage），已放开该页面的地址类维度",
+      "变更语义（backend/research-agent-source/server.py）：识别到 contract_shape、fallback、guard_negative，按语义补 3 个维度",
+      "变更语义（frontend/app/src/api/adapter.ts）：识别到 contract_shape、fallback，按语义补 2 个维度",
+      "变更语义（frontend/app/src/api/backend.ts）：识别到 pagination、fallback，按语义补 3 个维度",
+      "变更语义（frontend/app/src/pages/pc/PcChatPage.tsx）：识别到 branch_mode、contract_shape、fallback、guard_negative，按语义补 3 个维度",
+      "变更语义（frontend/app/src/pages/pc/PcShell.tsx）：识别到 pagination、dedupe、list_mutation、branch_mode、contract_shape、fallback，按语义补 3 个维度",
+      "影响面回归：1 个入口受本次改动影响（直接调用 0 / 数据契约 1），已补影响测试点；入口覆盖 1/1",
+      "文件级影响面：2 个前端组件 import 了本次改动的文件，已补文件级回归用例（上限 2，符号级命中 0 条）：frontend/app/src/pages/DailyPerfPage.tsx → frontend/app/src/pages/pc/PcChatPage.tsx、frontend/app/src/pages/mobile/MobileInvestHomePage.tsx → frontend/app/src/pages/pc/PcChatPage.tsx",
+      "仅规则引擎（LLM_ENHANCE=off）",
+      "质量门禁：15 条过检，拦下 0 条（无证据 0 / 预期不可观测 0 / 无来源标签 0），另有 6 条需特殊环境（诚实标未验证，不算水货）",
+      "三 KPI：改动函数覆盖 3/5 = 60%；影响入口覆盖 3/3 = 100%（后端 1/1、前端 2/2）；维度覆盖 12/20 = 60%",
+      "改动函数未覆盖：frontend/app/src/api/adapter.ts::threadToSession、frontend/app/src/api/backend.ts::listThreadsPage"
+    ],
+    "request": {
+      "mode": "incremental",
+      "base": "21fb554c2586d7a1ab2ffbb0c3a13d726b0b5b88",
+      "target": "31344820c81c5e6ea7a8f03eb18d92626be224aa",
+      "scopes": [
+        "正常",
+        "异常",
+        "边界"
+      ],
+      "selected_paths": [
+        "backend/research-agent-source/server.py",
+        "frontend/app/src/api/adapter.ts",
+        "frontend/app/src/api/backend.ts",
+        "frontend/app/src/pages/pc/PcChatPage.tsx",
+        "frontend/app/src/pages/pc/PcShell.tsx"
+      ],
+      "changed_files": [],
+      "local_path": "",
+      "runtime_ui": false,
+      "runtime_scope": "targeted",
+      "expert_ui": false,
+      "llm_enhance": false,
+      "include_business": true,
+      "extract_pages": true,
+      "async_mode": true
+    },
+    "created_at": "2026-11-18T18:01:40",
+    "updated_at": "2026-11-18T18:01:46"
+  },
+  "b_outputs": {
+    "output_dir": "C:\\Users\\EDY\\WorkBuddy\\testhub_platform\\services\\testgen\\outputs\\30",
+    "summary_generated_at": "2026-11-18T18:01:46",
+    "case_count": 15,
+    "tp_count": 15,
+    "evidence": [
+      {
+        "tc_no": "TP-5dfd4008",
+        "tp_id": "TP-5dfd4008",
+        "title": "[正常] MobileInvestHomePage 引用 PcChatPage · 回归-文件级",
+        "dimension": "回归-文件级",
+        "origin": "impact_file",
+        "tag": "受影响·文件级",
+        "source": "frontend/app/src/pages/pc/PcChatPage.tsx"
+      },
+      {
+        "tc_no": "TP-cb95bbbc",
+        "tp_id": "TP-cb95bbbc",
+        "title": "[正常] DailyPerfPage 引用 PcChatPage · 回归-文件级",
+        "dimension": "回归-文件级",
+        "origin": "impact_file",
+        "tag": "受影响·文件级",
+        "source": "frontend/app/src/pages/pc/PcChatPage.tsx"
+      },
+      {
+        "tc_no": "TP-3769df34",
+        "tp_id": "TP-3769df34",
+        "title": "[边界] 前端屏幕（frontend/app/src/pages/pc/PcShell.tsx，无显式… · 边界-分页游标同步",
+        "dimension": "边界-分页游标同步",
+        "origin": "semantic",
+        "tag": "更新",
+        "source": "frontend/app/src/pages/pc/PcShell.tsx"
+      },
+      {
+        "tc_no": "TP-3810a2ab",
+        "tp_id": "TP-3810a2ab",
+        "title": "[正常] 前端屏幕（frontend/app/src/pages/pc/PcShell.tsx，无显式… · 正常-翻页不重不漏",
+        "dimension": "正常-翻页不重不漏",
+        "origin": "semantic",
+        "tag": "更新",
+        "source": "frontend/app/src/pages/pc/PcShell.tsx"
+      },
+      {
+        "tc_no": "TP-4e4f9150",
+        "tp_id": "TP-4e4f9150",
+        "title": "[正常] 前端屏幕（frontend/app/src/pages/pc/PcChatPage.tsx，… · 正常-模式分支隔离",
+        "dimension": "正常-模式分支隔离",
+        "origin": "semantic",
+        "tag": "更新",
+        "source": "frontend/app/src/pages/pc/PcChatPage.tsx"
+      },
+      {
+        "tc_no": "TP-59bf82d1",
+        "tp_id": "TP-59bf82d1",
+        "title": "[正常] 前端屏幕（frontend/app/src/pages/pc/PcChatPage.tsx，… · 页面/路由可达",
+        "dimension": "页面/路由可达",
+        "origin": "rule",
+        "tag": "更新",
+        "source": "frontend/app/src/pages/pc/PcChatPage.tsx"
+      },
+      {
+        "tc_no": "TP-605cb382",
+        "tp_id": "TP-605cb382",
+        "title": "[正常] 前端屏幕（frontend/app/src/pages/pc/PcShell.tsx，无显式… · 交互元素可用",
+        "dimension": "交互元素可用",
+        "origin": "rule",
+        "tag": "更新",
+        "source": "frontend/app/src/pages/pc/PcShell.tsx"
+      },
+      {
+        "tc_no": "TP-887754ea",
+        "tp_id": "TP-887754ea",
+        "title": "[正常] 前端屏幕（frontend/app/src/pages/pc/PcShell.tsx，无显式… · 正常-列表去重",
+        "dimension": "正常-列表去重",
+        "origin": "semantic",
+        "tag": "更新",
+        "source": "frontend/app/src/pages/pc/PcShell.tsx"
+      },
+      {
+        "tc_no": "TP-b5be1cbc",
+        "tp_id": "TP-b5be1cbc",
+        "title": "[异常] 前端屏幕（frontend/app/src/pages/pc/PcChatPage.tsx，… · 异常-兜底默认值",
+        "dimension": "异常-兜底默认值",
+        "origin": "semantic",
+        "tag": "更新",
+        "source": "frontend/app/src/pages/pc/PcChatPage.tsx"
+      },
+      {
+        "tc_no": "TP-b81b455d",
+        "tp_id": "TP-b81b455d",
+        "title": "[正常] 前端屏幕（frontend/app/src/pages/pc/PcChatPage.tsx，… · 正常-数据契约形状",
+        "dimension": "正常-数据契约形状",
+        "origin": "semantic",
+        "tag": "更新",
+        "source": "frontend/app/src/pages/pc/PcChatPage.tsx"
+      },
+      {
+        "tc_no": "TP-0545f19f",
+        "tp_id": "TP-0545f19f",
+        "title": "[边界] research-agent-source · 创建/api/v1/chat · 边界-零值与空值区分",
+        "dimension": "边界-零值与空值区分",
+        "origin": "semantic",
+        "tag": "更新",
+        "source": "backend/research-agent-source/server.py"
+      },
+      {
+        "tc_no": "TP-07402dc0",
+        "tp_id": "TP-07402dc0",
+        "title": "[正常] research-agent-source · POST /api/v1/chat/{thread_id}/resume · 回归-数据契约",
+        "dimension": "回归-数据契约",
+        "origin": "impact",
+        "tag": "受影响·数据",
+        "source": "backend/research-agent-source/server.py"
+      },
+      {
+        "tc_no": "TP-746ed92a",
+        "tp_id": "TP-746ed92a",
+        "title": "[正常] research-agent-source · 创建/api/v1/chat · 正常-可用性",
+        "dimension": "正常-可用性",
+        "origin": "rule",
+        "tag": "更新",
+        "source": "backend/research-agent-source/server.py"
+      },
+      {
+        "tc_no": "TP-d19442b9",
+        "tp_id": "TP-d19442b9",
+        "title": "[正常] research-agent-source · 创建/api/v1/chat · 正常-数据契约形状",
+        "dimension": "正常-数据契约形状",
+        "origin": "semantic",
+        "tag": "更新",
+        "source": "backend/research-agent-source/server.py"
+      },
+      {
+        "tc_no": "TP-fd57255d",
+        "tp_id": "TP-fd57255d",
+        "title": "[异常] research-agent-source · 创建/api/v1/chat · 异常-兜底默认值",
+        "dimension": "异常-兜底默认值",
+        "origin": "semantic",
+        "tag": "更新",
+        "source": "backend/research-agent-source/server.py"
+      }
+    ]
+  },
+  "c_database": {
+    "available": true,
+    "test_points_found": 15,
+    "cases_found": 15,
+    "fp_rows_total": 3,
+    "tp_missing": [],
+    "case_missing": [],
+    "case_status": {
+      "generated": 15
+    },
+    "case_priority": {
+      "P2": 11,
+      "P1": 4
+    }
+  },
+  "checks": {
+    "cases_a": 15,
+    "cases_b": 15,
+    "cases_c": 15,
+    "consistent": true,
+    "issues": []
+  },
+  "metrics": {
+    "cases_total": 15,
+    "test_points": 15,
+    "cases_direct": 12,
+    "cases_semantic": 9,
+    "cases_impact": 1,
+    "cases_file_impact": 2,
+    "cases_runtime": 0,
+    "fp_before": 91,
+    "fp_after": 3,
+    "fp_dropped_unchanged": 88,
+    "fp_attributed": 1,
+    "route_inferred": 1,
+    "file_impact_items": 2,
+    "dimension_kinds": 12,
+    "unverified_count": 6,
+    "gate_blocked": 0,
+    "gate_best_effort": 6,
+    "kpi_changed_func_pct": 60,
+    "kpi_impact_entry_pct": 100,
+    "kpi_dimension_pct": 60,
+    "changed_func_covered": 3,
+    "changed_func_total": 5,
+    "impact_entry_covered": 3,
+    "impact_entry_total": 3,
+    "dimension_actual": 12,
+    "dimension_theory": 20,
+    "channel_body": 12,
+    "channel_impact": 3,
+    "channel_runtime": 0,
+    "cases_created": 0,
+    "cases_reused": 15,
+    "duration_s": 6.0,
+    "traceability": {
+      "fp_count": 3,
+      "tp_count": 15,
+      "case_count": 15,
+      "orphan_tp": [],
+      "orphan_case": [],
+      "orphan_tp_count": 0,
+      "orphan_case_count": 0
+    },
+    "channel_summary": {
+      "code": {
+        "fp": 3,
+        "tp": 15,
+        "case": 15
+      },
+      "url": {
+        "fp": 0,
+        "tp": 0,
+        "case": 0
+      },
+      "source_kind": "code"
+    }
+  },
+  "distribution": {
+    "dimension": {
+      "正常-数据契约形状": 2,
+      "异常-兜底默认值": 2,
+      "回归-文件级": 2,
+      "页面/路由可达": 1,
+      "正常-模式分支隔离": 1,
+      "交互元素可用": 1,
+      "边界-分页游标同步": 1,
+      "正常-翻页不重不漏": 1,
+      "正常-列表去重": 1,
+      "正常-可用性": 1,
+      "边界-零值与空值区分": 1,
+      "回归-数据契约": 1
+    },
+    "origin": {
+      "semantic": 9,
+      "rule": 3,
+      "impact_file": 2,
+      "impact": 1
+    },
+    "category": {
+      "正常": 11,
+      "异常": 2,
+      "边界": 2
+    },
+    "method": {
+      "PAGE": 10,
+      "POST": 5
+    },
+    "case_type": {
+      "正常": 11,
+      "边界": 2,
+      "异常": 2
+    },
+    "priority": {
+      "P2": 11,
+      "P1": 4
+    },
+    "ctype": {
+      "e2e": 10,
+      "api": 5
+    }
+  }
+}

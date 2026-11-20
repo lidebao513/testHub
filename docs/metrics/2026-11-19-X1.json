@@ -1,0 +1,465 @@
+{
+  "tag": "X1",
+  "captured_at": "2026-11-19T09:08:01",
+  "preset": {
+    "base": "21fb554c2586d7a1ab2ffbb0c3a13d726b0b5b88",
+    "target": "31344820c81c5e6ea7a8f03eb18d92626be224aa",
+    "selected_paths": [
+      "backend/research-agent-source/server.py",
+      "frontend/app/src/api/adapter.ts",
+      "frontend/app/src/api/backend.ts",
+      "frontend/app/src/pages/pc/PcChatPage.tsx",
+      "frontend/app/src/pages/pc/PcShell.tsx"
+    ],
+    "mode": "incremental",
+    "scopes": [
+      "正常",
+      "异常",
+      "边界"
+    ],
+    "runtime_ui": false,
+    "expert_ui": false,
+    "llm_enhance": false
+  },
+  "a_server": {
+    "task_id": "gen-527edc0a7ce3",
+    "state": "success",
+    "project_id": 30,
+    "counts": {
+      "pull_changed_files": 7,
+      "repo_front_files": 247,
+      "repo_route_files": 1,
+      "repo_route_bindings": 55,
+      "repo_import_files": 215,
+      "repo_import_specs": 1184,
+      "repo_import_truncated": 0,
+      "files": 673,
+      "auth_wired_files": 75,
+      "fp_merged": 11,
+      "business_absorbed": 25,
+      "functional_points": 1388,
+      "fp_before": 1388,
+      "fp_after": 1300,
+      "fp_attributed": 1,
+      "hunk_uncovered": 5,
+      "fp_dropped_unchanged": 88,
+      "fp_narrowed_dimensions": 168,
+      "locatable": 1220,
+      "hunk_files": 7,
+      "changed_files": 7,
+      "route_inferred": 31,
+      "semantic_fp": 3,
+      "semantic_dims": 9,
+      "impact_items": 1,
+      "impact_direct": 0,
+      "impact_data": 1,
+      "impact_truncated": 0,
+      "impact_reachable_entries": 1,
+      "impact_entry_coverage_pct": 100,
+      "file_impact_identified": 2,
+      "file_impact_truncated": 0,
+      "file_impact_items": 2,
+      "file_impact_precise": 0,
+      "test_points": 4066,
+      "llm_added": 0,
+      "llm_rejected": 0,
+      "cases_with_runtime_detail": 0,
+      "cases": 4066,
+      "gate_blocked": 0,
+      "gate_best_effort": 2361,
+      "kpi_changed_func_pct": 38,
+      "kpi_impact_entry_pct": 100,
+      "kpi_dimension_pct": 88,
+      "changed_func_covered": 3,
+      "changed_func_total": 8,
+      "impact_entry_covered": 3,
+      "impact_entry_total": 3,
+      "dimension_actual": 21,
+      "dimension_theory": 24,
+      "channel_body": 4063,
+      "channel_impact": 3,
+      "channel_runtime": 0
+    },
+    "case_stats": {
+      "created": 4041,
+      "updated": 25,
+      "reused": 0,
+      "obsolete": 311
+    },
+    "traceability": {
+      "fp_count": 1300,
+      "tp_count": 4066,
+      "case_count": 4066,
+      "orphan_tp": [],
+      "orphan_case": [],
+      "orphan_tp_count": 0,
+      "orphan_case_count": 0
+    },
+    "channel_summary": {
+      "code": {
+        "fp": 1300,
+        "tp": 4066,
+        "case": 4066
+      },
+      "url": {
+        "fp": 0,
+        "tp": 0,
+        "case": 0
+      },
+      "source_kind": "code"
+    },
+    "scope_summary": {
+      "正常": 1308,
+      "边界": 1133,
+      "异常": 1625
+    },
+    "tag_summary": {
+      "全量": 4005,
+      "更新": 58,
+      "受影响·数据": 1,
+      "受影响·文件级": 2
+    },
+    "quality": {
+      "enabled": true,
+      "gate": {
+        "quality_gated": 4066,
+        "gate_blocked": 0,
+        "no_evidence": 0,
+        "no_observable_expect": 0,
+        "no_origin": 0,
+        "best_effort": 2361
+      },
+      "kpis": {
+        "changed_func_coverage": {
+          "value": 0.375,
+          "covered": 3,
+          "total": 8,
+          "uncovered": [
+            {
+              "file": "backend/research-agent-source/tests/test_thread_initialization.py",
+              "symbol": "ThreadInitialization.test_reservation_without_message_can_be_persisted"
+            },
+            {
+              "file": "backend/research-agent-source/tests/test_thread_pagination.py",
+              "symbol": "ThreadPaginationTests.setUp"
+            },
+            {
+              "file": "backend/research-agent-source/tests/test_thread_pagination.py",
+              "symbol": "ThreadPaginationTests.test_daily_perf_is_independent_and_legacy_response_is_unchanged"
+            },
+            {
+              "file": "frontend/app/src/api/adapter.ts",
+              "symbol": "threadToSession"
+            },
+            {
+              "file": "frontend/app/src/api/backend.ts",
+              "symbol": "listThreadsPage"
+            }
+          ]
+        },
+        "impact_entry_coverage": {
+          "value": 1.0,
+          "covered": 3,
+          "total": 3,
+          "backend": {
+            "covered": 1,
+            "total": 1
+          },
+          "frontend": {
+            "covered": 2,
+            "total": 2
+          }
+        },
+        "dimension_coverage": {
+          "value": 0.875,
+          "actual": 21,
+          "theory": 24,
+          "missing": [
+            "边界-极端视口渲染",
+            "异常-网络中断",
+            "异常-错误回显",
+            "异常-空状态",
+            "异常-错误页"
+          ]
+        },
+        "note": "分子只统计过门禁的测试点；changed_func 的分母是本次 hunk 落到的函数（前端无 AST 时按顶层声明近似），dimension 的分母是按维度去重后的适用矩阵（未按每功能点上限截断，故 <100% 属预算收敛的正常结果）。"
+      },
+      "channels": {
+        "body": {
+          "tp": 4063,
+          "gate_ok": 1702
+        },
+        "impact": {
+          "tp": 3,
+          "gate_ok": 3
+        },
+        "runtime": {
+          "tp": 0,
+          "gate_ok": 0
+        },
+        "total": 4066,
+        "consistent": true
+      },
+      "summary": {
+        "total": 4066,
+        "gate_ok": 4066,
+        "blocked": 0,
+        "gate_pass_rate": 1.0
+      }
+    },
+    "errors": [],
+    "notes": [
+      "取码[update] ok：本地 C:\\Users\\EDY\\WorkBuddy\\testhub_platform\\services\\testgen\\data\\workspaces\\research-agent，变更 7 个文件",
+      "增量变更集取自取码结果（7 个文件）；如需覆盖请显式给 --changed-files",
+      "仓库事实：静态路由表 55 条绑定（1 个路由文件）、前端 import 1184 条（215 个文件）",
+      "鉴权接线扫描（F8）：模式=optional，全局接线=是，占位实现=是，含接线文件 75 个（信号：令牌校验 310、全局接线 7、未配置即放行 2、路由依赖/装饰器 168）",
+      "鉴权接证据（示例）：backend/research-agent-source/budget_api.py:31 [路由接线] def budget_overview(current=Depends(get_current_user)) -> dict[str, Any]:；backend/research-agent-source/gangtise_api.py:80 [路由接线] def reports(q: ListQuery, current=Depends(get_current_user)) -> dict[str, Any]:；backend/research-agent-source/gangtise_api.py:85 [路由接线] def opinions(q: ListQuery, current=Depends(get_current_user)) -> dict[str, Any]:",
+      "同源功能点语义去重（口径 v1.1）：收敛重复 11 条；示例：api『POST /api/v1/auth/login』(code) 覆盖 api『POST /api/v1/auth/login』(code)：真实源码优先于低可信桩(mock/stub/faker/demo/fixture)；api『POST /api/v1/auth/refresh』(code) 覆盖 api『POST /api/v1/auth/refresh』(code)：真实源码优先于低可信桩(mock/stub/faker/demo/fixture)；api『POST /api/v1/auth/logout』(code) 覆盖 api『POST /api/v1/auth/logout』(code)：真实源码优先于低可信桩(mock/stub/faker/demo/fixture)；api『GET /api/v1/auth/me』(code) 覆盖 api『GET /api/v1/auth/me』(code)：真实源码优先于低可信桩(mock/stub/faker/demo/fixture)；api『GET /api/v1/threads』(code) 覆盖 api『GET /api/v1/threads』(code)：真实源码优先于低可信桩(mock/stub/faker/demo/fixture)",
+      "业务调用图吞并（F6）：25 个辅助函数融入其调用方，未单独产出功能点（示例：ListQuery.to_payload @ backend/research-agent-source/gangtise_api.py、_ChatRunner.subscribe @ backend/research-agent-source/server.py、_ChatRunner.unsubscribe @ backend/research-agent-source/server.py）",
+      "增量通道（显式变更集）：变更文件 7 个，仅做文件级打标（无 hunk 行号，未对齐到行）",
+      "改动归属：backend/research-agent-source/server.py:1378 的改动落在无功能点函数 _record_thread_activity（私有/被调用图吞并），已按同文件调用图归属到入口 chat（1 跳）→ FP-88d04b03",
+      "增量收窄（函数级）：过滤 88 个未变更函数功能点，保留 1300/1388 个（依据 7 个文件的 diff hunk 行号）",
+      "增量收窄（维度收敛）：168 个无行号功能点（前端/无法定位函数）仅展开核心维度，避免泛化模板膨胀",
+      "路由推断：frontend/app/src/pages/DailyPerfPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/daily-perf（依据 frontend/app/src/App.tsx 声明 /pc/daily-perf → 组件 DailyPerfPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/LoginPage.tsx 未在本文件声明 path，按仓库路由表反查到 /login（依据 frontend/app/src/App.tsx 声明 /login → 组件 LoginPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/PermissionAdminPage.tsx 未在本文件声明 path，按仓库路由表反查到 /permission-admin（依据 frontend/app/src/App.tsx 声明 /permission-admin → 组件 PermissionAdminPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/PreviewPage.tsx 未在本文件声明 path，按仓库路由表反查到 /preview（依据 frontend/app/src/App.tsx 声明 /preview → 组件 PreviewPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/QueryPage.tsx 未在本文件声明 path，按仓库路由表反查到 /query（依据 frontend/app/src/App.tsx 声明 /query → 组件 QueryPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/TokenUsagePage.tsx 未在本文件声明 path，按仓库路由表反查到 /token-usage（依据 frontend/app/src/App.tsx 声明 /token-usage → 组件 TokenUsagePage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileArtifactPreviewPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/artifact-preview（依据 frontend/app/src/App.tsx 声明 /pc/artifact-preview → 组件 MobileArtifactPreviewPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileBudgetPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/budget（依据 frontend/app/src/App.tsx 声明 /pc/budget → 组件 MobileBudgetPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileChatPage.tsx 未在本文件声明 path，按仓库路由表反查到 /chat（依据 frontend/app/src/App.tsx 声明 /chat/:id? → 组件 PcChatPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileEmailAuthPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/email-auth（依据 frontend/app/src/App.tsx 声明 /pc/email-auth → 组件 MobileEmailAuthPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileEmailListPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/email（依据 frontend/app/src/App.tsx 声明 /pc/email → 组件 MobileEmailListPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileImChatPage.tsx 未在本文件声明 path，按仓库路由表反查到 /chat（依据 frontend/app/src/App.tsx 声明 /chat/:id? → 组件 PcChatPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileKnowledgePage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/knowledge（依据 frontend/app/src/App.tsx 声明 /pc/knowledge → 组件 MobileKnowledgePage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileMemoryPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/memory（依据 frontend/app/src/App.tsx 声明 /pc/memory → 组件 MobileMemoryPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileQueryPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/query（依据 frontend/app/src/App.tsx 声明 /pc/query → 组件 MobileQueryPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileQueryTestPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/query-test（依据 frontend/app/src/App.tsx 声明 /pc/query-test → 组件 MobileQueryTestPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileResearchMeetingDetailPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/research/meetings/detail（依据 frontend/app/src/App.tsx 声明 /pc/research/meetings/detail → 组件 MobileResearchMeetingDetailPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileResearchMeetingsPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/research/meetings（依据 frontend/app/src/App.tsx 声明 /pc/research/meetings → 组件 MobileResearchMeetingsPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileResearchReportDetailPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/research/reports/detail（依据 frontend/app/src/App.tsx 声明 /pc/research/reports/detail → 组件 MobileResearchReportDetailPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileResearchReportsPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/research/reports（依据 frontend/app/src/App.tsx 声明 /pc/research/reports → 组件 MobileResearchReportsPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileResearchViewsPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/research/views（依据 frontend/app/src/App.tsx 声明 /pc/research/views → 组件 MobileResearchViewsPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileSchedulePage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/schedule（依据 frontend/app/src/App.tsx 声明 /pc/schedule → 组件 MobileSchedulePage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/mobile/MobileSharePage.tsx 未在本文件声明 path，按仓库路由表反查到 /m/share（依据 frontend/app/src/App.tsx 声明 /m/share/:token → 组件 MobileSharePage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/pc/PcArtifactsPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/artifacts（依据 frontend/app/src/App.tsx 声明 /pc/artifacts → 组件 PcArtifactsPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/pc/PcAuditScenePage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/audit（依据 frontend/app/src/App.tsx 声明 /pc/audit → 组件 PcAuditScenePage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/pc/PcChatPage.tsx 未在本文件声明 path，按仓库路由表反查到 /chat（依据 frontend/app/src/App.tsx 声明 /chat/:id? → 组件 PcChatPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/pc/PcDataBiPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/data-bi（依据 frontend/app/src/App.tsx 声明 /pc/data-bi → 组件 PcDataBiPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/pc/PcExecHallPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/exec-hall（依据 frontend/app/src/App.tsx 声明 /pc/exec-hall → 组件 PcExecHallPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/pc/PcListPages.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/me（依据 frontend/app/src/App.tsx 声明 /pc/me → 组件 PcWrap），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/pc/PcMessagesPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/messages（依据 frontend/app/src/App.tsx 声明 /pc/messages → 组件 PcMessagesPage），已放开该页面的地址类维度",
+      "路由推断：frontend/app/src/pages/pc/PcResearchPage.tsx 未在本文件声明 path，按仓库路由表反查到 /pc/research/library（依据 frontend/app/src/App.tsx 声明 /pc/research/library → 组件 PcResearchPage），已放开该页面的地址类维度",
+      "变更语义（backend/research-agent-source/server.py）：识别到 contract_shape、fallback、guard_negative，按语义补 3 个维度",
+      "变更语义（backend/research-agent-source/tests/test_thread_pagination.py）：识别到 pagination、branch_mode、contract_shape，按语义补 3 个维度",
+      "变更语义（frontend/app/src/api/adapter.ts）：识别到 contract_shape、fallback，按语义补 2 个维度",
+      "变更语义（frontend/app/src/api/backend.ts）：识别到 pagination、fallback，按语义补 3 个维度",
+      "变更语义（frontend/app/src/pages/pc/PcChatPage.tsx）：识别到 branch_mode、contract_shape、fallback、guard_negative，按语义补 3 个维度",
+      "变更语义（frontend/app/src/pages/pc/PcShell.tsx）：识别到 pagination、dedupe、list_mutation、branch_mode、contract_shape、fallback，按语义补 3 个维度",
+      "影响面回归：1 个入口受本次改动影响（直接调用 0 / 数据契约 1），已补影响测试点；入口覆盖 1/1",
+      "文件级影响面：2 个前端组件 import 了本次改动的文件，已补文件级回归用例（上限 2，符号级命中 0 条）：frontend/app/src/pages/DailyPerfPage.tsx → frontend/app/src/pages/pc/PcChatPage.tsx、frontend/app/src/pages/mobile/MobileInvestHomePage.tsx → frontend/app/src/pages/pc/PcChatPage.tsx",
+      "仅规则引擎（LLM_ENHANCE=off）",
+      "质量门禁：4066 条过检，拦下 0 条（无证据 0 / 预期不可观测 0 / 无来源标签 0），另有 2361 条需特殊环境（诚实标未验证，不算水货）",
+      "三 KPI：改动函数覆盖 3/8 = 38%；影响入口覆盖 3/3 = 100%（后端 1/1、前端 2/2）；维度覆盖 21/24 = 88%",
+      "改动函数未覆盖：backend/research-agent-source/tests/test_thread_initialization.py::ThreadInitialization.test_reservation_without_message_can_be_persisted、backend/research-agent-source/tests/test_thread_pagination.py::ThreadPaginationTests.setUp、backend/research-agent-source/tests/test_thread_pagination.py::ThreadPaginationTests.test_daily_perf_is_independent_and_legacy_response_is_unchanged、frontend/app/src/api/adapter.ts::threadToSession、frontend/app/src/api/backend.ts::listThreadsPage"
+    ],
+    "request": {
+      "mode": "incremental",
+      "base": "21fb554c2586d7a1ab2ffbb0c3a13d726b0b5b88",
+      "target": "31344820c81c5e6ea7a8f03eb18d92626be224aa",
+      "scopes": [
+        "正常",
+        "异常",
+        "边界"
+      ],
+      "selected_paths": [],
+      "changed_files": [],
+      "local_path": "",
+      "runtime_ui": false,
+      "runtime_scope": "targeted",
+      "expert_ui": false,
+      "llm_enhance": false,
+      "include_business": true,
+      "extract_pages": true,
+      "async_mode": true
+    },
+    "created_at": "2026-11-19T09:07:34",
+    "updated_at": "2026-11-19T09:07:44"
+  },
+  "b_outputs": {
+    "output_dir": "C:\\Users\\EDY\\WorkBuddy\\testhub_platform\\services\\testgen\\outputs\\30",
+    "summary_generated_at": "2026-11-19T09:07:44",
+    "case_count": 4066,
+    "tp_count": 4066,
+    "evidence": [
+      {
+        "tc_no": "TP-2eaffd16",
+        "tp_id": "TP-2eaffd16",
+        "title": "[正常] 含交互钩子的组件 frontend/app/src/components/chat/Cros… · 交互元素可用",
+        "dimension": "交互元素可用",
+        "origin": "rule",
+        "tag": "全量",
+        "source": "frontend/app/src/components/chat/CrossReviewCard.tsx"
+      },
+      {
+        "tc_no": "TP-5aa51618",
+        "tp_id": "TP-5aa51618",
+        "title": "[正常] 含交互钩子的组件 frontend/app/src/components/chat/Dele… · 交互元素可用",
+        "dimension": "交互元素可用",
+        "origin": "rule",
+        "tag": "全量",
+        "source": "frontend/app/src/components/chat/DeleteSessionModal.tsx"
+      },
+      {
+        "tc_no": "TP-6ee665b1",
+        "tp_id": "TP-6ee665b1",
+        "title": "[正常] 含交互钩子的组件 frontend/app/src/components/chat/Thin… · 交互元素可用",
+        "dimension": "交互元素可用",
+        "origin": "rule",
+        "tag": "全量",
+        "source": "frontend/app/src/components/chat/ThinkBlock.tsx"
+      }
+    ],
+    "evidence_total": 4066,
+    "omitted_note": "全量模式 4066 条明细已省略（体积治理），仅保留前 3 条样本；汇总指标与三口径不受影响"
+  },
+  "c_database": {
+    "available": true,
+    "test_points_found": 4066,
+    "cases_found": 4066,
+    "fp_rows_total": 1300,
+    "tp_missing": [],
+    "case_missing": [],
+    "case_status": {
+      "generated": 4041,
+      "updated": 25
+    },
+    "case_priority": {
+      "P1": 2758,
+      "P2": 1308
+    }
+  },
+  "checks": {
+    "cases_a": 4066,
+    "cases_b": 4066,
+    "cases_c": 4066,
+    "consistent": true,
+    "issues": []
+  },
+  "metrics": {
+    "cases_total": 4066,
+    "test_points": 4066,
+    "cases_direct": 4063,
+    "cases_semantic": 9,
+    "cases_impact": 1,
+    "cases_file_impact": 2,
+    "cases_runtime": 0,
+    "fp_before": 1388,
+    "fp_after": 1300,
+    "fp_dropped_unchanged": 88,
+    "fp_attributed": 1,
+    "route_inferred": 31,
+    "file_impact_items": 2,
+    "dimension_kinds": 21,
+    "unverified_count": 2361,
+    "gate_blocked": 0,
+    "gate_best_effort": 2361,
+    "kpi_changed_func_pct": 38,
+    "kpi_impact_entry_pct": 100,
+    "kpi_dimension_pct": 88,
+    "changed_func_covered": 3,
+    "changed_func_total": 8,
+    "impact_entry_covered": 3,
+    "impact_entry_total": 3,
+    "dimension_actual": 21,
+    "dimension_theory": 24,
+    "channel_body": 4063,
+    "channel_impact": 3,
+    "channel_runtime": 0,
+    "cases_created": 4041,
+    "cases_reused": 0,
+    "duration_s": 10.0,
+    "traceability": {
+      "fp_count": 1300,
+      "tp_count": 4066,
+      "case_count": 4066,
+      "orphan_tp": [],
+      "orphan_case": [],
+      "orphan_tp_count": 0,
+      "orphan_case_count": 0
+    },
+    "channel_summary": {
+      "code": {
+        "fp": 1300,
+        "tp": 4066,
+        "case": 4066
+      },
+      "url": {
+        "fp": 0,
+        "tp": 0,
+        "case": 0
+      },
+      "source_kind": "code"
+    }
+  },
+  "distribution": {
+    "dimension": {
+      "业务函数-逻辑可用": 967,
+      "边界-业务参数边界": 967,
+      "异常-业务异常路径": 967,
+      "正常-可用性": 165,
+      "边界-参数缺失/非法": 164,
+      "异常-限流": 164,
+      "异常-降级": 164,
+      "异常-超时兜底": 164,
+      "异常-幂等": 93,
+      "页面/路由可达": 90,
+      "交互元素可用": 78,
+      "异常-资源不存在": 71,
+      "正常-数据契约形状": 2,
+      "异常-兜底默认值": 2,
+      "回归-文件级": 2,
+      "正常-模式分支隔离": 1,
+      "边界-分页游标同步": 1,
+      "正常-翻页不重不漏": 1,
+      "正常-列表去重": 1,
+      "边界-零值与空值区分": 1,
+      "回归-数据契约": 1
+    },
+    "origin": {
+      "rule": 4054,
+      "semantic": 9,
+      "impact_file": 2,
+      "impact": 1
+    },
+    "category": {
+      "异常": 1625,
+      "正常": 1308,
+      "边界": 1133
+    },
+    "method": {
+      "FUNC": 2901,
+      "POST": 483,
+      "GET": 381,
+      "PAGE": 121,
+      "DELETE": 69,
+      "UI": 55,
+      "PUT": 35,
+      "PATCH": 21
+    },
+    "case_type": {
+      "异常": 1625,
+      "正常": 1308,
+      "边界": 1133
+    },
+    "priority": {
+      "P1": 2758,
+      "P2": 1308
+    },
+    "ctype": {
+      "e2e": 3077,
+      "api": 989
+    }
+  }
+}

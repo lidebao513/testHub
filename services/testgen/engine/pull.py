@@ -77,13 +77,16 @@ def mask_url(url: str) -> str:
     return masked.split("?", 1)[0] if "@" in url else masked
 
 
-def inject_credentials(url: str) -> str:
-    """给 codeup HTTPS 地址注入 PAT（环境变量 `CODEUP_TOKEN`，oauth2 方式）。
+def inject_credentials(url: str, token: str = "") -> str:
+    """给 codeup HTTPS 地址注入 PAT（oauth2 方式）。
 
     背景：codeup 的 PAT 走本机 credential helper 会被 GCM 缓存的失效旧令牌覆盖
     （403 / terminal prompts disabled），URL 内嵌凭证是最稳的通道。规则：
     - 仅处理 `https?://` 且 host 以 codeup.aliyun.com 结尾的地址；
-    - URL 已带凭证（userinfo）或未配置 `CODEUP_TOKEN` → 原样返回；
+    - URL 已带凭证（userinfo）→ 原样返回（已注入，保持幂等）；
+    - token 来源优先级：调用方显式传入（仓库配置里校验可用的 PAT） > 环境变量
+      `CODEUP_TOKEN`。生成链路显式传入与扫描链路同一把 PAT，避免两份凭证割裂导致
+      「扫描成功、取码 invalid token」；未传时回退环境变量保持 CLI 等旧用法兼容。
     - 注入只发生在发起 git 命令前，`result.url` / 日志仍走 `mask_url` 掩码。
     """
     if not url or "://" not in url:
@@ -92,12 +95,18 @@ def inject_credentials(url: str) -> str:
     if scheme not in ("http", "https"):
         return url
     authority = rest.split("/", 1)[0]
-    if "@" in authority or not authority.endswith(_CODEUP_HOST_SUFFIX):
+    explicit = (token or "").strip()
+    # 拆掉可能已存在的 userinfo，取纯 host/path（oauth2:旧token@host/path → host/path）
+    host_path = authority.split("@", 1)[1] + rest[len(authority) :] if "@" in authority else rest
+    host = host_path.split("/", 1)[0]
+    if not host.endswith(_CODEUP_HOST_SUFFIX):
         return url
-    token = os.getenv("CODEUP_TOKEN", "").strip()
-    if not token:
+    if not explicit and "@" in authority:
+        return url  # 未显式传 token 且 URL 已带凭证 → 幂等，保持旧行为
+    resolved = explicit or os.getenv("CODEUP_TOKEN", "").strip()
+    if not resolved:
         return url
-    return f"{scheme}://oauth2:{token}@{rest}"
+    return f"{scheme}://oauth2:{resolved}@{host_path}"
 
 
 @dataclass
@@ -117,6 +126,10 @@ class PullResult:
     base_sha: str = ""
     target_sha: str = ""
     changed_files: list[str] = field(default_factory=list)
+    # 增量收窄用：{相对路径: [(新文件起始行, 行数), ...]}，与 changed_files 同一时刻/同一
+    # 归一化 ref 算出，避免下游再跑一次 git（沙箱/代理/并发锁下 git diff 可能失败）。
+    # 不进 to_dict：仅内部传递，不污染 API 输出/凭证检查。
+    diff_hunks: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -213,13 +226,14 @@ def _fail(result: PullResult, status: str, message: str) -> PullResult:
 # ============================================================================
 # 主流程
 # ============================================================================
-def pull(
+def pull(  # noqa: PLR0913 - 各参数均为独立可选项，聚合对象反而降低可读性
     url: str = "",
     local_path: str = "",
     *,
     base: str = "",
     target: str = "",
     deepen: int = 0,
+    token: str = "",
 ) -> PullResult:
     """取码：把远端仓库准备到 `local_path`，并（可选）算出 `base..target` 变更集。
 
@@ -241,7 +255,7 @@ def pull(
             "请在该目录内 git init 或删除后重新克隆为独立仓库",
         )
     if state == STATE_MISSING:
-        return _clone_or_fail(result, url, local_path)
+        return _clone_or_fail(result, url, local_path, token=token)
     if state == STATE_NOT_REPO:
         if not url:
             return _fail(
@@ -255,16 +269,16 @@ def pull(
                 PullStatus.TARGET_NOT_EMPTY.value,
                 f"目录 {local_path} 已存在且非空，git clone 无法写入；请清空该目录或换路径",
             )
-        return _clone_or_fail(result, url, local_path)
+        return _clone_or_fail(result, url, local_path, token=token)
 
     # state == repo：远端更新（失败降级为离线）
     result.mode = PullMode.UPDATE.value
-    _update_from_remote(result, local_path, deepen=deepen)
+    _update_from_remote(result, local_path, deepen=deepen, token=token)
     _ensure_worktree(result, local_path)
     return _finish_refs(result, local_path, base=base, target=target)
 
 
-def _clone_or_fail(result: PullResult, url: str, local_path: str) -> PullResult:
+def _clone_or_fail(result: PullResult, url: str, local_path: str, *, token: str = "") -> PullResult:
     """克隆（目录不存在或为空时）；未提供地址 → `clone_required_no_url`。"""
     if not url:
         return _fail(
@@ -274,7 +288,7 @@ def _clone_or_fail(result: PullResult, url: str, local_path: str) -> PullResult:
         )
     result.mode = PullMode.CLONE.value
     Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-    clone_url = inject_credentials(url)
+    clone_url = inject_credentials(url, token)
     cp = _run(
         [
             "git",
@@ -303,7 +317,9 @@ def _looks_remote(url: str) -> bool:
     return bool(url) and ("://" in url or url.startswith("git@") or url.startswith("ssh:"))
 
 
-def _update_from_remote(result: PullResult, local_path: str, *, deepen: int) -> None:
+def _update_from_remote(
+    result: PullResult, local_path: str, *, deepen: int, token: str = ""
+) -> None:
     """远端更新（best-effort）：失败即降级为 `ok_offline`，用本地已有代码继续。"""
     origin = _git(local_path, ["remote"]).stdout.split()
     if not origin:
@@ -311,7 +327,7 @@ def _update_from_remote(result: PullResult, local_path: str, *, deepen: int) -> 
         result.fetch_status = FetchStatus.SKIPPED.value
         result.errors.append("本地仓库没有 remote：跳过远端更新，直接使用已有代码")
         return
-    _ensure_remote_credentials(local_path)
+    _ensure_remote_credentials(local_path, token=token)
     cp = _git(local_path, ["fetch", "--all", "--tags", "--prune"], timeout=_NET_TIMEOUT, net=True)
     if cp.returncode != 0:
         result.mode = PullMode.OFFLINE.value
@@ -336,17 +352,19 @@ def _is_shallow(repo: str | Path) -> bool:
     return _git(repo, ["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true"
 
 
-def _ensure_remote_credentials(local_path: str) -> None:
-    """远端为裸 codeup HTTPS 地址且配置了 `CODEUP_TOKEN` 时，把 PAT 拼进 origin URL。
+def _ensure_remote_credentials(local_path: str, *, token: str = "") -> None:
+    """远端为 codeup HTTPS 地址时，把 PAT 拼进 origin URL（优先用显式 token）。
 
-    幂等：URL 已带凭证、非 codeup、或未配置 token 时不做任何改动（set-url 只在
-    注入结果与现值不同时执行，避免每轮生成重写 .git/config）。
+    显式传入 token（生成链路从仓库配置带出的有效 PAT）时，即使 origin 已被注入过
+    旧 token 也会替换——修复「扫描成功但取码 invalid token」的凭证割裂。
+    未显式传且 URL 已带凭证 / 非 codeup / 无 token 时不改动（set-url 只在结果变化时
+    执行，避免每轮生成重写 .git/config）。
     """
     cp = _git(local_path, ["remote", "get-url", "origin"])
     if cp.returncode != 0:
         return
     current = (cp.stdout or "").strip()
-    injected = inject_credentials(current)
+    injected = inject_credentials(current, token)
     if injected and injected != current:
         _git(local_path, ["remote", "set-url", "origin", injected])
 
@@ -412,6 +430,14 @@ def _finish_refs(
     result.changed_files = sorted(
         _changed_files_of(local_path, base=base_ref, target=target if worktree else target_ref)
     )
+    # 与 changed_files 同时、同 ref 算出 hunk 行号，供下游增量收窄用（方案 A）。
+    # 失败不影响取码主链路（收窄会保守退化为文件级/维度收敛）。
+    try:
+        result.diff_hunks = diff_tag.compute_diff_hunks(
+            local_path, base_ref, None if worktree else target_ref
+        )
+    except (OSError, ValueError):
+        result.diff_hunks = {}
     log.info(
         "取码完成",
         extra=log_extra(

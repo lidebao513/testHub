@@ -131,6 +131,38 @@ def test_case_without_runtime_detail_keeps_legacy_text():
     assert "打开页面：/pc/tasks" in case.doc_steps[1]["desc"]
 
 
+# ------------------------------------------------- 元素级 area 的富化（#306）
+def test_element_area_case_uses_page_url_element_and_baseline():
+    """元素级 area（`/path#kind:text|selector`）也要拿到页面地址与该页控制台基线。
+
+    回归要点：早期只做 `runtime_index[area]` 直命中，而元素级 area 是复合键
+    （`/pc/email#nav:收件箱|nav.inbox`），索引里根本没有这个键 → 正文只能照抄机器键，
+    既没有「打开哪个地址」也没有控制台基线，人工执行时还得自己回溯。
+    """
+    index = runtime_ui.to_runtime_index(_fake_result())
+    case = case_gen.build_case(
+        _tp("/pc/email#nav:收件箱|nav.inbox", method="UI"), runtime_index=index
+    )
+    assert case is not None
+    text = " ".join(str(s["desc"]) for s in case.doc_steps)
+    assert "打开 http://host:8090/pc/email" in text
+    assert "导航项「收件箱」" in text
+    assert "选择器：nav.inbox" in text
+    assert "基线 1 条" in text
+    # 机器步不因解析而膨胀：仍只认直命中，不给每条元素用例挂整页元素清单
+    assert case.steps[0].get("runtime") is None
+
+
+def test_element_area_parts_parsing_and_legacy_fallback():
+    assert case_gen._element_area_parts("/p#button:el|#x") == ("/p", "button", "", "#x")
+    assert case_gen._element_area_parts("views/Home.vue") is None
+    assert case_gen._element_area_parts("/p#button:提交|") is None
+    # 无索引时退回旧文案：不臆造 URL / 基线
+    case = case_gen.build_case(_tp("/pc/tasks#button:新建任务|button.new", method="UI"))
+    assert case is not None
+    assert case.doc_steps[1]["desc"].startswith("定位交互点：/pc/tasks#button:新建任务|")
+
+
 # ---------------------------------------------------------------- 地址通道端到端
 def _url_only_options() -> pipeline.PipelineOptions:
     opts = pipeline.default_options("")

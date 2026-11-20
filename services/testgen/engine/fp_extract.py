@@ -16,11 +16,16 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from core.contracts import FunctionalPoint, fp_id_of
 from core.enums import BUSINESS_EXTRACT_STRICT, FType
 from engine.scan import FRONTEND_EXTS, SourceFile
+
+
+# 中文语义判定（第一步 A）：semantic 含中文才会被 tp_expand._readable_core 采纳为标题主体。
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
 # FastAPI / Flask 风格的路由装饰器名
@@ -78,20 +83,35 @@ def _has_ui_hooks(sf: SourceFile) -> bool:
     return bool(_UI_HOOK_RE.search(sf.text))
 
 
-def _screen_fp(sf: SourceFile) -> FunctionalPoint:
-    """为「无 path= 声明的屏幕文件」生成一条页面功能点（按文件名路由化）。"""
-    stem = sf.name
-    name = f"/{stem}" if not stem.startswith("/") else stem
-    return FunctionalPoint(
-        fp_id=fp_id_of(FType.PAGE.value, sf.rel, name),
-        ftype=FType.PAGE.value,
-        file_path=sf.rel,
-        name=name,
-        title=f"{module_of(sf.rel)} · 页面/{stem}",
-        module=module_of(sf.rel),
-        semantic=f"前端屏幕（{sf.rel}）",
-        description=f"{sf.rel}",
-    )
+def _dedupe_pages(fps: list[FunctionalPoint]) -> list[FunctionalPoint]:
+    """同一路由路径只保留一条功能点（跨文件重复时以「路由声明文件」为准）。
+
+    同一个 `path:` 常被多处声明：路由表 `router/index.js` 一处、页面文件自身一处、
+    菜单配置里又一处。旧实现照单全收，于是 `/home` 出现 2 条、`/performance-testing/
+    comparison` 出现 2 条，每条再展开 7 个维度，用例数虚高且互相矛盾（同一路径两份
+    「未授权访问」结论可能不一致）。这里按 `name` 去重，并优先保留来自路由文件的条目。
+    """
+    best: dict[str, int] = {}
+    out: list[FunctionalPoint] = []
+    for fp in fps:
+        if fp.ftype != FType.PAGE.value:
+            out.append(fp)
+            continue
+        prev_idx = best.get(fp.name)
+        if prev_idx is None:
+            best[fp.name] = len(out)
+            out.append(fp)
+            continue
+        prev = out[prev_idx]
+        if _is_route_file(fp.file_path) and not _is_route_file(prev.file_path):
+            out[prev_idx] = fp
+    return out
+
+
+def _is_route_file(rel: str) -> bool:
+    """是否路由声明文件（`router/index.js`、`routes.ts` 等）——去重时的优先来源。"""
+    low = rel.lower()
+    return "router" in low or "route" in low
 
 
 @dataclass
@@ -226,24 +246,51 @@ def _route_decorator(node: ast.AST) -> tuple[str, str] | None:
     return _fastapi_route(node) or _flask_route(node)
 
 
+def _kw_prefix(call: ast.Call) -> str:
+    """取调用里的 `prefix=` 常量参数（无则不贡献前缀）。"""
+    for kw in call.keywords:
+        if kw.arg == "prefix" and isinstance(kw.value, ast.Constant):
+            return str(kw.value.value or "")
+    return ""
+
+
 def _router_prefix(tree: ast.Module) -> str:
-    """识别 `APIRouter(prefix="/api/v1")`，把前缀拼回路由路径。"""
+    """把路由前缀拼回路径，兼容两种常见 FastAPI 写法：
+
+    1. `router = APIRouter(prefix="/api/v1")` —— 前缀在装饰器所在路由器上（原有）；
+    2. `router = APIRouter()` + `app.include_router(router, prefix="/api/v1")` —— 前缀在
+       装配处（B4）。第 2 种此前路径缺前缀 → 执行时 404 假失败。
+
+    只处理**同一文件内**的装配；跨文件 router/装配的传递需要全仓调用图，代价过大，
+    本批不追求（不影响单文件写法，跨文件仍可用显式 routes 兜底）。
+    """
     for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if not isinstance(node.value, ast.Call):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
             continue
         fn = node.value.func
-        name = ""
-        if isinstance(fn, ast.Name):
-            name = fn.id
-        elif isinstance(fn, ast.Attribute):
-            name = fn.attr
-        if name != "APIRouter":
+        name = (
+            fn.id
+            if isinstance(fn, ast.Name)
+            else (fn.attr if isinstance(fn, ast.Attribute) else "")
+        )
+        if name == "APIRouter":
+            prefix = _kw_prefix(node.value)
+            if prefix:
+                return prefix
+    # 回退：同一文件里 include_router(router, prefix=...) 的装配前缀
+    for walk_node in ast.walk(tree):
+        if not isinstance(walk_node, ast.Call):
             continue
-        for kw in node.value.keywords:
-            if kw.arg == "prefix" and isinstance(kw.value, ast.Constant):
-                return str(kw.value.value or "")
+        fn = walk_node.func
+        name = (
+            fn.attr
+            if isinstance(fn, ast.Attribute)
+            else (fn.id if isinstance(fn, ast.Name) else "")
+        )
+        if name == "include_router":
+            prefix = _kw_prefix(walk_node)
+            if prefix:
+                return prefix
     return ""
 
 
@@ -256,6 +303,62 @@ def _docstring_summary(node: ast.AST) -> str:
     if not doc:
         return ""
     return doc.strip().splitlines()[0][:80]
+
+
+def _annotation_text(node: ast.expr | None) -> str:
+    """把类型注解 AST 还原成可读文本；无注解返回空串。"""
+    if node is None:
+        return ""
+    try:
+        return ast.unparse(node)[:40]
+    except Exception:  # noqa: BLE001 - 注解形态异常时降级为空，不影响提取
+        return ""
+
+
+def _signature_args(node: ast.AST) -> list[str]:
+    """取函数真实入参名（最多 6 个），跳过 self/cls；非函数返回空列表。"""
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return []
+    args = node.args
+    names = [a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
+    return [n for n in names if n not in ("self", "cls")][:6]
+
+
+def _signature_hint(node: ast.AST) -> str:
+    """从函数 AST 提取真实签名摘要（第一步 A+B 语义回填）。
+
+    只描述代码里真实存在的入参名与返回类型，不臆造业务含义：
+      - 入参：按声明顺序取参数名（最多 6 个），跳过 self/cls；
+      - 返回：取返回类型注解文本；无注解则标注「未声明返回类型」。
+
+    产出示例：``入参 domain_id、top_n；返回 DomainDetail``。
+    供 tp_expand 拼进测试点预期，让「看不出测什么」的裸函数名变得可判定。
+    """
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return ""
+    names = _signature_args(node)
+    parts: list[str] = []
+    if names:
+        parts.append("入参 " + "、".join(names))
+    else:
+        parts.append("无入参")
+    ret = _annotation_text(node.returns)
+    parts.append(f"返回 {ret}" if ret else "未声明返回类型")
+    return "；".join(parts)
+
+
+def _readable_core_for_business(qname: str, node: ast.AST, hint: str) -> str:
+    """业务函数标题/验证项的中文语义主体（第一步 A）。
+
+    用真实函数名（保留下划线，不拆成空格词）+ 入参名，短而可判定：
+    ``get_domain_detail（入参 domain_id、top_n）``。
+    不放返回类型——完整签名在 `hint` 里供预期展示，避免标题被 48 字截断成
+    ``返回 Domain…`` 这种半截信息；入参才是「传入什么」这个测试意图的关键。
+    """
+    names = _signature_args(node)
+    if names:
+        return f"{qname}（入参 {'、'.join(names)}）"
+    return f"{qname}（无入参）"
 
 
 def _qualified_names(tree: ast.Module) -> dict[int, str]:
@@ -450,8 +553,22 @@ def _business_functional_point(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     qualnames: dict[int, str],
 ) -> FunctionalPoint:
-    """公开业务函数 → BUSINESS 功能点（机器键带类名前缀，避免同名方法撞号）。"""
+    """公开业务函数 → BUSINESS 功能点（机器键带类名前缀，避免同名方法撞号）。
+
+    第一步 A/B（语义回填）：semantic 优先用真实 docstring（含中文才做标题主体），
+    否则退化为「函数名 + 真实签名摘要」的可读语义——避免 `get_domain_detail`
+    这种英文裸名既当标题又当验证项、用户看不出在测什么。
+    """
     qname = qualnames.get(id(node), node.name)
+    doc = _docstring_summary(node)
+    hint = _signature_hint(node)
+    core = _readable_core_for_business(qname, node, hint)
+    if doc and _CJK_RE.search(doc):
+        semantic = doc
+    elif doc:
+        semantic = f"{doc}｜{core}"
+    else:
+        semantic = core
     return FunctionalPoint(
         fp_id=fp_id_of(FType.BUSINESS.value, sf.rel, qname),
         ftype=FType.BUSINESS.value,
@@ -459,8 +576,9 @@ def _business_functional_point(
         name=qname,
         title=f"{module} · {qname}",
         module=module,
-        semantic=_docstring_summary(node) or node.name.replace("_", " "),
+        semantic=semantic,
         description=f"{qname}() @ {sf.rel}:{node.lineno}",
+        signature_hint=hint,
     )
 
 
@@ -521,18 +639,57 @@ def _extract_api_and_business(
     return out
 
 
+def _page_label(text: str, start: int, end: int, rel: str) -> str:
+    """取某个 `path:` 所在「路由段落」内的 `name:`，用于页面展示名。
+
+    早期实现用 `_PAGE_NAME_RE.findall(text)[i]` 与第 i 个 `path:` 硬对齐，一旦文件里
+    存在菜单项 / 组件注册 / props 默认值等无关 `name:`，全局下标就整体错位——实测把
+    `/home` 标成 `Login`、把 `/ai-generation/reviews/create` 标成 `ReviewTemplateList.vue`。
+    现在只在「本条 path 到下一个 path 之间」的文本段里找，找不到就退回文件名（无扩展名）。
+    """
+    name_m = _PAGE_NAME_RE.search(text[start:end])
+    return name_m.group(1) if name_m else Path(rel).stem
+
+
+# B3：`path:` 泛提护栏——这些上下文里的 `path:` 是字段名/配置值，不是路由声明。
+# 用「排除法」而非「必须命中路由关键词」，误伤最低：只有明确落在非路由上下文才丢弃。
+_NON_ROUTE_PATH_RE = re.compile(
+    r"(?:\.\s*path|form|mock|fixture|schema|field|upload|filePath|basePath|"
+    r"publicPath|outputPath|apiPath|urlPath|imgPath|assetPath)",
+    re.IGNORECASE,
+)
+
+
+def _is_route_path_context(text: str, start: int) -> bool:
+    """判断 `path:` 声明是否像路由声明（B3）。
+
+    只看声明前 160 字符窗口：命中明确的非路由上下文词（表单字段名 / mock 配置 /
+    文件路径字段）就拒绝；其余（含 `routes=[{path:...}`、`{path:...}`）放行。
+    """
+    window = text[max(0, start - 160) : start]
+    return not bool(_NON_ROUTE_PATH_RE.search(window))
+
+
 def _extract_pages(sf: SourceFile) -> list[FunctionalPoint]:
     """前端路由提取（基于 path 声明，识别 `path: '/x'` 与 JSX `path="/x"`）。"""
     if sf.is_noise:
         return []
+    # B3：过滤掉表单/mock/文件路径配置里的 `path:`，只保留疑似路由声明
+    matches = [
+        m for m in _PAGE_PATH_RE.finditer(sf.text) if _is_route_path_context(sf.text, m.start())
+    ]
     out: list[FunctionalPoint] = []
     seen: set[str] = set()
-    names = _PAGE_NAME_RE.findall(sf.text)
-    for i, path in enumerate(_PAGE_PATH_RE.findall(sf.text)):
+    for idx, m in enumerate(matches):
+        path = m.group(1)
         if path in seen:
             continue
         seen.add(path)
-        label = names[i] if i < len(names) else sf.name
+        # 段落边界：下一个 path 声明之前；末条则向后最多看 400 字符（避免读到无关文件尾部）
+        seg_end = (
+            matches[idx + 1].start() if idx + 1 < len(matches) else min(len(sf.text), m.end() + 400)
+        )
+        label = _page_label(sf.text, m.end(), seg_end, sf.rel)
         out.append(
             FunctionalPoint(
                 fp_id=fp_id_of(FType.PAGE.value, sf.rel, path),
@@ -543,9 +700,36 @@ def _extract_pages(sf: SourceFile) -> list[FunctionalPoint]:
                 module=module_of(sf.rel),
                 semantic=f"前端路由 {path}（{label}）",
                 description=f"{sf.rel}",
+                has_route=True,
             )
         )
     return out
+
+
+def _screen_fp(sf: SourceFile) -> FunctionalPoint | None:
+    """「在 pages/views 目录但没写 path 声明」的屏幕文件 → 页面功能点（地址未知）。
+
+    关键约束：**不用文件名冒充路由**。旧实现把 `views/Home.vue` 变成 `/Home.vue`，
+    再展开「页面可达/未授权/极端视口/断网…」7 个维度，等于对一条不存在的 URL 生成
+    7 条必然失败的假用例（实测 121/145 条页面功能点都是这种假路径）。
+
+    现在 `name` 用文件相对路径（`views/Home.vue`）并标记 `has_route=False`，
+    由 tp_expand 只展开「交互元素可用」维度——验证它身上真实存在的按钮/表单。
+    这样既保住「React/Vue 屏幕不漏统计」，又不再编造地址。
+    """
+    if not _has_ui_hooks(sf):
+        return None  # 纯静态展示文件，没有可验证的交互动作
+    return FunctionalPoint(
+        fp_id=fp_id_of(FType.PAGE.value, sf.rel, sf.rel),
+        ftype=FType.PAGE.value,
+        file_path=sf.rel,
+        name=sf.rel,
+        title=f"{module_of(sf.rel)} · 屏幕 {Path(sf.rel).stem}",
+        module=module_of(sf.rel),
+        semantic=f"前端屏幕（{sf.rel}，无显式路由声明）",
+        description=f"{sf.rel}",
+        has_route=False,
+    )
 
 
 def _extract_components(sf: SourceFile) -> list[FunctionalPoint]:
@@ -606,10 +790,19 @@ def extract_functional_points(  # noqa: C901, PLR0913
             elif sf.ext in FRONTEND_EXTS:
                 # 单文件单决策：屏幕优先判定为「页面」，否则（含交互钩子）判为「交互组件」。
                 # 避免一个屏幕文件同时产出「页面 + 组件」两条 UI 功能点造成重复。
+                #
+                # 屏幕文件若**没有显式 path 声明**，不再用文件名冒充路由：早期 `_screen_fp`
+                # 把 `views/Home.vue` 变成 `/Home.vue`，再展开「可达/未授权/极端视口…」7 个
+                # 维度——等于对一条不存在的 URL 生成 7 条必然失败的假用例（实测 121/145 条
+                # 页面功能点都是这种假路径）。现在这类文件标 `has_route=False`，只展开交互维度。
+                pages: list[FunctionalPoint] = []
                 if extract_pages and _is_screen(sf.rel, sf.text):
                     pages = _extract_pages(sf)
                     if not pages:
-                        pages = [_screen_fp(sf)]
+                        screen = _screen_fp(sf)
+                        if screen is not None:
+                            pages = [screen]
+                if pages:
                     result.functional_points.extend(pages)
                 elif extract_components and _has_ui_hooks(sf):
                     result.functional_points.extend(_extract_components(sf))
@@ -617,4 +810,5 @@ def extract_functional_points(  # noqa: C901, PLR0913
             result.errors.append(f"{rel}: {type(exc).__name__}: {exc}")
     result.business_absorbed = int(absorb.get("count", 0))
     result.business_absorbed_examples = list(absorb.get("examples", []))
+    result.functional_points = _dedupe_pages(result.functional_points)
     return result

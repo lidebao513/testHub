@@ -39,7 +39,7 @@ from core.enums import (
     method_kind,
 )
 from engine import ui_executor
-from engine.runtime_ui import RuntimePageInfo
+from engine.runtime_ui import RuntimePageInfo, element_kind_cn
 
 
 # 机器步里最多携带的可见元素数（防单条用例的 payload 过大）
@@ -62,6 +62,49 @@ def _method_kind(method: str) -> tuple[bool, str]:
     return kind == FType.API.value, kind
 
 
+def _element_area_parts(area: str) -> tuple[str, str, str, str] | None:
+    """拆解元素级功能点的 area 复合键：`/path#kind:text|selector`。
+
+    运行时元素级分解（`runtime_ui._element_fp_name`）把「页面 + 类型 + 文字 + 选择器」
+    压成一个机器键。不拆开时用例准备步只能照抄整串（`定位交互点：/home#nav:数据看板|
+    div.layout > aside...`），既读不出「是哪个页面上的哪个元素」，也拿不到该页的控制台基线。
+    返回 `(页面路径, kind, 元素文字, 选择器)`；非该形态返回 None（静态功能点 area 是路由或文件名）。
+    """
+    if "#" not in area or "|" not in area:
+        return None
+    path, rest = area.split("#", 1)
+    if not path.startswith("/") or ":" not in rest:
+        return None
+    kind, rest = rest.split(":", 1)
+    text, selector = rest.split("|", 1)
+    if not selector.strip():
+        return None
+    # `el` 是「无可见文字」的占位（见 _element_fp_name），不当作元素名展示
+    return path, kind, ("" if text.strip() == "el" else text.strip()), selector.strip()
+
+
+def _panel_area_key(area: str) -> str | None:
+    """批次 C（P2）：从面板区域 area 取运行时索引键。
+
+    页面级 `area::15条/页` 与元素级 `area::15条/页#button:文字|selector` 都归到
+    同一个索引键 `area::15条/页`（`_collect_current_page` 用它作 UiPage.path）。
+    非面板区域返回 None。
+    """
+    head = str(area or "").split("#", 1)[0]
+    return head if head.startswith("area::") else None
+
+
+def _panel_open_desc(info: RuntimePageInfo) -> str:
+    """批次 C（P2）：面板区域的「打开」文案——goto 父页 + 点击导航，而非 goto 签名。"""
+    if not info.parent_url:
+        return f"用浏览器打开被测环境地址 {info.url}"
+    labels = " → ".join(info.nav_path) if info.nav_path else "（无点击路径）"
+    return (
+        f"用浏览器打开被测环境地址 {info.parent_url}，"
+        f"依次点击导航项「{labels}」切换到面板「{info.path.split('::', 1)[-1]}」"
+    )
+
+
 def _runtime_steps(
     kind: str, area: str, tail: str, info: RuntimePageInfo
 ) -> tuple[str, str, str] | None:
@@ -74,7 +117,7 @@ def _runtime_steps(
         title = f"（页面标题：{info.title}）" if info.title else ""
         phrases = info.element_phrases()
         visible_desc = f"关键元素可见：{'、'.join(phrases)}" if phrases else "页面结构完整"
-        prepare = f"用浏览器打开被测环境地址 {info.url}{title}{tail}"
+        prepare = f"{_panel_open_desc(info)}{title}{tail}"
         execute = f"访问 {area}，等待首屏渲染完成，并收集控制台输出"
         baseline = info.console_errors
         if baseline:
@@ -86,8 +129,44 @@ def _runtime_steps(
             assert_desc = f"校验：页面正常渲染（无白屏、无控制台报错）；{visible_desc}"
         return prepare, execute, assert_desc
     if kind == FType.UI.value:
+        parts = _element_area_parts(area)
+        if parts is not None:
+            # 元素级：精确定位到「哪个元素 + 选择器」，断言带上该页控制台基线
+            _path, el_kind, el_text, selector = parts
+            target = (
+                f"{element_kind_cn(el_kind)}「{el_text}」" if el_text else element_kind_cn(el_kind)
+            )
+            prepare = f"打开 {info.url}，定位交互点：{target}（选择器：{selector}）{tail}"
+            execute = f"对该{target}执行交互（点击／输入），观察界面响应"
+            baseline = info.console_errors
+            if baseline:
+                assert_desc = (
+                    f"校验：交互后界面按预期变化；控制台错误不超过基线 {len(baseline)} 条"
+                    f"（基线示例：{baseline[0][:60]}）"
+                )
+            else:
+                assert_desc = "校验：交互后界面按预期变化，且不新增控制台错误"
+            return prepare, execute, assert_desc
         phrases = info.element_phrases()
         target = "、".join(phrases) if phrases else "该页面的各交互元素"
+        # 批次 C：元素级面板区没有 `/` 前缀，_element_area_parts 返回 None；
+        # 用面板专用打开文案（goto 父页 + 点击导航），且校验签名命中。
+        if _panel_area_key(area) is not None:
+            hint = ui_executor.element_hint_from_path(area)
+            if hint is not None:
+                label = (
+                    f"{element_kind_cn(hint['kind'])}「{hint['text']}」"
+                    if hint["text"]
+                    else element_kind_cn(hint["kind"])
+                )
+            else:
+                label = target
+            prepare = f"{_panel_open_desc(info)}，定位交互点：{label}{tail}"
+            execute = f"对该{label}执行交互（点击／输入），观察界面响应"
+            assert_desc = (
+                "校验：面板签名命中（已重定位到目标区域）；交互后界面按预期变化；控制台错误不超基线"
+            )
+            return prepare, execute, assert_desc
         prepare = f"打开 {info.url}，定位交互点：{target}{tail}"
         execute = f"依次触发 {target} 的交互（点击／输入），观察界面响应"
         assert_desc = "校验：交互后界面按预期变化，且不新增控制台错误"
@@ -125,7 +204,7 @@ def build_doc_steps(
     override = _runtime_steps(kind, area, tail, runtime_info) if runtime_info else None
     if override is not None:
         prepare, execute, assert_desc = override
-    elif is_ui and kind == FType.PAGE.value:
+    elif is_ui and kind == FType.PAGE.value and dimension != Dimension.INTERACTIVE.value:
         prepare = f"打开页面：{area}{tail}"
         execute = f"访问 {area}，等待首屏渲染完成并收集控制台错误"
     elif is_ui:
@@ -207,7 +286,7 @@ def _normal_assert(kind: str) -> str:
     return "校验：返回值符合语义，异常分支被正确捕获"
 
 
-def design_assertions(info: RuntimePageInfo | None) -> list[dict[str, Any]]:
+def design_assertions(info: RuntimePageInfo | None, named_text: str = "") -> list[dict[str, Any]]:
     """F9：把 A2 收进用例的 `selector` 变成**可判定断言**，而不是「仅作参考」。
 
     产出的是机器可读断言清单，由 `engine/ui_executor.py` 逐条执行：
@@ -217,6 +296,11 @@ def design_assertions(info: RuntimePageInfo | None) -> list[dict[str, Any]]:
 
     无运行时细节（非 UI 面 / 未跑运行时发现）时返回空列表——执行器会退化为
     「页面可达 + 控制台基线」两条，绝不凭空编造元素断言。
+
+    E2/A4：`named_text`（用例标题+期望）点名的可见元素**优先纳入**断言，
+    不受 `MAX_RUNTIME_ELEMENTS_IN_STEP` 截断——用例说「应显示提交按钮」就不能
+    因为该按钮在发现顺序第 21 位而漏断言（否则删掉它仍 PASS）。只做重排，
+    不额外增加总条数以外的元素，payload 体积可控。
     """
     if info is None:
         return []
@@ -225,9 +309,21 @@ def design_assertions(info: RuntimePageInfo | None) -> list[dict[str, Any]]:
         {
             "kind": ui_executor.ASSERT_CONSOLE_WITHIN_BASELINE,
             "baseline": len(info.console_errors),
+            # E2/A5：同期口径——记录发现阶段已知错误文本，执行时按文本白名单抵扣，
+            # 只把真正新增的错误计入。旧执行器忽略此字段，零回归。
+            "baseline_errors": [str(e) for e in info.console_errors],
         },
     ]
-    for element in info.visible_elements()[:MAX_RUNTIME_ELEMENTS_IN_STEP]:
+    elements = list(info.visible_elements())
+    named = str(named_text or "")
+    if named and len(elements) > MAX_RUNTIME_ELEMENTS_IN_STEP:
+        # 文本点名（元素 text 非空且出现在标题/期望里）的排前面，其余保持原顺序
+        def _named_first(e: dict[str, Any]) -> tuple[int, int]:
+            text = str(e.get("text") or "").strip()
+            return (0 if text and text in named else 1, 0)
+
+        elements.sort(key=_named_first)  # 稳定排序：同名次保持发现顺序
+    for element in elements[:MAX_RUNTIME_ELEMENTS_IN_STEP]:
         selector = str(element.get("selector") or "")
         if selector:
             specs.append(
@@ -255,6 +351,9 @@ def _runtime_payload(info: RuntimePageInfo) -> dict[str, Any]:
             for e in info.visible_elements()[:MAX_RUNTIME_ELEMENTS_IN_STEP]
         ],
         "console_error_baseline": len(info.console_errors),
+        # 批次 C（P2）：面板区域重放坐标（普通页为空，旧产物天然兼容）
+        "parent_url": info.parent_url,
+        "nav_path": list(info.nav_path),
     }
 
 
@@ -314,6 +413,31 @@ def build_case(  # noqa: PLR0913 - 生成选项本就多，显式关键字参数
 
     precondition = precondition_of(category, layer)
     runtime_info = (runtime_index or {}).get(area)
+    # 元素级功能点的 area 是 `/path#kind:text|selector` 复合键，索引里没有这个键；
+    # 解析出所属页面再查一次，正文才能写上「真实页面地址 + 控制台基线」。
+    # 机器步（steps[0].runtime）仍只认直命中，避免给 259 条元素用例都挂一份整页元素清单。
+    doc_info = runtime_info
+    panel_runtime: dict[str, Any] | None = None
+    if doc_info is None and is_ui_layer:
+        parts = _element_area_parts(area)
+        if parts is not None:
+            doc_info = (runtime_index or {}).get(parts[0])
+        # 批次 C（P2）：元素级面板区域 `area::sig#kind:text|selector` 的索引键是 `area::sig`。
+        # 与路由页元素不同，面板页必须带父页+导航路径才能执行。这里只挂**精简** runtime
+        # （定位坐标 + 基线），不挂整页元素、不覆盖显式断言——特定元素的 selector 由批次 A
+        # 的 assertions_of 从 path 解析，若用整页 design_assertions 反而会把它挤掉。
+        panel_key = _panel_area_key(area)
+        if panel_key is not None:
+            panel_info = (runtime_index or {}).get(panel_key)
+            if panel_info is not None:
+                doc_info = panel_info
+                panel_runtime = {
+                    "url": panel_info.url,
+                    "path": panel_info.path,
+                    "parent_url": panel_info.parent_url,
+                    "nav_path": list(panel_info.nav_path),
+                    "console_error_baseline": len(panel_info.console_errors),
+                }
     auth_mode = (
         auth_profile.mode_for(source) if auth_profile is not None else AuthMode.REQUIRED.value
     )
@@ -341,7 +465,12 @@ def build_case(  # noqa: PLR0913 - 生成选项本就多，显式关键字参数
         # 契约 Additive：运行时发现细节，供 UI 层执行器与人工复核使用（不含凭证）
         step0["runtime"] = _runtime_payload(runtime_info)
         # F9：把 selector 变成可判定断言（不再只是「参考」）
-        step0["assertions"] = design_assertions(runtime_info)
+        # E2/A4：标题+期望点名的元素优先纳入（不受 20 条截断）
+        step0["assertions"] = design_assertions(runtime_info, named_text=f"{title} {expect}")
+    elif panel_runtime is not None:
+        # 批次 C：元素级面板区只有定位坐标，无整页断言；特定元素断言仍由
+        # assertions_of 从 path 解析（此处不设 step0["assertions"]）。
+        step0["runtime"] = panel_runtime
     steps = [step0]
 
     return CaseSpec(
@@ -353,7 +482,7 @@ def build_case(  # noqa: PLR0913 - 生成选项本就多，显式关键字参数
         case_type=str(category),
         priority=priority_of(str(category), module),
         precondition=precondition,
-        doc_steps=build_doc_steps(tp, precondition, layer, runtime_info, auth_mode),
+        doc_steps=build_doc_steps(tp, precondition, layer, doc_info, auth_mode),
         tp_id=tp_id,
         fp_contract_id=fp_contract_id,
         fp_row_id=fp_row_id,

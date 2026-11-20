@@ -32,10 +32,11 @@ def test_reconcile_is_idempotent(fresh_db):
     specs = [_case("TP-1"), _case("TP-2")]
 
     first = store.reconcile_cases(pid, specs)
-    assert first == {"created": 2, "updated": 0, "reused": 0, "obsolete": 0}
+    # revived 是 T6 新增的计数（作废行被重新产出时复活），未触发时为 0
+    assert first == {"created": 2, "updated": 0, "reused": 0, "obsolete": 0, "revived": 0}
 
     second = store.reconcile_cases(pid, specs)
-    assert second == {"created": 0, "updated": 0, "reused": 2, "obsolete": 0}
+    assert second == {"created": 0, "updated": 0, "reused": 2, "obsolete": 0, "revived": 0}
 
 
 def test_reconcile_content_change_bumps_version(fresh_db):

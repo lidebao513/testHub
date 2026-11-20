@@ -7,6 +7,10 @@ P1-1 演进：适配层 6 项由 planned 占位填充为真实 stage_* 实现（
 新增 `execute` 适配阶段（用例执行）。能力层 11 项名称不变，其 fn 在
 `engine.pipeline._wire_stages_to_registry()` 中由「原始纯函数」覆盖为「编排包装」，
 使 run_pipeline 经 REGISTRY 组链驱动。故总阶段数 11 + 7 = 18。
+
+T5 演进：新增能力层 `quality`（生成后自检：门禁 + 三 KPI + 三通道）→ 12 + 7 = 19。
+它同样以 planned 占位登记、由 pipeline 回注实现，理由与适配层一致：registry 不能
+反向 import pipeline（会成循环依赖）。
 """
 
 from engine.stage_registry import (
@@ -36,6 +40,8 @@ CAPABILITY = [
     "runtime_ui",
     "auth_scan",
     "tag",
+    # T5：生成后自检（门禁 + 三 KPI + 三通道）
+    "quality",
 ]
 ADAPTATION = [
     "pull",
@@ -48,7 +54,7 @@ ADAPTATION = [
 ]
 
 
-def test_registry_has_11_capability_stages():
+def test_registry_has_12_capability_stages():
     assert sorted(capability_stage_names()) == sorted(CAPABILITY)
 
 
@@ -56,8 +62,8 @@ def test_registry_has_7_adaptation_stages():
     assert sorted(adaptation_stage_names()) == sorted(ADAPTATION)
 
 
-def test_registry_total_18():
-    assert len(REGISTRY.list_stages()) == 18
+def test_registry_total_19():
+    assert len(REGISTRY.list_stages()) == 19
 
 
 def test_capability_stages_are_wired():
