@@ -89,7 +89,10 @@
 ## D. 历史文档已登记、但尚未闭环（非本链路隐含缺陷）
 
 来自既有文档，非本次代码扫描发现，列出以免遗漏：
-- `docs/closed_loop_183_2026-11-04.md:83-84`：闭环的 API/UI 触发入口未做；testgen `TestCase` → `AICase` 自动桥接未做（闭环当前消费已存在 AICase）。
+- ~~`docs/closed_loop_183_2026-11-04.md:83-84`：闭环的 API/UI 触发入口未做；testgen `TestCase` → `AICase` 自动桥接未做（闭环当前消费已存在 AICase）。~~
+  **已闭环（#199 / #200，2026-11-04）**：`apps/ui_automation/views_closed_loop.py` + `urls.py` 提供 API 触发入口，
+  `apps/testcases/bridge.py` / `apps/ui_automation/bridge.py` 完成 `TestCase→AICase` 自动桥接，
+  `apps/ui_automation/tests/test_closed_loop_trigger.py` 为守护测试。原文档的「未做」段已过时。
 - `docs/m10_prompt_injection_2026-10-30.md:103-112`：DNS rebinding TOCTOU、302 重定向到元数据靠下一次动作兜底、`UI_PRIVATE_NET_GUARD=off` 属运维降级——均已登记为"已知局限"，未根治。
 - `docs/code_review_pre_explore_177_2026-11-03.md:78-83`：无 run_task 级集成测试（prompt 是否真拼进 task 未单测证明）。
 - 运维类（非代码）：`docs/security_env_bak_remediation_2026-10-30.md` 的 5 项凭据轮换 + 历史清理脚本待用户执行。

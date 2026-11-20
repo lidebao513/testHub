@@ -311,9 +311,14 @@
 
     <div class="card">
       <h2>③ 项目列表</h2>
-      <div class="actions" style="margin:0 0 10px">
+      <div class="actions" style="margin:0 0 10px;flex-wrap:wrap;align-items:center">
         <button class="btn-ghost" onclick="loadProjects()">刷新项目</button>
+        <span style="width:12px"></span>
+        <input type="text" id="multi_pid" placeholder="项目ID（从下方项目点「载入多仓」更快）" style="width:230px">
+        <button class="btn-ghost btn-sm" onclick="loadMultiRepos()">载入多仓</button>
+        <button class="btn-ghost btn-sm" onclick="exitMultiRepos()">回到单仓</button>
       </div>
+      <div id="multi_repo_box" class="hint" style="margin:0 0 10px">当前：<b>单仓模式</b>（手填代码源生成；载入项目仓库后一次生成覆盖多仓）</div>
       <div id="projects"><span class="hint">点击「刷新项目」加载</span></div>
     </div>
 
@@ -807,9 +812,65 @@ function buildBody(){
    传空数组或 [] 回到单仓模式。 */
 function setMultiRepos(specs){
   window.MULTI_REPO_SPECS = Array.isArray(specs) ? specs : [];
+  renderMultiRepoBox();
   log(window.MULTI_REPO_SPECS.length
     ? ("已设置多仓模式：" + window.MULTI_REPO_SPECS.map(function(s){return s.repo_key;}).join(", "))
     : "已回到单仓模式");
+}
+
+/* ---- 多仓模式 UI：项目视图从 repo_bindings 读清单注入（M1）---- */
+function renderMultiRepoBox(){
+  const box = $("multi_repo_box");
+  if(!box) return;
+  const specs = window.MULTI_REPO_SPECS || [];
+  if(!specs.length){
+    box.innerHTML = "当前：<b>单仓模式</b>（手填代码源生成；载入项目仓库后一次生成覆盖多仓）";
+    return;
+  }
+  const rows = specs.map(function(s){
+    const name = escapeHtml(s.repo_key || "(无名仓)");
+    const src = escapeHtml(s.repo_url || s.local_path || "—");
+    return "<li style='margin:2px 0'><b>" + name + "</b> — " + src + "</li>";
+  }).join("");
+  box.innerHTML = "当前：<b>多仓模式（" + specs.length + " 仓）</b>，点「生成用例」将一次覆盖：" +
+    "<ul style='margin:6px 0 0 18px'>" + rows + "</ul>";
+}
+
+async function loadMultiRepos(pid){
+  // pid 来自项目列表「载入多仓」链接；留空时取输入框（便于手动填项目ID）。
+  const id = (pid != null ? pid : ($("multi_pid") ? $("multi_pid").value.trim() : ""));
+  if(!id || !/^\d+$/.test(String(id))){ alert("请输入有效的项目ID（数字）"); return; }
+  try{
+    const r = await api("/api/v1/projects/" + encodeURIComponent(String(id)) + "/repos");
+    const specs = (r.repos || []).map(function(b){
+      return {
+        repo_key: b.repo_key || "",
+        local_path: b.local_path || "",
+        repo_url: b.repo_url || "",
+        base: b.base || null,
+        target: b.target || null,
+        ref: b.ref || "",
+        changed_files: [],
+        selected_paths: []
+      };
+    });
+    if($("multi_pid")) $("multi_pid").value = String(id);
+    if(!specs.length){
+      setMultiRepos([]);
+      alert("项目 " + id + " 没有仓库绑定（repo_bindings）。\n请先在 CI/CLI 生成时注册仓库，或用 migrate 脚本回填。");
+      return;
+    }
+    setMultiRepos(specs);
+    log("已从项目 " + id + " 载入 " + specs.length + " 个仓库绑定（" +
+      (r.multi ? "多仓" : "单仓") + "）：" + specs.map(function(s){return s.repo_key;}).join(", "));
+  }catch(e){
+    log("载入多仓失败：" + e.message);
+    alert("载入多仓失败：" + e.message);
+  }
+}
+
+function exitMultiRepos(){
+  setMultiRepos([]);
 }
 
 /* ---- 任务状态：忙碌态 / 最近任务记忆 / 任务列表（A+B+C 改版） ---- */
@@ -1343,7 +1404,8 @@ async function loadProjects(){
         `<a class="link" onclick="loadTestPoints(${p.id})">测试点</a> `+
         `<a class="link" onclick="exportCases(${p.id})">导出</a> `+
         `<a class="link" onclick="execPid(${p.id})">执行</a> `+
-        `<a class="link" onclick="qaFor(${p.id})">分析</a></td></tr>`;
+        `<a class="link" onclick="qaFor(${p.id})">分析</a> `+
+        `<a class="link" onclick="loadMultiRepos(${p.id})">载入多仓</a></td></tr>`;
     }
     html += "</table>";
     $("projects").innerHTML = html;

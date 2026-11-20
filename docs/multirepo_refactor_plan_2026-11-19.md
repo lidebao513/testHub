@@ -172,8 +172,8 @@ Project(容器, 一个项目)
 - **八环门禁全绿**：secret / lint / format / enum / structure / type(mypy) / security(bandit) / test；
   覆盖率 **82.69%**（阈值 60%）；最终 **1074 passed, 1 skipped**（改造前基线 1037）。
 - 6 个新测试文件：`tests/test_multirepo_stage0.py` ~ `stage5.py`（共 37 例）。
-- **尚未接入**：项目视图 (`index.html` 侧) 需从 `repo_bindings` 读清单并调用 `setMultiRepos`；
-  当前注入点为真实生成的 UI 留好接口，但项目视图的联动 UI 未改造（属前端产品化后续项）。
+- ~~**尚未接入**：项目视图 (`index.html` 侧) 需从 `repo_bindings` 读清单并调用 `setMultiRepos`~~
+  → **M1 已接入（2026-11-20，见 §8）**：项目视图可从 `repo_bindings` 读清单注入。
 
 ### 7.4 门禁修复（既有未提交代码，非多仓逻辑，纯机械修正）
 
@@ -188,3 +188,84 @@ Project(容器, 一个项目)
 - `engine/pipeline.py`：Codeup compare 的 `from_ref/to_ref` 为 `str|None` → `or ""` 收窄；
 - `service/app.py`：三处 SHA1 幂等键摘要加 `# nosec B324`（指纹用途、非安全，与 contracts.py 约定一致）；
 - `RefsRequest(branches)` 显式补 `ref=""` 满足 mypy 构造签名。
+
+---
+
+## 8. M1：项目视图接入多仓（2026-11-20）
+
+背景：阶段 4 只留了 `setMultiRepos(specs)` 注入点与 `buildBody` 的 `b.repos` 组装，
+但**没有数据源端点、也没有调用注入点的 UI**，Web 控制台仍只能手填单仓生成。M1 补齐这条链路。
+
+### 8.1 改动
+- **后端** `service/app.py`：新增 `GET /api/v1/projects/{pid}/repos`（`require_auth`）——
+  从 `store.list_repo_bindings(pid)` 读清单，转成 `RepoSpec` 可消费结构
+  （`repo_key/local_path/repo_url/base/target/ref`，空 base/target→`None`），
+  并带 `multi`（binding>1）标志；空项目/unknown 返回 `repos:[]` 回落单仓。
+- **前端** `service/web/index.html`：
+  - 「③ 项目列表」加「项目ID 输入 + 载入多仓 / 回到单仓」控件，项目每行加「载入多仓」链接；
+  - `loadMultiRepos(pid)` 调新端点 → 映射成 specs → `setMultiRepos(specs)`；
+  - `renderMultiRepoBox()` 显示当前模式与仓清单（由 `setMultiRepos` 自动刷新）；
+  - `exitMultiRepos()` 清空注入回到单仓。
+  - 旧单仓零回归：未注入时 `window.MULTI_REPO_SPECS` 为空，`buildBody` 走原单仓字段。
+
+### 8.2 验收
+- 新增 `tests/test_multirepo_stage6.py` 6 例：端点返回结构/multi 标志/空项目/single binding/
+  unknown 项目 + 前端静态守护（端点调用、注入刷新、载入/退出 UI、buildBody repos 保留）。
+- 相关测试 10 passed（stage6 + stage4）；全量 **1076 passed, 1 skipped**（M1 前 1074）；
+  八环门禁全绿，覆盖率 82%+。
+- 本项仅打通「读清单→注入→一次生成」的 UI 链路；**仓库绑定本身仍由 CI/CLI 生成期或
+  `scripts/migrate_multirepo.py` 注册**（M2 负责真实库回填），M1 不新增绑定写入入口。
+
+---
+
+## 9. M2：真实库执行迁移（2026-11-20）
+
+### 9.1 迁移前体检
+真实库 `services/testgen/data/testgen.db`（99,676,160 B，WAL，`testgen.db-wal` 为 0 B）：
+- `schema_version=6`，无 `repo_bindings` 表，六张数据表全缺 `repo_binding_id` 列；
+- 42 个 project；六表合计 62,756 行（FP 9,936 / TP 21,725 / Case 30,839 / change_log 58 /
+  runs 119 / gen_tasks 79）；三个唯一索引仍是旧定义 `(project_id, xxx_id)`；
+- 端口 8910/8100 未监听（sidecar 计划任务 `testhub-sidecar` 为 Ready），迁移期间无写入占用。
+
+### 9.2 备份（两份）
+1. **一致性备份**（先做）：用 `sqlite3.Connection.backup()` 生成
+   `testgen.db.pre-multirepo-consistent-20261120-094346.bak`，`PRAGMA integrity_check=ok`，
+   各表行数与原库逐表相等。backup API 会带上 WAL 已提交内容，比直接复制主文件可靠。
+2. **脚本自带备份**：迁移时脚本再 `copy2` 一份
+   `testgen.db.pre-multirepo-20261120-094450.bak`。
+
+### 9.3 执行前发现并修复的脚本缺陷
+`--dry-run` 在真正改造前的库上崩溃：`sqlite3.OperationalError: no such table: repo_bindings`。
+根因是 dry-run 刻意跳过 `init_db`，但后续仍无条件查 `repo_bindings`。
+修复：`migrate()` 增 `has_bindings` 表存在性守卫，两处查询在无表时跳过（不写盘）；
+补回归 `test_migrate_dry_run_on_legacy_db_without_bindings_table`——构造真正的 v6 形态库
+（DROP 六个引用列的新索引 → DROP COLUMN → 恢复旧索引 → DROP TABLE），跑 dry-run 后断言
+`bindings_created=1 / indexes_rebuilt=3` 且库形态未被改动。
+修复后预演：`DRY-RUN: {'bindings_created': 42, 'rows_backfilled': 0, 'indexes_rebuilt': 3}`。
+
+### 9.4 执行结果
+```
+[migrate] DONE: {'bindings_created': 42, 'rows_backfilled': 62724, 'indexes_rebuilt': 3}
+```
+复核（迁移库 vs 一致性备份）：
+- `schema_version=7`；`PRAGMA integrity_check=ok`；
+- `repo_bindings` 42 行，42 个 project **全部**有 `repo_key='default'` 绑定；
+- 六表行数与备份**逐表相等**（零丢失），三个唯一索引均含 `COALESCE(repo_binding_id, 0)`，
+  三个普通索引 `idx_{fp,tp,cases}_repo` 存在；
+- 回填 62,724 而非 62,756，差额 32 行**全部是 `gen_tasks.project_id IS NULL`** 的历史失败任务
+  （如 `gen-ca7da72d5261`，被测目录不存在），无 project 可归属，保持 NULL 按 `COALESCE` 归 0 桶，
+  不影响唯一性——属预期，不是漏迁。
+
+### 9.5 旧单仓零回归验证
+用迁移后真实库经 `core.store` 读取，与迁移前备份库直接 SQL 计数对比：
+- 数据量最大的 project 24：迁移前 `(FP=924, TP=4660, Case=4660)`，
+  迁移后 `store.list_*` 返回 `(924, 4660, 4660)`，**逐项一致**；
+- `report_snapshot(24)` 正常生成；`list_projects()` 仍返回 42 个项目；
+- `store.list_repo_bindings(1)` 正确读到 default binding（`local_path='demo-integ'`）。
+
+### 9.6 验收
+- `tests/test_multirepo_stage0.py` 12 passed（含新增 dry-run 旧库守护）；
+- 全量 **1077 passed, 1 skipped, 3 deselected**（M2 前 1076，净增 1 例）；
+- 八环门禁全绿：`GATE_EXIT=0`，secret / ruff lint / ruff format / check_enums /
+  check_structure / mypy / bandit / pytest 全部 rc=0，覆盖率 82%+。
+- **未提交**（按仓库约定，M1 + M2 改动合并后由用户决定是否入库）。

@@ -1265,6 +1265,30 @@ def list_projects() -> dict[str, Any]:
     return {"projects": store.list_projects()}
 
 
+@app.get("/api/v1/projects/{pid}/repos", dependencies=[Depends(require_auth)])
+def get_project_repos(pid: int) -> dict[str, Any]:
+    """列出项目仓库绑定清单（多仓前端 setMultiRepos 注入数据源）。
+
+    每项转成 RepoSpec 可消费结构（repo_key/local_path/repo_url/base/target/ref）；
+    `multi` 为是否多仓（binding > 1），空项目返回空 repos，前端据此回落单仓模式。
+    只读、鉴权沿用 require_auth；旧单仓 project 无 binding 时零回归。
+    """
+    with store.connect() as conn:
+        bindings = store.list_repo_bindings(pid, conn)
+    repos = [
+        {
+            "repo_key": str(b["repo_key"]),
+            "local_path": b["local_path"] or "",
+            "repo_url": b["repo_url"] or "",
+            "base": b["base"] or None,
+            "target": b["target"] or None,
+            "ref": b["ref"] or "",
+        }
+        for b in bindings
+    ]
+    return {"project_id": pid, "repos": repos, "multi": len(repos) > 1}
+
+
 @app.get("/api/v1/projects/{pid}/test-points", dependencies=[Depends(require_auth)])
 def get_test_points(pid: int) -> dict[str, Any]:
     return {"project_id": pid, "test_points": store.list_test_points(pid)}

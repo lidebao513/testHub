@@ -93,11 +93,23 @@ def migrate(conn: sqlite3.Connection, *, dry_run: bool = False) -> dict[str, int
     if not dry_run:
         db_mod.init_db(conn)
 
+    # dry-run 刻意跳过 init_db，迁移前的旧库上 repo_bindings 表尚不存在。
+    # 用表存在性守卫，避免「预演」反过来要求库已经迁完。
+    has_bindings = bool(
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='repo_bindings'"
+        ).fetchone()
+    )
+
     projects = [int(r["id"]) for r in conn.execute("SELECT id FROM projects ORDER BY id")]
     for pid in projects:
-        exists = conn.execute(
-            "SELECT id FROM repo_bindings WHERE project_id=? AND repo_key='default'", (pid,)
-        ).fetchone()
+        exists = (
+            conn.execute(
+                "SELECT id FROM repo_bindings WHERE project_id=? AND repo_key='default'", (pid,)
+            ).fetchone()
+            if has_bindings
+            else None
+        )
         if exists:
             continue
         stats["bindings_created"] += 1
@@ -110,9 +122,13 @@ def migrate(conn: sqlite3.Connection, *, dry_run: bool = False) -> dict[str, int
             )
 
     for pid in projects:
-        binding = conn.execute(
-            "SELECT id FROM repo_bindings WHERE project_id=? AND repo_key='default'", (pid,)
-        ).fetchone()
+        binding = (
+            conn.execute(
+                "SELECT id FROM repo_bindings WHERE project_id=? AND repo_key='default'", (pid,)
+            ).fetchone()
+            if has_bindings
+            else None
+        )
         if not binding:
             continue
         bid = int(binding["id"])

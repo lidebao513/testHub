@@ -252,3 +252,47 @@ def test_migrate_is_idempotent(tmp_path):
     assert second["indexes_rebuilt"] == 0
     assert conn.execute("SELECT COUNT(*) FROM repo_bindings").fetchone()[0] == 1
     conn.close()
+
+
+def test_migrate_dry_run_on_legacy_db_without_bindings_table(tmp_path):
+    """dry-run 必须能在真正改造前的库上预演（无 repo_bindings 表/无新增列），且不落盘。"""
+    run_migrate = _load_migrate().migrate
+
+    conn = sqlite3.connect(str(tmp_path / "legacy_dry.db"))
+    conn.row_factory = sqlite3.Row
+    db_mod.init_db(conn)
+    conn.execute("INSERT INTO projects(name, local_path) VALUES('p', '/tmp/p')")
+    conn.commit()
+
+    # 退回改造前形态：先删引用列的新索引，再删列与 binding 表，最后恢复旧索引定义。
+    for name in (
+        "uq_fp_project_contract",
+        "uq_tp_project_tp_id",
+        "uq_cases_project_tp_id",
+        "idx_fp_repo",
+        "idx_tp_repo",
+        "idx_cases_repo",
+    ):
+        conn.execute(f"DROP INDEX {name}")
+    for table in ("functional_points", "test_points", "cases", "change_log", "runs", "gen_tasks"):
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN repo_binding_id")
+    conn.execute(
+        "CREATE UNIQUE INDEX uq_fp_project_contract ON functional_points(project_id, contract_id)"
+        " WHERE contract_id IS NOT NULL"
+    )
+    conn.execute("DROP TABLE repo_bindings")
+    conn.commit()
+
+    stats = run_migrate(conn, dry_run=True)
+    assert stats["bindings_created"] == 1
+    assert stats["indexes_rebuilt"] == 1
+    # dry-run 不得改动库：表/列仍保持旧形态。
+    assert (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='repo_bindings'"
+        ).fetchone()
+        is None
+    )
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(functional_points)")]
+    assert "repo_binding_id" not in cols
+    conn.close()
