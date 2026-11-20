@@ -184,6 +184,13 @@ Agent 可以导航到任意地址**——包括：
    两者都属独立课题，需改 browser-use / Playwright 网络栈，本次不做。
    **当前缓解**：任务白名单只放可信域名、`UI_DOMAIN_GUARD=strict` 限制越域；内网域名解析类攻击
    仍需在网络层解决，不能声称本方案已覆盖。
+   **2026-11-20 浏览器层加固（P2）**：在 Chromium 启动参数里给已知云元数据域名加
+   `--host-resolver-rules="MAP <host> ~NOTFOUND, ..."`（`_metadata_resolver_rules()`，
+   由 `UI_METADATA_DNS_PIN=off` 可关闭）。这层由浏览器自己的 DNS 解析器执行，页面脚本无论
+   怎么 rebinding 都拿不到这些**固定元数据域名**的 IP，且不经 Python 校验、无 TOCTOU。
+   覆盖范围**仅** `_METADATA_HOSTNAMES` 里的域名（正常测试不会访问，零副作用）；
+   **不覆盖**「任意内网域名（如 internal.corp.com）rebinding 到 10.x」——那仍需 connection-level
+   IP pin 或出口代理，仍属未根治的独立课题。
 2. **重定向**（S6-a，**已加固，非完全根治**）：302 到元数据地址时本次动作参数里的 URL 仍是合法
    起点，`check()` 抓不到。原设计"靠下一次动作判定兜底"，暴露窗口是完整一步。
    2026-11-20 加固：`_ActionGuard.check_landing_url()` 在 `on_step_end` 步末检查
@@ -198,7 +205,7 @@ Agent 可以导航到任意地址**——包括：
 
 ### 6.5 验证
 
-`apps/ui_automation/tests/test_private_net_guard.py`（69 例，纯函数级，不依赖浏览器/网络）：
+`apps/ui_automation/tests/test_private_net_guard.py`（72 例，纯函数级，不依赖浏览器/网络）：
 
 - IP 字面量解析：点分十进制 / 十进制 / 十六进制 / `[::1]` / 非法值；
 - 元数据识别：`169.254.169.254`、`169.254.1.1`、`100.100.100.200`、混淆写法、域名写法；
@@ -209,4 +216,6 @@ Agent 可以导航到任意地址**——包括：
 - **S6 新增 11 例**：降级告警留痕 3 例（`SECURITY DOWNGRADE` 出现/不出现）；
   落点闸门 8 例（元数据恒拦含 `off` 与十进制混淆、内网默认拦/白名单放行/`off` 跳过、
   公网与回环不受影响、空 URL、接线防回退）。
-- 全量回归：`pytest apps/ui_automation/tests` → **349 passed**（S6 前 338）。
+- **P2 新增 3 例（2026-11-20）**：`TestMetadataDnsPin`（规则覆盖全部元数据域名 / 不含通配
+  `MAP *` 不误伤正常域名 / `_create_browser_profile` 接线防回退）。
+- 全量回归：`pytest apps/ui_automation/tests` → **368 passed**（S6 后 349；期间 S4/S5/S7 又增 16 例）。

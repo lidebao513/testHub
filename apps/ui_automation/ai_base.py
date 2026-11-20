@@ -399,6 +399,22 @@ def _is_cloud_metadata_host(host):
     return _ip_in_any(ip, _METADATA_NETS)
 
 
+def _metadata_resolver_rules() -> str:
+    """生成 Chromium --host-resolver-rules：把已知云元数据域名在**浏览器 DNS 层**钉死为不可解析。
+
+    S6-c 的残余缺口是「域名 rebinding 到内网/元数据 IP」——应用层只判 host 字面量、
+    加 getaddrinfo 又会引入 TOCTOU。这里换到浏览器网络层：`MAP <host> ~NOTFOUND` 由
+    Chromium 自己的 DNS 解析器执行，页面脚本无论怎么 rebinding 都拿不到这些域名的 IP，
+    且不经过 Python 校验，不存在「校验时公网、连接时内网」的时间差。
+
+    覆盖范围：仅 `_METADATA_HOSTNAMES` 里的固定元数据域名（它们本就不该在正常测试中出现，
+    零副作用）。不覆盖「任意内网域名 rebinding 到 10.x」——那需要 connection-level IP pin
+    或出口代理，属独立课题，见 docs/m10_prompt_injection_2026-10-30.md §6.4。
+    """
+    rules = ', '.join(f'MAP {h} ~NOTFOUND' for h in sorted(_METADATA_HOSTNAMES))
+    return f'--host-resolver-rules={rules}'
+
+
 def _is_loopback_host(host):
     name = _normalize_host(host)
     if not name:
@@ -2603,6 +2619,12 @@ class BaseBrowserAgent:
             '--disable-web-security',  # 允许跨域请求
         ]
 
+        # S6-c 浏览器层加固：把云元数据域名在 Chromium DNS 层钉死为不可解析。
+        # 允许通过 UI_METADATA_DNS_PIN=off 显式关闭（排障元数据连通性时用），
+        # 默认开启。注意这只挡固定元数据域名，不挡任意内网域名 rebinding（见函数注释）。
+        if str(os.getenv('UI_METADATA_DNS_PIN', 'on')).strip().lower() not in {'0', 'false', 'off', 'no'}:
+            extra_args.append(_metadata_resolver_rules())
+
         # 根据操作系统添加特定参数
         if system == 'Linux':
             # Linux 服务器环境（特别是无头环境）必需的参数
@@ -3249,14 +3271,18 @@ class BaseBrowserAgent:
                         'title': str(getattr(final_state_raw, 'title', '') or ''),
                     }
                     final_text = page_text_from_state(final_state_raw)
-                    if not final_text.strip():
-                        # 末步通常是 done（没有交互元素），回退到最近有元素的历史步
-                        final_text = _page_text_from_history(agent)
-                    if not final_text.strip():
-                        # 历史里也没有元素：用同页预探索标签兜底（跨页则不用）
-                        final_text = _page_text_from_pre_explore(
-                            self, (final_state or {}).get('url', '')
-                        )
+
+                # P3：文本回退独立于终态快照是否采集成功。即便 _capture_final_state
+                # 返回 None（history/session 都取不到 state），历史步与预探索仍可能
+                # 持有可用文本——此前整段回退被关在 if 分支里，一旦快照失败就全落
+                # unknown。三级来源：终态 state → 最近有元素的历史步 → 同页预探索标签。
+                if not final_text.strip():
+                    final_text = _page_text_from_history(agent)
+                if not final_text.strip():
+                    final_url = (final_state or {}).get('url', '') or str(
+                        getattr(getattr(agent, 'history', None), 'urls', None) or ''
+                    )
+                    final_text = _page_text_from_pre_explore(self, final_url)
 
                 # 是否真的执行过动作（决定会话级断言的严格程度）
                 had_actions = True

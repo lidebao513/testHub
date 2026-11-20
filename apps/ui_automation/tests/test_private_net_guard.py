@@ -287,3 +287,26 @@ class TestLandingUrlGuard:
         src = inspect.getsource(ai_base.BaseBrowserAgent.run_task)
         assert 'check_landing_url(' in src
         assert "getattr(step, 'state', None)" in src
+
+
+class TestMetadataDnsPin:
+    """S6-c 浏览器层加固：元数据域名在 Chromium DNS 层被钉死，页面 rebinding 也拿不到 IP。"""
+
+    def test_rules_cover_all_metadata_hostnames(self):
+        rules = ai_base._metadata_resolver_rules()
+        assert rules.startswith('--host-resolver-rules=')
+        for host in ai_base._METADATA_HOSTNAMES:
+            assert f'MAP {host} ~NOTFOUND' in rules
+
+    def test_rules_do_not_touch_normal_hosts(self):
+        rules = ai_base._metadata_resolver_rules()
+        # 不写通配 MAP *，否则会把正常测试域名一起拦掉
+        assert 'MAP *' not in rules
+        assert 'example.com' not in rules
+
+    def test_wiring_in_browser_profile_args(self):
+        import inspect
+
+        src = inspect.getsource(ai_base.BaseBrowserAgent._create_browser_profile)
+        assert '_metadata_resolver_rules()' in src
+        assert 'UI_METADATA_DNS_PIN' in src
