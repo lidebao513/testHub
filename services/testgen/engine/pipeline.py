@@ -2287,10 +2287,42 @@ def _derive_repo_opts(
     return child
 
 
+def _merge_quality_facts(parent_result: PipelineResult, results: list[PipelineResult]) -> None:
+    """把各仓 KPI 重算所需的事实字段并到父 result（hunks 按文件并集、其余按 key 取先者）。"""
+    merged_files: dict[str, Any] = {}
+    merged_hunks: dict[str, list[tuple[int, int]]] = {}
+    merged_semantic: dict[str, list[tuple[str, str]]] = {}
+    merged_attributed: list[dict[str, Any]] = []
+    for r in results:
+        for path, source_file in (r.files or {}).items():
+            merged_files.setdefault(path, source_file)
+        for path, spans in (r.diff_hunks or {}).items():
+            target = merged_hunks.setdefault(path, [])
+            for span in spans or []:
+                if span not in target:
+                    target.append(span)
+        for fp_id, dims in (r.semantic_dims or {}).items():
+            merged_semantic.setdefault(fp_id, dims)
+        merged_attributed.extend(r.attributed_evidence or [])
+    parent_result.files = merged_files
+    parent_result.diff_hunks = merged_hunks
+    parent_result.semantic_dims = merged_semantic
+    parent_result.attributed_evidence = merged_attributed
+    parent_result.has_code = any(r.has_code for r in results)
+
+
 def _aggregate_multirepo_results(
-    parent_result: PipelineResult, results: list[PipelineResult]
+    opts: PipelineOptions,
+    parent_result: PipelineResult,
+    results: list[PipelineResult],
 ) -> PipelineResult:
-    """把逐仓子结果聚合到父结果：counts 求和、产物拼接、count 型字典按 key 求和。"""
+    """把逐仓子结果聚合到父结果：counts 求和、产物拼接、quality 在聚合后重算。
+
+    多仓 quality 不能按字典合并各仓快照——顶层键相同会互相覆盖（只剩末仓），
+    `kpi_*_pct` 会被 Counter 加成 300%。这里先把 KPI 重算所需的事实字段按仓合并，
+    再对全量产物调用一次 `stage_quality` 重算：与单仓完全同一套口径，
+    未来 KPI 增减自动生效，报告侧无需感知多仓。
+    """
     parent_result.counts = dict(sum((Counter(r.counts) for r in results), Counter()))
     for attr in ("scope_summary", "tag_summary"):
         merged: Counter[str] = Counter()
@@ -2305,10 +2337,24 @@ def _aggregate_multirepo_results(
     parent_result.case_stats = dict(case_stats)
     for attr in ("functional_points", "test_points", "cases"):
         setattr(parent_result, attr, [item for r in results for item in getattr(r, attr)])
-    parent_result.notes = [note for r in results for note in r.notes]
+
+    # KPI 重算所需的事实字段：按仓合并（见 _merge_quality_facts）。
+    _merge_quality_facts(parent_result, results)
+
+    # 分仓的 quality 说明由聚合版取代（数字是全项目口径，分仓版会误导读者）。
+    parent_result.notes = [
+        note
+        for r in results
+        for note in r.notes
+        if not note.startswith(("质量门禁：", "三 KPI：", "改动函数未覆盖："))
+    ]
     parent_result.errors = [err for r in results for err in r.errors]
     parent_result.traceability = {k: v for r in results for k, v in (r.traceability or {}).items()}
-    parent_result.quality = {k: v for r in results for k, v in (r.quality or {}).items()}
+
+    # 在一次聚合后的全量 TP/FP 上重算：quality dict 与 counts 的 kpi_*_pct 一次性写对。
+    # apply_gate 幂等（子仓已标的 unverified 不会被改回），stage_quality 只 emit + 记 note，
+    # 这里的 progress 传 None 不向前端重复播报 quality 阶段。
+    stage_quality(opts, parent_result, None)
     return parent_result
 
 
@@ -2359,9 +2405,9 @@ def run_multirepo_pipeline(
         sub.notes.insert(0, f"[{spec.repo_key}] 仓库生成完成")
         results.append(sub)
 
-    # 3) 聚合。
+    # 3) 聚合（含 quality 重算，需用父 opts 的 scopes / mode 口径）。
     result.source_kind = "+".join(sorted({r.source_kind for r in results if r.source_kind}))
-    return _aggregate_multirepo_results(result, results)
+    return _aggregate_multirepo_results(opts, result, results)
 
 
 def run_pipeline_auto(
