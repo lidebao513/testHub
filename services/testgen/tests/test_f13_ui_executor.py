@@ -191,6 +191,69 @@ def test_assertions_of_falls_back_to_runtime_for_legacy_artifacts():
     assert any(s["kind"] == ui_executor.ASSERT_ELEMENT_VISIBLE for s in specs)
 
 
+# ============================================================================
+# 批次 A（P0）· 元素级 path → 机器断言，堵住「页面渲染就算通过」的伪通过
+# ============================================================================
+def test_element_hint_parses_selector_with_css_id():
+    """path 里的 `#` 只切第一个；selector 自身可以是 `#id`。"""
+    hint = ui_executor.element_hint_from_path("area::15条/页#button:下载|#download")
+    assert hint == {"kind": "button", "text": "下载", "selector": "#download"}
+
+
+def test_element_hint_ignores_plain_route_and_unknown_kind():
+    assert ui_executor.element_hint_from_path("/pc/tasks") is None
+    assert ui_executor.element_hint_from_path("/pc/tasks#section") is None
+    assert ui_executor.element_hint_from_path("/pc/tasks#widget:x|#x") is None
+    assert ui_executor.element_hint_from_path("/pc/tasks#button:空选择器|") is None
+
+
+def test_element_path_without_runtime_yields_visible_assertion():
+    """#306 元素级用例：无 runtime 细节也必须产出元素可见断言。"""
+    step = {"path": "/api-testing#nav:AI用例生成|aside.el-aside > li.el-menu-item"}
+    specs = ui_executor.assertions_of(step)
+    visible = [s for s in specs if s["kind"] == ui_executor.ASSERT_ELEMENT_VISIBLE]
+    assert [s["selector"] for s in visible] == ["aside.el-aside > li.el-menu-item"]
+    assert specs[0]["kind"] == ui_executor.ASSERT_PAGE_RENDERED
+
+
+def test_element_hint_dedupes_runtime_selector():
+    step = {
+        "path": "/pc/tasks#button:新建|#new",
+        "runtime": {"elements": [{"selector": "#new"}]},
+    }
+    specs = ui_executor.assertions_of(step)
+    visible = [s for s in specs if s["kind"] == ui_executor.ASSERT_ELEMENT_VISIBLE]
+    assert len(visible) == 1
+
+
+def test_explicit_assertions_are_never_rewritten():
+    explicit = [{"kind": ui_executor.ASSERT_PAGE_RENDERED}]
+    assert (
+        ui_executor.assertions_of({"path": "/pc/tasks#button:新建|#new", "assertions": explicit})
+        == explicit
+    )
+
+
+def test_missing_element_is_failure_even_when_page_renders(tmp_path):
+    """伪通过回归：页面有正文、控制台干净，但元素不存在 → 必须 FAIL 且留截图。"""
+    page = _FakePage(selectors={"#absent": (0, False)})
+    result = _run(
+        page, _case(path="/pc/tasks#button:不存在的按钮|#absent"), screenshot_dir=str(tmp_path)
+    )
+    assert result.status == ExecStatus.FAIL.value
+    assert any("未找到元素" in a["detail"] for a in result.assertions)
+    assert page.screenshots, "非 pass 必须落证据"
+
+
+def test_present_element_still_passes():
+    page = _FakePage(selectors={"#new": (1, True)})
+    result = _run(page, _case(path="/pc/tasks#button:新建|#new"))
+    assert result.status == ExecStatus.PASS.value
+    assert any(
+        a["kind"] == ui_executor.ASSERT_ELEMENT_VISIBLE and a["ok"] for a in result.assertions
+    )
+
+
 def test_unknown_assertion_kind_fails_not_passes():
     page = _FakePage()
     result = _run(page, _case(assertions=[{"kind": "no_such_kind"}]))

@@ -72,6 +72,9 @@ class EnrichOptions:
     # 降级链：模型不可用（如免费额度 AllocationQuota.FreeTierOnly.）时按顺序切换的备选模型。
     # 委托 engine.llm_fallback.chat_with_fallback 统一处理，不在此处各自实现降级。
     model_chain: list[str] = field(default_factory=list)
+    # 第二步 C：文件级中文业务背景（file_path -> describe 缓存描述），注入提示词让 LLM
+    # 知道函数所处的业务场景。空字典=无背景（describe 未命中或未配置），零影响。
+    file_context: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -99,7 +102,11 @@ def attach_evidence(tps: list[TestPoint], fps: list[FunctionalPoint]) -> None:
         line = line_by_fp.get(tp.fp_contract_id, 0)
         tp.evidence = [f"{tp.source}:{line}" if line else tp.source]
         tp.confidence = 1.0
-        tp.origin = "rule"
+        # 来源标签只兜底、不覆盖：T2 影响面（impact）与 T3 语义维度（semantic）靠它把
+        # 「本体 / 影响面 / 运行时」分开统计，这里统一改回 rule 会让下游再也分不出来
+        # （实测：语义维度产出的测试点在产物里全变成 origin=rule）。
+        if not tp.origin:
+            tp.origin = "rule"
 
 
 def rule_enrich(tps: list[TestPoint], fps: list[FunctionalPoint]) -> list[TestPoint]:
@@ -278,12 +285,41 @@ def _parse_json_array(raw: str) -> list[dict[str, Any]]:
     return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else []
 
 
-def _build_prompt(fps: list[FunctionalPoint], limit: int) -> str:
+def fp_fact_line(fp: FunctionalPoint, file_context: dict[str, str] | None = None) -> str:
+    """功能点事实行（第二步 C 共享口径）：在机器键之外补真实业务事实。
+
+    第一步已把中文语义放进 `fp.semantic`、真实签名放进 `fp.signature_hint`，describe
+    缓存的文件级描述可通过 `file_context` 传入。旧提示词只喂 fp_id/type/name/module，
+    LLM 只知道「有个叫 get_domain_detail 的函数」，编不出贴题用例——这里把「它收什么、
+    返回什么、属于什么业务」一并喂进去，供 semantic_enrich 与 llm_design 复用。
+
+    所有字段都来自代码/缓存事实，不臆造；空字段不输出，保持提示词紧凑。
+    """
+    parts = [f"fp_id={fp.fp_id}", f"type={fp.ftype}", f"name={fp.name}"]
+    if fp.module:
+        parts.append(f"module={fp.module}")
+    hint = (fp.signature_hint or "").strip()
+    if hint:
+        parts.append(f"真实签名[{hint}]")
+    sem = (fp.semantic or "").strip()
+    if sem:
+        parts.append(f"功能语义[{sem}]")
+    line = "- " + " | ".join(parts)
+    ctx = (file_context or {}).get(fp.file_path, "").strip()
+    if ctx:
+        line += f"\n    文件业务背景（{fp.file_path}）：{ctx[:160]}"
+    return line
+
+
+def _build_prompt(
+    fps: list[FunctionalPoint], limit: int, file_context: dict[str, str] | None = None
+) -> str:
     lines = [
-        "以下是代码中真实存在的功能点（只能基于它们补充，不得新增）：",
+        "以下是代码中真实存在的功能点（只能基于它们补充，不得新增）。"
+        "请结合每个功能点的真实签名、功能语义与文件业务背景，设计贴题的测试点：",
     ]
     for fp in fps[:limit]:
-        lines.append(f"- fp_id={fp.fp_id} | type={fp.ftype} | name={fp.name} | module={fp.module}")
+        lines.append(fp_fact_line(fp, file_context))
     lines.append(
         "\n请补充测试点，输出 JSON 数组。每个元素字段："
         '{"kind":"extra_case|implicit","fp_id":"...","area":"...","category":"正常|异常|安全|边界",'
@@ -305,7 +341,9 @@ def llm_enrich(
         return result
 
     try:
-        candidates = client.complete_json(_build_prompt(fps, options.max_candidates))
+        candidates = client.complete_json(
+            _build_prompt(fps, options.max_candidates, options.file_context)
+        )
     except LLMError as exc:
         result.notes.append(f"LLM 通道失败，已降级为规则引擎：{exc.message}")
         return result

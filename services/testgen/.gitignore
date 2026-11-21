@@ -39,3 +39,6 @@ logs/
 # ========== 门禁/工具运行日志（会话级，不入库）==========
 _*.log
 pytest_gate.log
+
+# testgen 面板本机默认环境配置（含明文口令，禁止入库）
+service/web/env_defaults.json

@@ -26,7 +26,11 @@
 
 from __future__ import annotations
 
+import re
+import time
+from collections import Counter
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -36,9 +40,9 @@ from uuid import uuid4
 
 from core import store
 from core.config import get_settings
-from core.contracts import CaseSpec, FunctionalPoint, TestPoint
+from core.contracts import CaseSpec, FunctionalPoint, TestPoint, fp_id_of
 from core.db import init_db
-from core.enums import DEFAULT_SCOPE, FType, RunBatchState, Tag, VerifyLayer
+from core.enums import DEFAULT_SCOPE, FType, RunBatchState, Tag, TPType, VerifyLayer
 from core.errors import EngineError, WorkspaceEscapeBlocked
 from core.log import get_logger, log_extra
 from engine import (
@@ -46,11 +50,14 @@ from engine import (
     case_gen,
     diff_tag,
     executor,
+    file_impact,
     fp_extract,
     fp_merge,
     llm_design,
     prd_ingest,
     pull,
+    quality,
+    repo_facts,
     runtime_ui,
     scan,
     semantic_enrich,
@@ -101,12 +108,38 @@ class TargetRequest:
 
 
 @dataclass
+class RepoSpec:
+    """多仓改造（v1.7）：一个仓库的取码/对比输入。
+
+    `repo_key` 是项目内稳定短名（backend/frontend/shared），决定 fp_id 的 repo 分量、
+    存储归属（repo_binding_id）与报告分组。缺省空串时编排层回落到单仓路径（零回归）。
+    """
+
+    repo_key: str = ""
+    local_path: str = ""
+    repo_url: str = ""
+    base: str | None = None
+    target: str | None = None
+    ref: str = ""
+    codeup_token: str = ""
+    pull_deepen: int = 0
+    changed_files: list[str] = field(default_factory=list)
+    selected_paths: list[str] = field(default_factory=list)
+
+
+@dataclass
 class PipelineOptions:
     """一次运行的完整输入。"""
 
     local_path: str = ""  # 可选：纯地址通道（运行时 UI 发现）不需要代码目录
     project_name: str = ""
+    # 多仓改造（v1.7）：非空时走 run_multirepo_pipeline；空列表＝旧单仓行为（零回归）。
+    repo_specs: list[RepoSpec] = field(default_factory=list)
     project_id: int | None = None
+    # 子 opts（由多仓编排派生）：本仓 binding id + 归属短名。
+    # 缺省 None/空串时 stage_register / stage_persist 走旧单仓分支。
+    repo_binding_id: int | None = None
+    repo_key: str = ""
     mode: str = "full"  # full | incremental
     base: str | None = None
     target: str | None = None
@@ -115,6 +148,8 @@ class PipelineOptions:
     # 未给 local_path 时按仓库名落到工作区根下（受管目录，便于只读加固）。
     repo_url: str = ""
     pull_deepen: int = 0  # 浅克隆加深的提交数（0=不加深）
+    # 生成链路取码凭证：与扫描链路共用仓库配置里的有效 PAT（空则回退 env CODEUP_TOKEN）
+    codeup_token: str = ""
     # —— F2：显式变更文件清单 ——
     # 上游（CI / 平台）已算好变更集时直接传入，**优先于**本地 git diff：
     # 服务再跑一次 diff 既慢又可能因浅克隆而失真。路径须为正斜杠相对路径。
@@ -131,6 +166,9 @@ class PipelineOptions:
     persist: bool = True
     # 测试专家系统（D3）：默认开；CLI `--expert-off` 置 False → 降级纯规则基线
     expert_mode: bool = True
+    # 增量 + 地址通道：是否把运行时发现的页面/接口收窄到「本次变更相关」（默认关，
+    # 保持 CLI/测试的既有全站语义；HTTP 入口按请求的「地址通道范围」显式开启）。
+    target_runtime: bool = False
     write_channel_records: bool = True  # 需求1：落库后是否把各通道独立记录写到 outputs/<pid>/
     # 「URL + 账号密码」通道的请求级参数（A1）
     target_req: TargetRequest = field(default_factory=TargetRequest)
@@ -183,6 +221,17 @@ class PipelineResult:
     files: Any = None  # 扫描结果 dict[str, SourceFile]（仅代码通道）
     auth_profile: Any = None  # F8 鉴权接线画像
     tag_by_fp: dict[str, str] = field(default_factory=dict)  # 差异打标结果
+    narrow_fp_ids: set[str] = field(default_factory=set)  # 增量收窄：需收敛维度的功能点 id
+    repo_facts: Any = None  # T4：仓库级事实（静态路由表 + 前端 import 边），扫描期一次性构建
+    # T5：生成后自检（门禁 + 三 KPI + 三通道），由 stage_quality 填充；报告与前端只读这一份
+    quality: dict[str, Any] = field(default_factory=dict)
+    # T5 的下游依赖：T1 的归属证据（改动函数 → 入口功能点）与 T3 的语义维度（fp_id → 维度）。
+    # 必须留在 result 上：KPI 的分母要它们，而 report 阶段已经拿不到 hunk / 源文件了。
+    attributed_evidence: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    semantic_dims: dict[str, list[tuple[str, str]]] = field(default_factory=dict, repr=False)
+    diff_hunks: dict[str, list[tuple[int, int]]] = field(
+        default_factory=dict
+    )  # 取码阶段算好的 hunk
     runtime_options: Any = None  # 运行时 UI 选项
     has_code: bool = False  # 是否有代码目录入口
     runtime_enabled: bool = False  # 是否启用运行时 UI 发现
@@ -208,6 +257,7 @@ class PipelineResult:
             "channel_summary": self.channel_summary,
             "expert": self.expert_summary,
             "security_judge": self.security_judge,
+            "quality": self.quality,
             "errors": self.errors,
         }
 
@@ -221,13 +271,19 @@ def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _new_batch_id() -> str:
-    """执行批次号：`RUN-<yyyymmdd-HHMMSS>-<6位随机>`。
+def _new_batch_id(project_id: int | None = None) -> str:
+    """执行批次号：`RUN-p<项目>-<yyyymmdd-HHMMSS>-<12位随机>`。
 
     批次是**事件**（不是产物），因此用时间 + 随机后缀而非内容指纹——
     同一秒内连跑两次也必须能区分开，否则历史会互相覆盖。
+
+    B12：带项目前缀 + 随机扩到 12 位。原 6 位随机在跨项目共享全局主键时，
+    不同项目极概率撞号会导致 run_batches 的 ON CONFLICT 把批次改挂到另一项目、
+    而旧 runs 留在原项目（结论分裂）。带前缀 + 扩位把碰撞概率降到可忽略，
+    且无需改表结构/迁移（复合主键方案风险过高）。
     """
-    return f"RUN-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+    prefix = f"p{project_id}-" if project_id is not None else ""
+    return f"RUN-{prefix}{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:12]}"
 
 
 def _count_by(items: list[Any], key: Callable[[Any], str]) -> dict[str, int]:
@@ -282,8 +338,10 @@ def stage_pull(opts: PipelineOptions, result: PipelineResult, progress: Progress
         base=opts.base or "",
         target=opts.target or "",
         deepen=opts.pull_deepen,
+        token=opts.codeup_token,
     )
     result.pull_result = pulled.to_dict()
+    result.diff_hunks = dict(pulled.diff_hunks)  # 增量收窄用（取码时同 ref 算好，避免重跑 git）
     result.counts["pull_changed_files"] = pulled.changed_count
     result.notes.append(pulled.summary_line())
     result.errors.extend(pulled.errors[:5])
@@ -314,13 +372,28 @@ def _default_project_name(opts: PipelineOptions) -> str:
 def stage_register(
     opts: PipelineOptions, result: PipelineResult, progress: ProgressFn | None = None
 ) -> None:
-    if opts.persist:
+    # 多仓改造（v1.7）：子 opts 已带 project_id（父编排统一注册过），直接复用，
+    # 不因每个仓再 upsert 一次 project（否则同 project_name 反复更新、且丢失共享语义）。
+    if opts.project_id is not None:
+        result.project_id = opts.project_id
+    elif opts.persist:
         init_db()
         name = opts.project_name or _default_project_name(opts)
         source = opts.local_path or opts.target_req.base_url
         result.project_id = store.upsert_project(name, source)
-    elif opts.project_id is not None:
-        result.project_id = opts.project_id
+    if result.project_id and opts.repo_binding_id and opts.repo_key:
+        # 子 opts 的 binding 由父编排创建；这里只做「缺失时补齐」的幂等兜底，
+        # 让单独跑某个子 opts（如调试）也能自洽。用返回的真实 id 覆盖，保证
+        # 后续 stage_persist 归属到正确的行。
+        opts.repo_binding_id = store.upsert_repo_binding(
+            result.project_id,
+            opts.repo_key,
+            local_path=opts.local_path,
+            repo_url=opts.repo_url,
+            base=opts.base or "",
+            target=opts.target or "",
+            ref=opts.repo_specs[0].ref if opts.repo_specs else "",
+        )
 
 
 # ============================================================================
@@ -332,6 +405,20 @@ def stage_scan(opts: PipelineOptions, result: PipelineResult, progress: Progress
         return
     _emit(progress, "scan", path=opts.local_path)
     files = scan.Scanner(opts.local_path).index()
+    # T4：仓库级事实（静态路由表 + 前端 import 边）必须在**子集过滤之前**构建——
+    # 路由表（App.tsx）与 import 方（父页面）通常不在用户勾选的 5 个文件里，过滤后再算
+    # 就只剩变更文件自己，跨文件关系永远为空。
+    if files:
+        result.repo_facts = repo_facts.build_repo_facts(files)
+        stats = dict(getattr(result.repo_facts, "stats", {}) or {})
+        result.counts.update(stats)
+        if stats.get("repo_route_bindings"):
+            result.notes.append(
+                f"仓库事实：静态路由表 {stats['repo_route_bindings']} 条绑定"
+                f"（{stats.get('repo_route_files', 0)} 个路由文件）、"
+                f"前端 import {stats.get('repo_import_specs', 0)} 条"
+                f"（{stats.get('repo_import_files', 0)} 个文件）"
+            )
     # 按子集生成：仅保留命中 selected_paths 的文件（精确匹配或目录前缀）。
     if opts.selected_paths:
         sel = {s.strip().replace("\\", "/").rstrip("/") for s in opts.selected_paths if s.strip()}
@@ -355,6 +442,27 @@ def stage_scan(opts: PipelineOptions, result: PipelineResult, progress: Progress
 # ============================================================================
 # 阶段 2：功能点提取
 # ============================================================================
+def _apply_repo_key_to_fps(fps: list[FunctionalPoint], repo_key: str) -> list[FunctionalPoint]:
+    """多仓改造（v1.7）：给本仓功能点注入 repo 分量并重算 fp_id。
+
+    - `repo_key` 空 → 原样返回（单仓零回归）；
+    - 仅重算「标准编号」`FP-<8位hex>` 的功能点（fp_extract 产出的）；非标准编号
+      （如 runtime_ui 的 `FP-` 前缀自定义编号、手工构造）保留原 id，只标记 repo_key，
+      避免破坏它们的既有语义。
+    - 用 fp 上现有的 (ftype, file_path, name) 复现 fp_id_of 的哈希输入，只多带 repo_key。
+    """
+    if not repo_key:
+        return fps
+    import re as _re
+
+    pattern = _re.compile(r"^FP-[0-9a-f]{8}$")
+    for fp in fps:
+        fp.repo_key = repo_key
+        if pattern.match(fp.fp_id):
+            fp.fp_id = fp_id_of(fp.ftype, fp.file_path, fp.name, repo_key=repo_key)
+    return fps
+
+
 def stage_extract(
     opts: PipelineOptions,
     result: PipelineResult,
@@ -393,6 +501,12 @@ def stage_extract(
         result.notes.append(
             f"业务调用图吞并（F6）：{absorbed} 个辅助函数融入其调用方，未单独产出功能点{tail}"
         )
+    # 多仓改造（v1.7）：给本仓产出的功能点 ID 注入 repo 分量。
+    # fp_extract 内部的 fp_id_of 不带 repo（保持单仓契约冻结），这里在提取后统一重算——
+    # 用 fp 上已有的 (ftype, file_path, name) 复现同一哈希输入，仅多带 repo_key。
+    # 缺省 repo_key 为空时原样返回（零回归）。tp 展开在后续 stage 基于这里的 fp.fp_id，
+    # 故 tp_id 会自动带上 repo 分量；不需要改 fp_extract 的 5 处调用签名。
+    fps = _apply_repo_key_to_fps(fps, opts.repo_key)
     result.counts["functional_points"] = len(fps)
     result.errors.extend(extracted.errors[:20])
     result.functional_points = fps
@@ -485,6 +599,90 @@ def stage_tag(
             "增量通道对它们不做 diff，一律标『全量』（如需增量请以代码通道为准）"
         )
     result.tag_by_fp = tag_by_fp
+    # 增量收窄紧贴打标之后执行（同属 diff 处理，语义内聚）；不单独注册为 registry
+    # stage，避免为内部编排步骤新增对外契约。全量/无 hunk 时 stage_narrow 零改动。
+    stage_narrow(opts, result, progress)
+
+
+# ============================================================================
+# 阶段 3.5：增量收窄（函数级，由 stage_tag 末尾调用）
+# ============================================================================
+def _hunks_from_codeup(opts: PipelineOptions) -> dict[str, list[tuple[int, int]]]:
+    """用 Codeup compare HTTP API 拿 diff hunk（本地 git 不可用时的可靠来源）。"""
+    try:
+        from core import store as _store
+        from engine import codeup_client, incremental_narrow
+
+        creds = _store.find_repo_creds_by_url(opts.repo_url) or {}
+        org_id = str(creds.get("org_id") or "")
+        rid = codeup_client.parse_repo_to_repo_id(opts.repo_url)
+        client = codeup_client.CodeupClient(
+            token=opts.codeup_token, org_id=org_id, verify_ssl=False, timeout=25
+        )
+        diffs = client.compare(rid, from_ref=opts.base or "", to_ref=opts.target or "")
+        return incremental_narrow.hunks_from_compare_diffs(diffs)
+    except Exception:  # noqa: BLE001 - 收窄增强，失败返回空走 B 兜底
+        log.warning("增量收窄：Codeup compare 取 hunk 失败，退化为维度收敛", extra=log_extra())
+        return {}
+
+
+def stage_narrow(
+    opts: PipelineOptions,
+    result: PipelineResult,
+    progress: ProgressFn | None,
+) -> None:
+    """增量模式把功能点收窄到变更函数，避免"改 2 个函数生成 800+ 用例"。
+
+    - 后端有行号功能点：按函数体范围与 diff hunk 交集过滤未变更函数（方案 A）；
+    - 前端/无行号功能点：保留，标记收敛维度（方案 B，交给 tp_expand）。
+    - 全量模式 / 拿不到 hunk：零改动（向后兼容）。
+    """
+    if not opts.is_incremental or not result.has_code or not result.functional_points:
+        return
+    _emit(progress, "narrow", fp=len(result.functional_points))
+
+    # hunk 行号来源（按可靠性排序，见 `_resolve_hunks`）：取码阶段的 diff_hunks →
+    # Codeup compare HTTP API → 本阶段本地重算。都拿不到时不收窄后端，仅前端走 B 兜底。
+    hunks = _resolve_hunks(opts, result)
+
+    from engine import incremental_narrow
+
+    cfg = get_settings()
+    narrow = incremental_narrow.narrow_to_changed_functions(
+        result.functional_points,
+        result.files or {},
+        hunks,
+        changed_files=set(opts.changed_files),
+        attribution=incremental_narrow.AttributionOptions(
+            enabled=cfg.change_attribution,
+            max_entries=cfg.change_attribution_max_entries,
+        ),
+    )
+    result.functional_points = narrow.kept
+    result.narrow_fp_ids = set(narrow.narrow_fp_ids)
+    result.counts.update(narrow.stats)
+    # T5：归属证据留在 result 上——改动函数覆盖率要按「归属到入口」这条路算覆盖，
+    # 只靠 counts["fp_attributed"] 一个数字算不出来是谁覆盖了谁。
+    result.attributed_evidence = list(narrow.attributed_evidence)
+    if narrow.attributed_evidence:
+        for ev in narrow.attributed_evidence:
+            result.notes.append(
+                f"改动归属：{ev['file_path']}:{ev['hunk_line']} 的改动落在无功能点函数 "
+                f"{ev['via']}（私有/被调用图吞并），已按同文件调用图归属到入口 {ev['entry']}"
+                f"（{ev['hops']} 跳）→ {ev['fp_id']}"
+            )
+        result.counts["fp_attributed"] = len(narrow.attributed_evidence)
+    if narrow.dropped_fps:
+        result.notes.append(
+            f"增量收窄（函数级）：过滤 {len(narrow.dropped_fps)} 个未变更函数功能点，"
+            f"保留 {len(narrow.kept)}/{narrow.stats['fp_before']} 个"
+            f"（依据 {len(hunks)} 个文件的 diff hunk 行号）"
+        )
+    if narrow.narrow_fp_ids:
+        result.notes.append(
+            f"增量收窄（维度收敛）：{len(narrow.narrow_fp_ids)} 个无行号功能点（前端/无法定位函数）"
+            "仅展开核心维度，避免泛化模板膨胀"
+        )
 
 
 # ============================================================================
@@ -520,9 +718,12 @@ def stage_auth_scan(
 
 
 def build_expand_context(
-    opts: PipelineOptions, auth_profile: auth_scan.AuthProfile | None
+    opts: PipelineOptions,
+    auth_profile: auth_scan.AuthProfile | None,
+    narrow_fp_ids: set[str] | None = None,
+    semantic_dims: dict[str, list[tuple[str, str]]] | None = None,
 ) -> tp_expand.ExpandContext:
-    """构造测试点展开上下文（范围 / 审核门 / F8 鉴权画像）。
+    """构造测试点展开上下文（范围 / 审核门 / F8 鉴权画像 / 增量维度收敛 / T3 语义维度）。
 
     为什么在组合根构造而不在 `stage_test_points` 内构造：上下文是**本次运行的显式输入**
     （范围来自 CLI/HTTP、鉴权画像来自源码扫描），在编排层组装才能一眼看清
@@ -532,7 +733,266 @@ def build_expand_context(
         scopes=set(opts.scopes),
         review_status=opts.review_status,
         auth_profile=auth_profile,
+        narrow_fp_ids=set(narrow_fp_ids or ()),
+        semantic_dims=dict(semantic_dims or {}),
+        semantic_max_dims=get_settings().semantic_max_dims,
     )
+
+
+def _scan_semantics_by_file(
+    files: dict[str, Any],
+    hunks: dict[str, list[tuple[int, int]]],
+    sem_budget: int,
+) -> tuple[dict[str, list[tuple[str, str]]], dict[str, list[str]]]:
+    """逐文件识别变更语义，返回 ``(维度表, 语义名表)``，键统一为正斜杠相对路径。
+
+    没有源文件（被 selected_paths 过滤掉/不是文本文件）或无命中的文件不产生条目——
+    「没识别出语义」不等于「没有改动」，下游对这些文件走原有维度计划。
+    """
+    from engine import change_semantics as cs
+
+    dims_by_file: dict[str, list[tuple[str, str]]] = {}
+    tags_by_file: dict[str, list[str]] = {}
+    for rel, ranges in hunks.items():
+        norm = str(rel).replace("\\", "/")
+        sf = files.get(rel) or files.get(norm)
+        if sf is None:
+            continue
+        tags = cs.detect(cs.hunk_text(sf, ranges), cs.file_kind_of(norm))
+        dims = cs.dimensions_of(tags, max_dims=sem_budget)
+        if not dims:
+            continue
+        dims_by_file[norm] = dims
+        tags_by_file[norm] = cs.tag_names(tags)
+    return dims_by_file, tags_by_file
+
+
+def _semantic_dims_by_fp(
+    opts: PipelineOptions, result: PipelineResult
+) -> dict[str, list[tuple[str, str]]]:
+    """T3：按本次 diff 识别变更语义，映射成各功能点的语义维度。
+
+    只在「增量 + 代码通道 + 灰度命中该项目」时生效。识别口径见
+    `engine/change_semantics.py`：只扫 hunk 行、排除整行注释、每个语义需 ≥2 个
+    关键词且含强信号。返回空字典时下游按旧逻辑展开（开关 off / 无 hunk 时与基线完全一致）。
+    """
+    if not opts.is_incremental or not result.has_code or not result.functional_points:
+        return {}
+    cfg = get_settings()
+    if not cfg.semantic_dims_enabled(result.project_id):
+        return {}
+    hunks = _resolve_hunks(opts, result)
+    if not hunks:
+        return {}
+
+    # 语义维度只占 max_dims-1 个槽位：留 1 个给该来源类型的核心维度（功能可用性）
+    dims_by_file, tags_by_file = _scan_semantics_by_file(
+        result.files or {}, hunks, max(1, cfg.semantic_max_dims - 1)
+    )
+    out: dict[str, list[tuple[str, str]]] = {}
+    for fp in result.functional_points:
+        dims = dims_by_file.get(str(fp.file_path or "").replace("\\", "/"))
+        if dims:
+            out[fp.fp_id] = list(dims)
+    for rel, names in tags_by_file.items():
+        result.notes.append(
+            f"变更语义（{rel}）：识别到 {'、'.join(names)}，"
+            f"按语义补 {len(dims_by_file[rel])} 个维度"
+        )
+    if out:
+        result.counts["semantic_fp"] = len(out)
+        result.counts["semantic_dims"] = sum(len(v) for v in out.values())
+    # T5：维度覆盖率的理论值要把语义维度算进去，否则「实际 12 / 理论 13」会算出 >1
+    result.semantic_dims = {k: list(v) for k, v in out.items()}
+    return out
+
+
+def _route_for_screen(facts: Any, rel: str) -> tuple[Any, str]:
+    """无路由屏幕的取址证据：直接文件绑定 > 父页路由；都没有返回空。"""
+    hit = facts.route_of_file(rel)
+    if hit is not None:
+        return hit, "file_bound"
+    for spec in facts.importers_of(rel, exclude_router=False):
+        hit = facts.route_of_file(spec.importer)
+        if hit is not None:
+            return hit, "parent_page"
+    return None, ""
+
+
+def _hint_file_bound_routes(opts: PipelineOptions, result: PipelineResult) -> None:
+    """批次 B：给「路由表 import 证据已绑定」的无路由屏幕补可执行地址。
+
+    与 `_infer_page_routes` 的分工必须说清：后者在**增量**模式把页面升级成完整路由页
+    （放开 7 个地址类维度，量级大）；这里在**所有模式**只写 `route_hint`，
+    `has_route` 保持 False —— 维度仍是「交互元素可用」一条，只是用例不再是
+    「定位交互点：src/views/X.vue」这种无法执行的假地址。
+
+    证据优先级：路由表直接绑定组件文件 > import 了它的父页已有路由。
+    两者都没有就保持文件级口径并如实计数，绝不按文件名猜路由。
+    """
+    facts = result.repo_facts
+    if facts is None or not result.has_code:
+        return
+    cfg = get_settings()
+    if not cfg.route_file_hint:
+        return
+    direct = parent = unbound = 0
+    for fp in result.functional_points:
+        if fp.ftype != FType.PAGE.value or fp.has_route or fp.route_hint:
+            continue
+        rel = str(fp.file_path or "")
+        hit, source = _route_for_screen(facts, rel)
+        if hit is None:
+            unbound += 1
+            continue
+        fp.route_hint = hit.path
+        fp.route_source = source
+        if source == "file_bound":
+            direct += 1
+        else:
+            parent += 1
+    if direct or parent or unbound:
+        result.counts["route_file_hint"] = direct
+        result.counts["route_parent_hint"] = parent
+        result.counts["route_unbound_screens"] = unbound
+        result.notes.append(
+            f"文件级屏幕路由绑定：路由表直接命中 {direct} 条、经父页命中 {parent} 条，"
+            f"仍无路由证据 {unbound} 条（保持文件级口径，不猜地址）"
+        )
+
+
+def _infer_page_routes(opts: PipelineOptions, result: PipelineResult) -> None:
+    """T4-A：给「在 pages/ 下但本文件没写 path」的页面反查真实路由。
+
+    只在增量 + 代码通道下生效。为什么不开全量：全量模式下每个无路由页面都会从
+    「1 维交互」变成「3~7 维页面」（可达/未授权/极端视口/四种异常流），全站上百个页面
+    一起放的量级变化属于对既有行为的大改（止损规则 3）；增量只处理本次改动到的少数
+    页面，收益明确、影响面可控。
+
+    推断必须被仓库路由表印证（组件名或文件名候选命中已声明的绝对路由），
+    命中后写 `route_hint`（用例地址）与 `route_source=inferred`（来源可区分）。
+    """
+    facts = result.repo_facts
+    if facts is None or not result.has_code or not opts.is_incremental:
+        return
+    cfg = get_settings()
+    if not cfg.route_infer:
+        return
+    runtime_pages: list[str] = []
+    ui = result.runtime_ui
+    if ui is not None:
+        try:
+            runtime_pages = [str(p) for p in ui.reachable_pages()]
+        except (AttributeError, TypeError):  # 运行时结果形态异常不影响生成主链路
+            runtime_pages = []
+    inferred = 0
+    for fp in result.functional_points:
+        if fp.ftype != FType.PAGE.value or fp.has_route:
+            continue
+        hit = repo_facts.infer_route(str(fp.file_path or ""), facts, runtime_pages=runtime_pages)
+        if hit is None:
+            continue
+        fp.has_route = True
+        fp.route_hint = hit.path
+        fp.route_source = "inferred"
+        inferred += 1
+        result.notes.append(
+            f"路由推断：{fp.file_path} 未在本文件声明 path，按仓库路由表反查到 {hit.path}"
+            f"（依据 {hit.evidence()}），已放开该页面的地址类维度"
+        )
+    if inferred:
+        result.counts["route_inferred"] = inferred
+
+
+def _append_file_impact(  # noqa: PLR0911 - 逐个前置条件早退，比嵌套六层更好读
+    opts: PipelineOptions,
+    result: PipelineResult,
+    tps: list[TestPoint],
+) -> list[TestPoint]:
+    """T4-B：前端文件级跨文件回归（import 边）。
+
+    前端没有 AST 反向调用图，「父页面 import 了被改的子组件」在代码通道完全不可见。
+    这里按 import 边补 ≤`FILE_IMPACT_MAX_TOTAL` 条文件级用例：只断言引用区域
+    「能渲染、可交互、控制台无新增报错」，不断言具体元素（元素级断言需要运行时 DOM）。
+    """
+    if not opts.is_incremental or not result.has_code or not result.functional_points:
+        return tps
+    if TPType.NORMAL.value not in opts.scopes:
+        return tps
+    cfg = get_settings()
+    if not cfg.file_impact_enabled or cfg.file_impact_max_total <= 0:
+        return tps
+    if result.repo_facts is None:
+        return tps
+    hunks = _resolve_hunks(opts, result)
+    if not hunks:
+        return tps
+
+    items = file_impact.build_file_impact(
+        result.repo_facts,
+        hunks=hunks,
+        files=result.files or {},
+        fps=result.functional_points,
+        max_total=cfg.file_impact_max_total,
+        stats=result.counts,
+    )
+    result.counts["file_impact_items"] = len(items)
+    if not items:
+        return tps
+    extra = file_impact.file_impact_test_points(items, review_status=opts.review_status)
+    result.counts["file_impact_precise"] = sum(1 for i in items if i.precise)
+    result.notes.append(
+        f"文件级影响面：{len(items)} 个前端组件 import 了本次改动的文件，已补文件级回归用例"
+        f"（上限 {cfg.file_impact_max_total}，符号级命中 {result.counts['file_impact_precise']} 条）："
+        + "、".join(f"{i.importer} → {'/'.join(i.targets)}" for i in items)
+    )
+    return tps + extra
+
+
+def _append_impact_points(
+    opts: PipelineOptions,
+    result: PipelineResult,
+    tps: list[TestPoint],
+) -> list[TestPoint]:
+    """T2 影响面：为「被改函数的调用入口」补「未回归」测试点。
+
+    只在增量 + 代码通道下生效；影响用例的行为维度归属「正常」（验的是主流程未回归），
+    因此 scope 未含「正常」时同样过滤——口径与用户勾选保持一致，不搞特殊通道。
+    """
+    if not opts.is_incremental or not result.has_code or not result.functional_points:
+        return tps
+    if TPType.NORMAL.value not in opts.scopes:
+        return tps
+    cfg = get_settings()
+    if not cfg.impact_enabled:
+        return tps
+    hunks = _resolve_hunks(opts, result)
+    if not hunks:
+        return tps
+
+    from engine import impact
+
+    plan = impact.build_impact_plan(
+        result.files or {},
+        hunks,
+        result.functional_points,
+        max_per_func=cfg.impact_max_per_func,
+        max_total=cfg.impact_max_total,
+    )
+    result.counts.update(plan.stats)
+    result.counts["impact_entry_coverage_pct"] = int(plan.coverage * 100)
+    if plan.items:
+        tail = f"，超预算截断 {plan.truncated} 个" if plan.truncated else ""
+        result.notes.append(
+            f"影响面回归：{len(plan.items)} 个入口受本次改动影响"
+            f"（直接调用 {plan.stats['impact_direct']} / 数据契约 {plan.stats['impact_data']}），"
+            f"已补影响测试点；入口覆盖 {len(plan.items)}/{plan.reachable_entries}{tail}"
+        )
+    elif plan.reachable_entries:
+        result.notes.append(
+            "影响面回归：可达入口均无可用追溯锚点（功能点缺失或归属失败），本次未新增影响用例"
+        )
+    return tps + impact.impact_test_points(plan)
 
 
 def stage_test_points(
@@ -540,11 +1000,21 @@ def stage_test_points(
     result: PipelineResult,
     progress: ProgressFn | None,
 ) -> None:
-    ctx = build_expand_context(opts, result.auth_profile)
+    # 批次 B：先给文件级屏幕补真实地址（只写 route_hint，不放开维度），再走 T4-A 增量推断
+    _hint_file_bound_routes(opts, result)
+    # T4-A：先给无路由页面反查真实路由（决定该页面能不能展开地址类维度），再展开
+    _infer_page_routes(opts, result)
+    # T3：先算语义维度（依赖本次 hunk + 源文件），再展开——顺序不能反，语义要跟着改动走
+    semantic_dims = _semantic_dims_by_fp(opts, result)
+    ctx = build_expand_context(opts, result.auth_profile, result.narrow_fp_ids, semantic_dims)
     fps = result.functional_points
     tag_by_fp = result.tag_by_fp or {}
     _emit(progress, "tp_expand", fp=len(fps))
     tps = tp_expand.expand_all(fps, ctx, tag_by_fp=tag_by_fp)
+    # T2：影响面（被改函数的调用入口）紧随本体展开之后追加，不新增对外 stage
+    tps = _append_impact_points(opts, result, tps)
+    # T4-B：前端文件级跨文件兜底（import 边），再追加一类影响面用例
+    tps = _append_file_impact(opts, result, tps)
     result.test_points = tps
     result.counts["test_points"] = len(tps)
     result.scope_summary = tp_expand.scope_summary(tps)
@@ -554,6 +1024,24 @@ def stage_test_points(
 # ============================================================================
 # 阶段 5：语义增强
 # ============================================================================
+def load_file_context(repo_url: str, fps: list[FunctionalPoint]) -> dict[str, str]:
+    """第二步 C：从 describe 缓存取本次功能点所在文件的中文业务背景。
+
+    只查本次 `fps` 涉及的 file_path（范围限定，不扫全库缓存），按 (repo_url, path) 命中；
+    describe 未跑过 / 缓存缺失 / 查询异常时返回空字典，调用方零影响降级。
+    describe 是**文件级**描述，作为提示词背景注入，不覆盖函数级 semantic 标题。
+    """
+    paths = sorted({fp.file_path for fp in fps if fp.file_path})
+    if not paths:
+        return {}
+    try:
+        cached = store.get_file_descriptions(repo_url, paths)
+    except Exception:  # noqa: BLE001 - 缓存查询失败不影响生成主链路
+        log.warning("describe 背景加载失败，本次不注入", extra=log_extra(repo=repo_url))
+        return {}
+    return {path: str(row["description"]) for path, row in cached.items() if row.get("description")}
+
+
 def stage_enrich(
     opts: PipelineOptions,
     result: PipelineResult,
@@ -561,6 +1049,9 @@ def stage_enrich(
 ) -> None:
     tps = result.test_points
     fps = result.functional_points
+    # 第二步 C：LLM 启用时把 describe 文件背景注入提示词；关闭/无缓存时零影响。
+    if opts.llm.enabled:
+        opts.llm.file_context = load_file_context(opts.repo_url, fps)
     _emit(progress, "semantic_enrich", enabled=opts.llm.enabled)
     enriched = semantic_enrich.enrich(tps, fps, opts.llm)
     result.test_points = enriched.test_points
@@ -705,6 +1196,24 @@ def _review_one_page(
     return added, rejected_delta, list(res.coverage_gaps), bool(res.used_vision), res.vision_note
 
 
+def _plan_expert_page(expert: Any, started: float, budget: int) -> bool:
+    """页前预算判定；未超预算时把本页调用超时压进剩余预算。返回是否应停止。
+
+    只做页前检查挡不住「单页跑 3 分钟」：模型链降级会叠加多次超时重试（实测 170s/页）。
+    把 `expert.options.timeout` 动态压到剩余预算内，最坏情况只略微超出总预算。
+    """
+    if budget <= 0:
+        return False
+    elapsed = time.monotonic() - started
+    if elapsed > budget:
+        return True
+    opts = getattr(expert, "options", None)
+    if opts is not None:
+        base = int(getattr(opts, "timeout", 60) or 60)
+        opts.timeout = max(10, min(base, int(budget - elapsed)))
+    return False
+
+
 def stage_expert_review(
     opts: PipelineOptions,
     result: PipelineResult,
@@ -756,7 +1265,20 @@ def stage_expert_review(
     pages_reviewed = 0
     vision_used = False
     vision_note = ""
-    for page in result.runtime_ui.reachable_pages():
+    # 成本/时长护栏：每页一次大模型调用（实测 30~60s），几十页会把任务拖成「假死」。
+    # 页数上限 + 总时间预算双重封顶，并在每页前上报进度（面板看得到「第 i/N 页」）。
+    all_pages = list(result.runtime_ui.reachable_pages())
+    max_pages = int(getattr(s, "expert_max_pages", 12) or 0)
+    budget = int(getattr(s, "expert_time_budget_sec", 240) or 0)
+    planned = all_pages[:max_pages] if max_pages > 0 else all_pages
+    total = len(planned)
+    started = time.monotonic()
+    budget_exhausted = False
+    for idx, page in enumerate(planned, start=1):
+        if _plan_expert_page(expert, started, budget):
+            budget_exhausted = True
+            break
+        _emit(progress, "expert_review", page=idx, total=total)
         page_added, page_rej, page_gaps, page_vis, page_vnote = _review_one_page(
             page, expert, fps, result
         )
@@ -767,6 +1289,13 @@ def stage_expert_review(
         vision_used = vision_used or page_vis
         if page_vnote:
             vision_note = page_vnote
+    skipped = len(all_pages) - pages_reviewed
+    if skipped > 0:
+        why = "时间预算用尽" if budget_exhausted else f"页数上限 {max_pages}"
+        result.notes.append(
+            f"专家(URL)只审阅了 {pages_reviewed}/{len(all_pages)} 页（{why}）；"
+            "剩余页面按规则基线出用例，可调 EXPERT_MAX_PAGES / EXPERT_TIME_BUDGET_SEC 放开"
+        )
     if added_tps:
         result.test_points = [*result.test_points, *added_tps]
     result.counts["expert_page_tps"] = len(added_tps)
@@ -775,6 +1304,10 @@ def stage_expert_review(
         "enabled": True,
         "channel": "url",
         "expert": "PageExpert",
+        "pages_total": len(all_pages),
+        "pages_planned": total,
+        "pages_skipped": skipped,
+        "budget_exhausted": budget_exhausted,
         "pages_reviewed": pages_reviewed,
         "tps_added": len(added_tps),
         "rejected": rejected,
@@ -804,6 +1337,8 @@ def stage_llm_design(
         return
     _emit(progress, "llm_design", enabled=True)
     design_opts = _design_options(get_settings())
+    # 第二步 C：与 semantic_enrich 同口径，注入 describe 文件背景。
+    design_opts.file_context = load_file_context(opts.repo_url, result.functional_points)
     designed = llm_design.design_cases(
         result.functional_points, result.test_points, result.prd_doc, design_opts
     )
@@ -911,6 +1446,9 @@ def stage_runtime_ui(
     if examples:
         result.notes.append("语义合并明细（示例）：" + "；".join(examples))
     result.merge_conflicts = list(stats.get("conflicts", []) or [])
+    # 增量 + 地址通道：把刚并入的运行时功能点收窄到「本次变更相关」的页面/接口。
+    # 与 stage_narrow 一样属于 diff 处理，不单独注册 registry stage（避免新增对外契约）。
+    stage_target_runtime(opts, result, progress)
 
 
 def _merge_runtime_fps(
@@ -936,6 +1474,133 @@ def _merge_runtime_fps(
 # 地址通道功能点的 file_path 已脱敏为 `runtime:<url>`（绝不泄露账号密码），
 # 与 `fp_merge._RUNTIME_PREFIX` 同源；此处单独声明以避免跨模块依赖。
 _RUNTIME_PREFIX = "runtime:"
+
+# 运行时接口功能点的 name 形如 `GET /api/v1/threads`（方法 + 路径）。
+_API_FP_NAME_RE = re.compile(r"^([A-Z]{3,7})\s+(\S+)$")
+
+
+def _runtime_page_path(file_path: str) -> str:
+    """从 `runtime:<url>` 取页面路径；`runtime:area::<签名>`（无 URL 归属）返回空串。"""
+    rest = file_path[len(_RUNTIME_PREFIX) :] if file_path.startswith(_RUNTIME_PREFIX) else file_path
+    if not rest.lower().startswith("http"):
+        return ""
+    try:
+        return urlparse(rest).path or "/"
+    except ValueError:  # pragma: no cover - urlparse 极少抛错，兜底不阻断
+        return ""
+
+
+def _runtime_fp_in_target(fp: FunctionalPoint, plan: Any) -> bool:
+    """运行时功能点是否落在靶向内（接口按路径、页面/元素按所属页面）。
+
+    `area::` 面板区域**没有 URL 归属**，其名称里混着 CSS 类名（`.flex.w-full` 之类），
+    用关键词弱匹配会大面积误命中（实测把加班/年休假等表单区域全带进来），故一律不纳入
+    靶向；需要它们时把「地址通道范围」改为全站巡检。
+    """
+    if fp.ftype == FType.API.value:
+        m = _API_FP_NAME_RE.match(str(fp.name or ""))
+        return bool(m and plan.match_api(m.group(2)))
+    path = _runtime_page_path(str(fp.file_path or ""))
+    return bool(path) and plan.match_page(path)
+
+
+def _target_changed_files(opts: PipelineOptions) -> list[str]:
+    """参与靶向的变更文件 = 变更集 ∩ 勾选子集（没勾选时用全量变更集）。"""
+    changed = [str(c).replace("\\", "/") for c in (opts.changed_files or [])]
+    sel = [
+        s.strip().replace("\\", "/").rstrip("/") for s in (opts.selected_paths or []) if s.strip()
+    ]
+    if not sel:
+        return changed
+    return [c for c in changed if any(c == s or c.startswith(s + "/") for s in sel)]
+
+
+def _resolve_hunks(opts: PipelineOptions, result: PipelineResult) -> dict[str, Any]:
+    """取增量 hunk：取码结果 → Codeup compare → 本地重算；成功即回写缓存。
+
+    三级顺序的原因：sidecar 进程里 `git diff` 可能因浅克隆/工作区状态返回空，
+    而 Codeup compare 的 unified diff 稳定可用；反过来本地重算最便宜。
+    """
+    hunks: dict[str, Any] = dict(result.diff_hunks or {})
+    if hunks:
+        return hunks
+    if opts.base and opts.target and opts.repo_url and opts.codeup_token:
+        hunks = _hunks_from_codeup(opts)
+    if not hunks and opts.base and opts.target and opts.local_path:
+        try:
+            hunks = diff_tag.compute_diff_hunks(opts.local_path, opts.base, opts.target)
+        except Exception:  # noqa: BLE001 - 取 hunk 是增强，任何失败都不得阻断主链路
+            log.warning("增量 hunk：无法计算 diff hunk，退化为全文处理", extra=log_extra())
+            hunks = {}
+    if hunks:
+        # 回写缓存：增量收窄（stage_narrow）与变更靶向共用同一份 hunk，避免重复取码。
+        result.diff_hunks = dict(hunks)
+    return hunks
+
+
+def _build_target_plan(opts: PipelineOptions, result: PipelineResult) -> Any:
+    """构造变更靶向计划（变更文件 × diff hunk × 运行时发现的页面/接口）。"""
+    from engine import change_targeting
+
+    found = result.runtime_ui
+    pages = [
+        p.path
+        for p in (found.reachable_pages() if found is not None else [])
+        if str(p.path or "").startswith("/")
+    ]
+    endpoints = [(e.method, e.path) for e in (found.api_endpoints if found is not None else [])]
+    return change_targeting.build_target_plan(
+        changed_files=_target_changed_files(opts),
+        hunks=_resolve_hunks(opts, result),
+        sources=result.files or {},
+        api_endpoints=endpoints,
+        page_paths=pages,
+    )
+
+
+def stage_target_runtime(
+    opts: PipelineOptions,
+    result: PipelineResult,
+    progress: ProgressFn | None,
+) -> None:
+    """增量 + 地址通道：把运行时功能点收窄到「本次变更相关」的页面/接口。
+
+    背景：增量模式只约束代码通道；一旦同时给了被测地址，运行时通道会把整站扫一遍，
+    产出几百条与变更无关的用例（实测「改 5 个文件出 294 条」）。本阶段用
+    `engine/change_targeting` 把变更映射成目标集合，剔除无关的页面/接口/元素。
+
+    只在 `opts.target_runtime and opts.is_incremental` 时生效；计划为空（改的是样式/
+    配置等无可映射目标）时同样剔除全部 URL 功能点，并如实写 notes，绝不静默。
+    """
+    if not (opts.target_runtime and opts.is_incremental):
+        return
+    if result.runtime_ui is None or not result.functional_points:
+        return
+    _emit(progress, "target_runtime", fp=len(result.functional_points))
+    plan = _build_target_plan(opts, result)
+    kept: list[FunctionalPoint] = []
+    dropped = 0
+    for fp in result.functional_points:
+        if not str(fp.file_path or "").startswith(_RUNTIME_PREFIX):
+            kept.append(fp)
+            continue
+        if _runtime_fp_in_target(fp, plan):
+            kept.append(fp)
+        else:
+            dropped += 1
+    result.functional_points = kept
+    result.counts["functional_points"] = len(kept)
+    result.counts["runtime_fp_targeted"] = sum(
+        1 for fp in kept if str(fp.file_path or "").startswith(_RUNTIME_PREFIX)
+    )
+    result.counts["runtime_fp_skipped_by_target"] = dropped
+    result.notes.extend(plan.notes)
+    if dropped:
+        result.notes.append(
+            f"变更靶向：保留 {result.counts['runtime_fp_targeted']} 条与本次变更相关的运行时功能点，"
+            f"剔除 {dropped} 条无关页面/接口/元素"
+            "（如需全站巡检，把「地址通道范围」改为全站巡检）"
+        )
 
 
 def stage_partition_channels(
@@ -1017,7 +1682,7 @@ def stage_execute(
         return
     runtime_options = result.runtime_options
     _emit(progress, "execute", cases=len(result.cases))
-    result.run_batch_id = _new_batch_id()
+    result.run_batch_id = _new_batch_id(result.project_id)
     started = _now_iso()
     exec_options = _build_exec_options(opts, runtime_options, result.project_id)
     try:
@@ -1045,6 +1710,7 @@ def _build_exec_options(
         auth_token=runtime_options.auth_token or s.runtime_auth_token,
         headless=runtime_options.headless,
         timeout=runtime_options.timeout,
+        budget_seconds=float(s.exec_budget_seconds or 0),
         allow_write=bool(opts.target_req.allow_write or s.executor_allow_write),
         # —— F13：浏览器（UI 层）通道 ——
         # 仅在「真配置了运行时 UI（RUNTIME_UI_ENABLED=on 或指定了浏览器 channel 或显式开启）」
@@ -1186,7 +1852,7 @@ def run_execution(
             raise EngineError(f"项目 {project_id} 在给定 tp_ids 范围内没有可执行的用例")
     ro = _runtime_options_for_execute(opts)
     exec_options = _build_exec_options(opts, ro, project_id)
-    batch_id = _new_batch_id()
+    batch_id = _new_batch_id(project_id)
     started = _now_iso()
     _emit(progress, "execute", cases=len(cases))
     try:
@@ -1294,12 +1960,109 @@ def stage_cases(
 
 
 # ============================================================================
+# 阶段 6.9（T5）：生成后自检 —— 门禁 + 三 KPI + 三通道
+# ============================================================================
+def stage_quality(
+    opts: PipelineOptions,
+    result: PipelineResult,
+    progress: ProgressFn | None,
+) -> None:
+    """生成后自检：给测试点做命题门禁，并算出三个覆盖率 KPI。
+
+    放在 `case_gen` / `llm_design` 之后：这两步才把测试点集合最终定下来（LLM 设计会补
+    虚拟测试点、`stage_cases` 会去重），早于它们算出来的 KPI 是半个盘点。
+    门禁**不删测试点**，只置 `unverified` + 记原因：删掉会让人误以为「本来就没这个维度」。
+    """
+    tps = result.test_points
+    cfg = get_settings()
+    _emit(progress, "quality", tp=len(tps))
+    gate = quality.apply_gate(tps, enabled=cfg.quality_gate, fps=result.functional_points)
+    hunks = _resolve_hunks(opts, result) if (result.has_code and opts.is_incremental) else {}
+    kpis = quality.compute_kpis(
+        tps,
+        fps=result.functional_points,
+        files=result.files or {},
+        hunks=hunks,
+        scopes=set(opts.scopes),
+        semantic=result.semantic_dims,
+        attributed=result.attributed_evidence,
+        # T2/T4 的统计已并入 counts（impact_* / file_impact_*），这里直接复用同一份事实，
+        # 不再重算一遍——重算必然与产点时的入参漂移，覆盖率就成了第二个真值源
+        impact_stats=result.counts,
+        file_impact_stats=result.counts,
+    )
+    channels = quality.channel_summary(tps)
+    result.quality = {
+        "enabled": cfg.quality_gate,
+        "gate": gate,
+        "kpis": kpis,
+        "channels": channels,
+        "summary": quality.summarize(tps),
+    }
+    result.counts.update(
+        {
+            "gate_blocked": gate["gate_blocked"],
+            "gate_best_effort": gate[quality.GATE_BEST_EFFORT],
+            "kpi_changed_func_pct": _pct(kpis["changed_func_coverage"]["value"]),
+            "kpi_impact_entry_pct": _pct(kpis["impact_entry_coverage"]["value"]),
+            "kpi_dimension_pct": _pct(kpis["dimension_coverage"]["value"]),
+            # 分子/分母也进 counts：度量脚本与前端只读 counts 就能画「3/4」，
+            # 不必去猜 result.quality 的嵌套结构（那结构会随 KPI 增删而变）
+            "changed_func_covered": kpis["changed_func_coverage"]["covered"],
+            "changed_func_total": kpis["changed_func_coverage"]["total"],
+            "impact_entry_covered": kpis["impact_entry_coverage"]["covered"],
+            "impact_entry_total": kpis["impact_entry_coverage"]["total"],
+            "dimension_actual": kpis["dimension_coverage"]["actual"],
+            "dimension_theory": kpis["dimension_coverage"]["theory"],
+        }
+    )
+    cf = kpis["changed_func_coverage"]
+    im = kpis["impact_entry_coverage"]
+    dm = kpis["dimension_coverage"]
+    if cfg.quality_gate:
+        result.notes.append(
+            f"质量门禁：{gate['quality_gated']} 条过检，拦下 {gate['gate_blocked']} 条"
+            f"（无证据 {gate[quality.GATE_NO_EVIDENCE]} / 预期不可观测 "
+            f"{gate[quality.GATE_NO_OBSERVABLE]} / 无来源标签 {gate[quality.GATE_NO_ORIGIN]}），"
+            f"另有 {gate[quality.GATE_BEST_EFFORT]} 条需特殊环境（诚实标未验证，不算水货）"
+        )
+    else:
+        result.notes.append("质量门禁：已关闭（QUALITY_GATE=off），测试点未做命题自检")
+    result.notes.append(
+        f"三 KPI：改动函数覆盖 {cf['covered']}/{cf['total']} = {_pct(cf['value'])}%；"
+        f"影响入口覆盖 {im['covered']}/{im['total']} = {_pct(im['value'])}%"
+        f"（后端 {im['backend']['covered']}/{im['backend']['total']}、"
+        f"前端 {im['frontend']['covered']}/{im['frontend']['total']}）；"
+        f"维度覆盖 {dm['actual']}/{dm['theory']} = {_pct(dm['value'])}%"
+    )
+    if cf["uncovered"]:
+        result.notes.append(
+            "改动函数未覆盖："
+            + "、".join(f"{u['file']}::{u['symbol']}" for u in cf["uncovered"][:5])
+        )
+    result.counts["channel_body"] = channels[quality.CHANNEL_BODY]["tp"]
+    result.counts["channel_impact"] = channels[quality.CHANNEL_IMPACT]["tp"]
+    result.counts["channel_runtime"] = channels[quality.CHANNEL_RUNTIME]["tp"]
+
+
+def _pct(value: float) -> int:
+    """0~1 的比例 → 整数百分比（报告里统一用整数，避免 0.3333 这种噪声）。"""
+    return round(float(value or 0) * 100)
+
+
+# ============================================================================
 # 阶段 7：落库（幂等）
 # ============================================================================
 def _persist_without_db(
     result: PipelineResult, tps: list[TestPoint], cases: list[CaseSpec]
 ) -> None:
-    result.case_stats = {"created": len(cases), "updated": 0, "reused": 0, "obsolete": 0}
+    result.case_stats = {
+        "created": len(cases),
+        "updated": 0,
+        "reused": 0,
+        "obsolete": 0,
+        "revived": 0,
+    }
     result.traceability = case_gen.coverage_of(cases, tps)
 
 
@@ -1340,15 +2103,16 @@ def stage_persist(
         return
 
     pid = result.project_id
-    _emit(progress, "persist", project_id=pid)
+    bid = opts.repo_binding_id
+    _emit(progress, "persist", project_id=pid, repo_binding_id=bid)
     with store.connect() as conn:
         init_db(conn)
-        store.replace_functional_points(pid, fps, conn=conn)
-        store.replace_test_points(pid, tps, conn=conn)
+        store.replace_functional_points(pid, fps, repo_binding_id=bid, conn=conn)
+        store.replace_test_points(pid, tps, repo_binding_id=bid, conn=conn)
         fp_rows = store.fp_row_map(pid, conn)
         for case in cases:
             case.fp_row_id = fp_rows.get(case.fp_contract_id)
-        result.case_stats = store.reconcile_cases(pid, cases, conn=conn)
+        result.case_stats = store.reconcile_cases(pid, cases, repo_binding_id=bid, conn=conn)
         result.traceability = store.traceability(pid, conn=conn)
         _persist_execution(pid, result, conn)
         store.log_change(
@@ -1410,6 +2174,9 @@ _P1_STAGE_WIRING: tuple[tuple[str, StageKind, Callable[..., Any]], ...] = (
     ("prd_ingest", StageKind.CAPABILITY, stage_prd_ingest),
     ("case_gen", StageKind.CAPABILITY, stage_cases),
     ("llm_design", StageKind.CAPABILITY, stage_llm_design),
+    # T5：门禁与 KPI 必须在「测试点集合已定稿」之后（llm_design 会补虚拟测试点、
+    # case_gen 会去重），且在 persist 之前（报告要读 quality 快照）
+    ("quality", StageKind.CAPABILITY, stage_quality),
     ("execute", StageKind.ADAPTATION, stage_execute),
     ("partition_channels", StageKind.ADAPTATION, stage_partition_channels),
     ("persist", StageKind.ADAPTATION, stage_persist),
@@ -1448,6 +2215,7 @@ PIPELINE_STAGE_ORDER: tuple[str, ...] = (
     "prd_ingest",
     "case_gen",
     "llm_design",
+    "quality",
     "execute",
     "partition_channels",
     "persist",
@@ -1489,6 +2257,123 @@ def run_pipeline(
 
     _emit(progress, "done", **result.counts)
     return result
+
+
+# ============================================================================
+# 多仓改造（v1.7）：逐仓子 opts + 共享 project + 结果聚合
+# ============================================================================
+def _derive_repo_opts(
+    parent: PipelineOptions, spec: RepoSpec, project_id: int | None, binding_id: int | None
+) -> PipelineOptions:
+    """从父 opts + 仓库规格 + 共享 project/binding 派生一个单仓子 opts。
+
+    子 opts 的 `repo_specs` 置空——避免 run_pipeline 内部再次进入多仓编排；
+    `local_path/repo_url/base/target/changed_files/selected_paths` 用本仓值覆盖；
+    `project_id/repo_binding_id/repo_key` 让 register/persist 共享容器、按仓隔离写入。
+    """
+    child = deepcopy(parent)
+    child.local_path = spec.local_path
+    child.repo_url = spec.repo_url
+    child.base = spec.base
+    child.target = spec.target
+    child.changed_files = list(spec.changed_files)
+    child.selected_paths = list(spec.selected_paths)
+    child.pull_deepen = spec.pull_deepen or parent.pull_deepen
+    child.codeup_token = spec.codeup_token or parent.codeup_token
+    child.project_id = project_id
+    child.repo_binding_id = binding_id
+    child.repo_key = spec.repo_key
+    child.repo_specs = []  # 子 opts 走单仓路径
+    return child
+
+
+def _aggregate_multirepo_results(
+    parent_result: PipelineResult, results: list[PipelineResult]
+) -> PipelineResult:
+    """把逐仓子结果聚合到父结果：counts 求和、产物拼接、count 型字典按 key 求和。"""
+    parent_result.counts = dict(sum((Counter(r.counts) for r in results), Counter()))
+    for attr in ("scope_summary", "tag_summary"):
+        merged: Counter[str] = Counter()
+        for r in results:
+            merged.update(getattr(r, attr) or {})
+        setattr(parent_result, attr, dict(merged))
+    case_stats: Counter[str] = Counter()
+    for r in results:
+        case_stats.update(
+            {k: int(v) for k, v in (r.case_stats or {}).items() if isinstance(v, (int, float))}
+        )
+    parent_result.case_stats = dict(case_stats)
+    for attr in ("functional_points", "test_points", "cases"):
+        setattr(parent_result, attr, [item for r in results for item in getattr(r, attr)])
+    parent_result.notes = [note for r in results for note in r.notes]
+    parent_result.errors = [err for r in results for err in r.errors]
+    parent_result.traceability = {k: v for r in results for k, v in (r.traceability or {}).items()}
+    parent_result.quality = {k: v for r in results for k, v in (r.quality or {}).items()}
+    return parent_result
+
+
+def run_multirepo_pipeline(
+    opts: PipelineOptions,
+    *,
+    progress: ProgressFn | None = None,
+) -> PipelineResult:
+    """多仓改造（v1.7）主编排：一个 project 下对 N 个仓各跑一次完整流水线。
+
+    与 `run_pipeline` 的关系：**不重写 18 阶段链**——每个仓派生一个单仓子 opts，
+    复用同一条 `run_pipeline`，只是共享 project_id、按 repo_binding_id 隔离写入、
+    产物 ID 带 repo 分量。结果聚合后返回。
+
+    `repo_specs` 为空时直接回落 `run_pipeline`（零回归）。
+    """
+    specs = [s for s in opts.repo_specs if s.repo_key]
+    if not specs:
+        return run_pipeline(opts, progress=progress)
+
+    result = PipelineResult(mode=opts.mode)
+    # 1) 建共享 project（容器）——只注册一次。
+    project_id = opts.project_id
+    if project_id is None and opts.persist:
+        init_db()
+        name = opts.project_name or _default_project_name(opts)
+        source = specs[0].local_path or specs[0].repo_url or opts.target_req.base_url
+        project_id = store.upsert_project(name, source)
+    result.project_id = project_id
+
+    # 2) 为每个仓建 binding（幂等 upsert），拿到 binding id。
+    results: list[PipelineResult] = []
+    for spec in specs:
+        binding_id: int | None = None
+        if project_id is not None:
+            binding_id = store.upsert_repo_binding(
+                project_id,
+                spec.repo_key,
+                local_path=spec.local_path,
+                repo_url=spec.repo_url,
+                base=spec.base or "",
+                target=spec.target or "",
+                ref=spec.ref,
+            )
+        child = _derive_repo_opts(opts, spec, project_id, binding_id)
+        _emit(progress, "repo", repo_key=spec.repo_key, binding_id=binding_id)
+        sub = run_pipeline(child, progress=progress)
+        sub.notes.insert(0, f"[{spec.repo_key}] 仓库生成完成")
+        results.append(sub)
+
+    # 3) 聚合。
+    result.source_kind = "+".join(sorted({r.source_kind for r in results if r.source_kind}))
+    return _aggregate_multirepo_results(result, results)
+
+
+def run_pipeline_auto(
+    opts: PipelineOptions, *, progress: ProgressFn | None = None
+) -> PipelineResult:
+    """统一入口：按 opts.repo_specs 是否非空自动分派单仓 / 多仓编排。
+
+    HTTP 同步 / 异步两条入口共用本函数，避免「一处支持多仓、另一处漏改」。
+    """
+    if opts.repo_specs:
+        return run_multirepo_pipeline(opts, progress=progress)
+    return run_pipeline(opts, progress=progress)
 
 
 def default_options(local_path: str = "", *, mode: str = "full") -> PipelineOptions:

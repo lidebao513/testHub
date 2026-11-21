@@ -67,6 +67,32 @@ def test_removed_function_point_marks_case_obsolete(fresh_db, sample_repo):
     assert result.case_stats["obsolete"] > 0, "功能点消失后，其用例应转为 obsolete"
 
 
+def test_obsolete_case_revives_when_case_reappears(fresh_db, sample_repo):
+    """已作废用例被重新产出时必须复活（T6 一致性复检抓到）。
+
+    触发场景：先跑全量把 project 下旧行全标 `obsolete`，再用收窄子集重跑同一批 tp_id。
+    此时内容未变 → 走 `reused` 分支，而旧实现只计数不改 status → 产物 15 条、
+    库里 active 只有 13 条，三口径静默不一致（报告与执行只认 active，少 2 条看不出来）。
+    """
+    first = _run(sample_repo)
+    assert first.case_stats["created"] > 0
+    conn = store.connect()
+    with conn:
+        conn.execute("UPDATE cases SET status='obsolete' WHERE project_id=?", (first.project_id,))
+    conn.close()
+
+    again = _run(sample_repo)
+    assert again.case_stats["revived"] > 0, "已作废的用例被重新产出后必须复活"
+
+    conn = store.connect()
+    active = conn.execute(
+        "SELECT COUNT(*) AS c FROM cases WHERE project_id=? AND status!='obsolete'",
+        (again.project_id,),
+    ).fetchone()
+    conn.close()
+    assert active["c"] == again.counts["cases"], "库里 active 用例数必须等于产物用例数"
+
+
 def test_incremental_mode_tags_update(fresh_db, git_repo):
     """真仓库增量：变更文件下的测试点必须标『更新』，且不得静默降级。
 

@@ -196,3 +196,42 @@ def test_pull_result_fields_align_with_legacy():
         "errors",
     ):
         assert key in d, f"PullResult 缺字段 {key}（与 legacy 失配）"
+
+
+# --- 取码凭证注入：显式 token 优先、可替换旧 token（修复凭证割裂） ---
+
+
+def test_inject_credentials_explicit_token_over_env(monkeypatch):
+    """显式传入的 PAT 必须优先于环境变量（生成链路用它对齐扫描链路）。"""
+    monkeypatch.setenv("CODEUP_TOKEN", "env-old-token")
+    url = "https://codeup.aliyun.com/69cf2ce1f167bac7fd252020/research-agent.git"
+    injected = pull.inject_credentials(url, "explicit-new-token")
+    assert (
+        injected
+        == "https://oauth2:explicit-new-token@codeup.aliyun.com/69cf2ce1f167bac7fd252020/research-agent.git"
+    )
+
+
+def test_inject_credentials_replaces_stale_token_in_url(monkeypatch):
+    """origin 已被注入旧 token 时，显式传新 token 必须替换（否则 fetch 仍 invalid token）。"""
+    monkeypatch.delenv("CODEUP_TOKEN", raising=False)
+    stale = "https://oauth2:stale-token@codeup.aliyun.com/org/repo.git"
+    injected = pull.inject_credentials(stale, "fresh-token")
+    assert injected == "https://oauth2:fresh-token@codeup.aliyun.com/org/repo.git"
+    assert "stale" not in injected
+
+
+def test_inject_credentials_keeps_old_behavior_without_explicit(monkeypatch):
+    """未显式传 token 时保持旧行为：已带凭证幂等返回；无凭证用 env 注入。"""
+    monkeypatch.setenv("CODEUP_TOKEN", "env-token")
+    stale = "https://oauth2:stale@codeup.aliyun.com/org/repo.git"
+    assert pull.inject_credentials(stale) == stale  # 幂等，不被 env 覆盖
+    bare = "https://codeup.aliyun.com/org/repo.git"
+    assert (
+        pull.inject_credentials(bare) == "https://oauth2:env-token@codeup.aliyun.com/org/repo.git"
+    )
+
+
+def test_inject_credentials_non_codeup_untouched():
+    url = "https://github.com/org/repo.git"
+    assert pull.inject_credentials(url, "any-token") == url

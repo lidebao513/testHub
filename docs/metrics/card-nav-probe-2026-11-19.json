@@ -1,0 +1,20 @@
+{
+  "url": "<受控SPA夹具: 四来源全空>",
+  "candidates": 4,
+  "danger_filtered": 0,
+  "labels": [
+    "AI用例生成",
+    "接口测试",
+    "UI自动化测试",
+    "展开更多"
+  ],
+  "selectors": [
+    "#card-cases",
+    "#card-api",
+    "#card-ui",
+    "#card-more"
+  ],
+  "nav_labels": [],
+  "home_links": [],
+  "note": "校准样例：本地受控 SPA（非真实站点）；:3900 匿名访问为登录页故 0 候选，真实 14 候选需带登录态"
+}

@@ -15,7 +15,10 @@
 from __future__ import annotations
 
 import ast
+import os
+import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -320,3 +323,140 @@ def scan_local(
         return sf.text
 
     return _select_and_package(candidates, change_map, path_of=_read_text)
+
+
+# ============================================================================
+# 通用 git 仓库快速扫描（GitHub / 自建 git；复用本机 SSH key / credential helper）
+# ============================================================================
+# 与 pull.py 同口径：本机透明代理会破坏 git HTTPS 协商，显式降级协议版本。
+_GIT_PROTOCOL_PREFIX: tuple[str, ...] = ("-c", "protocol.version=0")
+_GIT_SCAN_TIMEOUT = 180  # 浅克隆 + 补取基线的总超时（秒）
+
+
+def _git_scan_env() -> dict[str, str]:
+    """git 子进程环境：禁止交互凭据提示，复用本机 SSH key / credential helper。"""
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = "echo"
+    env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=10"
+    return env
+
+
+def _git_scan_run(args: list[str], *, timeout: int = _GIT_SCAN_TIMEOUT):
+    return subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+        env=_git_scan_env(),
+    )
+
+
+def _is_full_sha(ref: str) -> bool:
+    """仅完整 40 位十六进制视为 commit SHA；短 SHA 按分支名处理（避免前缀误匹配）。"""
+    return bool(re.fullmatch(r"[0-9a-fA-F]{40}", (ref or "").strip()))
+
+
+def scan_git_repo(
+    repo_url: str,
+    *,
+    ref: str = "",
+    base_ref: str = "",
+    timeout: int = _GIT_SCAN_TIMEOUT,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """通用 git 仓库（GitHub SSH/HTTPS、自建 git）快速扫描。
+
+    与 Codeup 只读 API 路径并列：本机 git 凭据浅克隆到系统临时目录 →
+    复用 ``scan_local`` 产出一致的 ``ScanItem`` → 临时目录自动清理。
+    不修改远端、不在工作区留下目录，语义仍是「只读扫描」。
+
+    - ``ref`` / ``base_ref`` 支持分支、标签与完整 40 位 commit SHA；
+    - 基线 ref 缺失时 best-effort 降级为全 ``unchanged``，不阻塞扫描；
+    - 克隆失败抛 ``RuntimeError``，由端点的统一异常处理器回报错误。
+    """
+    url = (repo_url or "").strip()
+    if not url:
+        raise RuntimeError("git 扫描：仓库地址为空")
+
+    with tempfile.TemporaryDirectory(prefix="tg-git-scan-") as tmp:
+        clone = [
+            "git",
+            *_GIT_PROTOCOL_PREFIX,
+            "clone",
+            "--depth",
+            "1",
+            "--quiet",
+        ]
+        if ref and not _is_full_sha(ref):
+            clone += ["--branch", ref]
+        clone += [url, tmp]
+        cp = _git_scan_run(clone, timeout=timeout)
+        if cp.returncode != 0:
+            detail = (cp.stderr or cp.stdout or "").strip().splitlines()
+            raw = detail[-1] if detail else f"exit={cp.returncode}"
+            raise RuntimeError(f"git 浅克隆失败：{raw[:200]}")
+
+        # 目标是完整 SHA：浅克隆的默认分支通常不含该提交，补取后切换。
+        # 失败则保留默认分支继续扫描（best-effort，不制造假失败）。
+        if ref and _is_full_sha(ref):
+            cp = _git_scan_run(
+                [
+                    "git",
+                    "-C",
+                    tmp,
+                    *_GIT_PROTOCOL_PREFIX,
+                    "fetch",
+                    "--depth",
+                    "1",
+                    "origin",
+                    ref,
+                ],
+                timeout=timeout,
+            )
+            if cp.returncode == 0:
+                _git_scan_run(["git", "-C", tmp, "checkout", "--quiet", "FETCH_HEAD"])
+
+        # 基线 ref：浅克隆只含 1 个提交，需补取基线才能做增量 diff。
+        effective_base = (base_ref or "").strip()
+        if effective_base and diff_tag.resolve_ref(tmp, effective_base) == effective_base:
+            if _is_full_sha(effective_base):
+                cp = _git_scan_run(
+                    [
+                        "git",
+                        "-C",
+                        tmp,
+                        *_GIT_PROTOCOL_PREFIX,
+                        "fetch",
+                        "--depth",
+                        "1",
+                        "origin",
+                        effective_base,
+                    ],
+                    timeout=timeout,
+                )
+                if cp.returncode == 0:
+                    _git_scan_run(
+                        ["git", "-C", tmp, "branch", "--force", "tg-scan-base", "FETCH_HEAD"]
+                    )
+                    effective_base = "tg-scan-base"
+            else:
+                # 显式 refspec 落到 origin/<base>，供 resolve_ref 解析（短名不会自动加前缀）
+                _git_scan_run(
+                    [
+                        "git",
+                        "-C",
+                        tmp,
+                        *_GIT_PROTOCOL_PREFIX,
+                        "fetch",
+                        "--depth",
+                        "1",
+                        "origin",
+                        f"+refs/heads/{effective_base}:refs/remotes/origin/{effective_base}",
+                    ],
+                    timeout=timeout,
+                )
+
+        items, meta = scan_local(tmp, base_ref=effective_base)
+        meta["source_mode"] = "git-shallow"
+        return items, meta

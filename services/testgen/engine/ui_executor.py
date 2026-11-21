@@ -44,6 +44,7 @@ ASSERT_PAGE_RENDERED = "page_rendered"  # 页面渲染出正文（非白屏）
 ASSERT_ELEMENT_VISIBLE = "element_visible"  # selector 命中且可见（F9：selector → 断言）
 ASSERT_CONSOLE_WITHIN_BASELINE = "console_within_baseline"  # 控制台错误不超基线
 ASSERT_INTERACTION_OK = "interaction_ok"  # 交互元素可点击且不新增报错
+ASSERT_PANEL_SIGNATURE = "panel_signature"  # 批次 C：面板签名命中且可见（area:: 区域）
 
 # 导航后等首屏（单用例口径：比发现通道的 2.5s 更短，SPA 首帧即可判定）
 SETTLE_AFTER_GOTO_MS = 1200
@@ -68,19 +69,48 @@ SKIP_NO_TARGET = (
 )
 
 # 状态驱动面板区域：发现阶段存的是内容签名 `area::<签名>`，不是可导航路由。
-# 执行器只会 `page.goto(路由)`，直接 goto 签名会抛错并污染成「error」假结论。
-# 诚实转为 skip（写明需父路由+签名协同），既不假通过也不假失败。
+# 批次 C（P2）起：发现侧在 runtime 里补记父页 + 点击路径，执行器据此 goto 父页 →
+# 重放导航 → 断言签名。没有父页记录的旧产物继续诚实 skip（写明缺哪条信息），
+# 既不猜路由，也不假通过 / 假失败。
 _PANEL_AREA_PREFIXES = ("area::", "runtime:area::")
 SKIP_PANEL_AREA = (
-    "状态驱动面板区域用例（area:: 签名）：执行器暂不支持按内容签名重定位面板"
-    "（需发现侧补记父路由 + 执行侧按签名定位），本次跳过，**不等于通过**"
+    "状态驱动面板区域用例（area:: 签名）：旧产物缺父页重放坐标"
+    "（steps[0].runtime.parent_url / nav_path 为空），执行器不猜路由、无法重定位面板，"
+    "本次跳过，**不等于通过**（需用新发现产物重新生成以补记父页 + 导航路径）"
 )
+SKIP_PANEL_NAV_FAILED = "面板区域导航重放失败：{reason}（本次未执行断言，**不等于通过**）"
 
 
 def _is_panel_area_url(url: str) -> bool:
     """判断目标地址是否面板内容签名（非可导航路由）。"""
     u = str(url or "").strip().lower()
     return any(u.startswith(p) for p in _PANEL_AREA_PREFIXES)
+
+
+def panel_target(step: dict[str, Any]) -> dict[str, Any] | None:
+    """批次 C（P2）：解析面板区域用例的重放坐标。
+
+    只认 `path`（或 `runtime.url`）是 `area::` 签名、且 `runtime.parent_url` 有值的
+    用例——即新发现产物。返回 `{signature, parent_url, nav_path}`；旧产物 / 普通页
+    返回 None，沿用各自的 URL / skip 逻辑，绝不猜路由。
+    """
+    runtime = step.get("runtime") or {}
+    path = str(step.get("path") or "").strip()
+    raw = path or str(runtime.get("url") or "").strip()
+    if not _is_panel_area_url(raw):
+        return None
+    parent_url = str(runtime.get("parent_url") or "").strip()
+    if not parent_url:  # 旧产物：无父页 → 不猜路由，交给 execute 如实 skip
+        return None
+    # 元素级面板 path 形如 `area::sig#button:文字|selector`：签名只取 `#` 之前的主键，
+    # 否则会把元素提示混进签名，导致签名断言必失败。
+    signature = raw.split("#", 1)[0].split("::", 1)[1] if "::" in raw else ""
+    nav_path = [str(x) for x in (runtime.get("nav_path") or []) if str(x).strip()]
+    return {
+        "signature": signature.strip(),
+        "parent_url": parent_url,
+        "nav_path": nav_path,
+    }
 
 
 # ============================================================================
@@ -182,12 +212,56 @@ def default_assertions(runtime: dict[str, Any]) -> list[dict[str, Any]]:
     return specs
 
 
+# 元素级 path 的 kind 段（与 runtime_ui._ELEMENT_KIND_CN 的键一致）。
+# 只认发现器真正产出过的 kind，避免把「URL 里的 #/a|b」误判成元素提示。
+_ELEMENT_PATH_KINDS = frozenset({"nav", "button", "input", "select", "textarea", "form", "edit"})
+
+
+def element_hint_from_path(path: str) -> dict[str, str] | None:
+    """从元素级 `path` 解析出 `{kind, text, selector}`；非元素级返回 None。
+
+    #306 的运行时元素用例把定位信息写在 path 里：
+        `/api-testing#nav:AI用例生成|aside.el-aside > li.el-menu-item...`
+        `area::15条/页#button:下载导入模板|main.el-main > button...`
+    分隔符用**第一个 `#`** 和**第一个 `|`**，因为 selector 自身可能含 `#id`（CSS id 选择器）。
+
+    为什么需要这个函数：这些用例的 `runtime` 细节为空（元素是在发现阶段抓的，
+    但没按 area 复合键建索引），`default_assertions()` 于是只产出「页面渲染 + 控制台基线」
+    ——元素被删掉也会 PASS。把 path 里的 selector 补成机器断言后才能杜绝这种伪通过。
+    """
+    raw = str(path or "")
+    if "#" not in raw or "|" not in raw:
+        return None
+    _head, tail = raw.split("#", 1)
+    label, selector = tail.split("|", 1)
+    selector = selector.strip()
+    kind, _, text = label.partition(":")
+    if kind.strip() not in _ELEMENT_PATH_KINDS or not selector:
+        return None
+    return {"kind": kind.strip(), "text": text.strip(), "selector": selector}
+
+
 def assertions_of(step: dict[str, Any]) -> list[dict[str, Any]]:
-    """取用例断言；缺省时由运行时细节兜底。"""
+    """取用例断言；缺省时由运行时细节 + 元素级 path 兜底。
+
+    老产物（没有 `assertions` 字段、path 也不是元素级）行为逐字不变；
+    显式断言永远优先，不被兜底逻辑改写。
+    """
     specs = step.get("assertions")
     if isinstance(specs, list) and specs:
         return [dict(s) for s in specs if isinstance(s, dict)]
-    return default_assertions(dict(step.get("runtime") or {}))
+    fallback = default_assertions(dict(step.get("runtime") or {}))
+    hint = element_hint_from_path(str(step.get("path") or ""))
+    if hint is not None:
+        # runtime 细节里可能已有同一 selector：不重复断言（两条同时失败会淹没原因）
+        known = {
+            str(s.get("selector") or "")
+            for s in fallback
+            if s.get("kind") == ASSERT_ELEMENT_VISIBLE
+        }
+        if hint["selector"] not in known:
+            fallback.append({"kind": ASSERT_ELEMENT_VISIBLE, "selector": hint["selector"]})
+    return fallback
 
 
 # ============================================================================
@@ -205,11 +279,18 @@ def _check_page_rendered(page: Any) -> tuple[bool, str]:
     return True, "页面已渲染出正文内容"
 
 
-def _check_element_visible(page: Any, selector: str) -> tuple[bool, str]:
+def _check_element_visible(page: Any, selector: str, timeout_ms: int = 0) -> tuple[bool, str]:
     if not selector.strip():
         return False, "断言缺少 selector（无法定位元素）"
     try:
         locator = page.locator(selector)
+        # B11：SPA 慢页面元素可能晚于固定 settle 后才出现。真实 locator 支持
+        # wait_for → 带短超时等待可见；测试桩无该方法时回退 count/is_visible 快照判定。
+        if timeout_ms > 0 and hasattr(locator, "wait_for"):
+            try:
+                locator.wait_for(state="visible", timeout=timeout_ms)
+            except Exception:  # noqa: BLE001 - 超时/不可见 → 下方按未通过处理，不伪装通过
+                pass
         if int(locator.count()) == 0:
             return False, f"未找到元素：{selector}"
         if not bool(locator.first.is_visible()):
@@ -219,13 +300,59 @@ def _check_element_visible(page: Any, selector: str) -> tuple[bool, str]:
     return True, f"元素可见：{selector}"
 
 
-def _check_console(console_errors: list[str], baseline: int, slack: int) -> tuple[bool, str]:
+def _check_console(
+    console_errors: list[str],
+    baseline: int,
+    slack: int,
+    baseline_errors: list[str] | None = None,
+) -> tuple[bool, str]:
+    """控制台错误判定。
+
+    E2/A5（同期口径）：传 `baseline_errors` 时，按**文本白名单**排除发现阶段
+    已存在的已知错误（同类错误出现次数不超过基线次数即视为旧噪声），只把
+    **本用例期间新增的、非基线**错误计入——分子分母同为「新增错误」，避免
+    「发现时整页 N 条 vs 执行时新增 M 条」的口径错配。未传时保持旧的纯条数
+    baseline 行为，老产物零回归。
+    """
+    if baseline_errors is not None:
+        from collections import Counter
+
+        known = Counter(str(e) for e in baseline_errors)
+        remaining: list[str] = []
+        for err in console_errors:
+            key = str(err)
+            if known[key] > 0:
+                known[key] -= 1  # 已知噪声，按出现次数抵扣
+            else:
+                remaining.append(err)
+        count = len(remaining)
+        allowed = max(0, int(slack))
+        if count > allowed:
+            sample = remaining[0][:80] if remaining else ""
+            return False, f"新增控制台错误 {count} 条超过上限 {allowed} 条（示例：{sample}）"
+        return True, f"新增控制台错误 {count} 条，未超上限 {allowed} 条"
     allowed = max(0, int(baseline)) + max(0, int(slack))
     count = len(console_errors)
     if count > allowed:
         sample = console_errors[0][:80] if console_errors else ""
         return False, f"控制台错误 {count} 条超过基线 {allowed} 条（示例：{sample}）"
     return True, f"控制台错误 {count} 条，未超基线 {allowed} 条"
+
+
+def _check_panel_signature(page: Any, expected: str) -> tuple[bool, str]:
+    """批次 C（P2）：重放导航后，当前面板内容签名须与发现时记录的一致。
+
+    空白签名不做判定（发现侧签名偶发取不到时，避免假通过）；期望为空说明产物缺签名，
+    按未通过处理，明确写出缺什么。
+    """
+    if not expected.strip():
+        return False, "面板用例缺期望签名（area:: 后为空），无法判定是否到达目标面板"
+    actual = runtime_ui.panel_signature(page)
+    if not actual:
+        return False, "当前面板签名读取失败（无法确认已重定位到目标面板）"
+    if actual != expected:
+        return False, f"面板签名不匹配：期望「{expected}」，实际「{actual}」"
+    return True, f"面板签名命中：{actual}"
 
 
 def _check_interaction(page: Any, selector: str, options: UiExecOptions) -> tuple[bool, str]:
@@ -267,13 +394,22 @@ def _run_assertion(
     if kind == ASSERT_PAGE_RENDERED:
         return _check_page_rendered(page)
     if kind == ASSERT_ELEMENT_VISIBLE:
-        return _check_element_visible(page, str(spec.get("selector") or ""))
+        # B11：元素可见断言给一个短等待窗口（≤5s），兼容 SPA 慢渲染；桩无 wait_for 自动回退。
+        return _check_element_visible(
+            page, str(spec.get("selector") or ""), min(_timeout_ms(options), 5000)
+        )
     if kind == ASSERT_CONSOLE_WITHIN_BASELINE:
+        baseline_errors = spec.get("baseline_errors")
         return _check_console(
-            console_errors, int(spec.get("baseline") or 0), int(options.console_slack)
+            console_errors,
+            int(spec.get("baseline") or 0),
+            int(options.console_slack),
+            baseline_errors if isinstance(baseline_errors, list) else None,
         )
     if kind == ASSERT_INTERACTION_OK:
         return _check_interaction(page, str(spec.get("selector") or ""), options)
+    if kind == ASSERT_PANEL_SIGNATURE:
+        return _check_panel_signature(page, str(spec.get("signature") or ""))
     return False, f"未知断言种类 {kind!r}：执行器无法判定，按未通过处理"
 
 
@@ -363,6 +499,28 @@ class UiSession:
         self._page = None
         self.opened = False
 
+    def reset_between_cases(self) -> None:
+        """A6（P1）：批量执行时每条 UI 用例前的状态隔离（best-effort）。
+
+        复用单 page 是为了性能，但上一条的 console 缓冲与 Web Storage 会串到
+        下一条——尤其 `ui_click=on` 时前一条改过的 localStorage 会让后一条
+        出现「顺序相关的随机假结果」。这里做两件事：
+        1. 清空 console 缓冲：每条用例的基线断言只看本条期间新增的错误
+           （`execute`/`_execute_panel` 用 `mark = len(...)` 取增量）；
+        2. 尽力清 localStorage/sessionStorage：测试桩或受限页面无 `evaluate`
+           时静默跳过，绝不影响用例本身。
+        不重登录、不关 page——登录态 cookie 由 `open()` 一次建立后复用。
+        """
+        self.console_errors.clear()
+        if self._page is None:
+            return
+        try:
+            self._page.evaluate(
+                "() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} }"
+            )
+        except Exception:  # noqa: BLE001 - 隔离是 best-effort，桩/受限页面无 evaluate 不致命
+            pass
+
     def _attach(self, page: Any) -> None:
         """挂控制台监听：只收 error 级（与发现通道同一口径）。"""
 
@@ -390,10 +548,16 @@ class UiSession:
             return UiExecResult(
                 status=ExecStatus.SKIPPED.value, notes=[*self.notes, SKIP_NO_SESSION]
             )
+        # 批次 C（P2）：面板区域先分流。有父页坐标→goto 父页 + 重放点击 + 签名断言；
+        # 旧产物无坐标→如实 skip（不猜路由）。
+        panel = panel_target(step)
+        if panel is not None:
+            return self._execute_panel(case, step, panel)
         url = target_url(step, self.options)
         if not url:
             return UiExecResult(status=ExecStatus.SKIPPED.value, notes=[SKIP_NO_TARGET])
         if _is_panel_area_url(url):
+            # area:: 签名但 runtime 无父页坐标（新发现产物字段缺失 / 手工构造）
             return UiExecResult(
                 status=ExecStatus.SKIPPED.value, notes=[*self.notes, SKIP_PANEL_AREA]
             )
@@ -405,8 +569,42 @@ class UiSession:
 
         specs = assertions_of(step)
         outcomes = _evaluate_assertions(self._page, specs, self.options, self.console_errors[mark:])
+        return self._settle(case, url, outcomes)
+
+    def _execute_panel(
+        self, case: CaseSpec, step: dict[str, Any], panel: dict[str, Any]
+    ) -> UiExecResult:
+        """批次 C（P2）：状态驱动面板区域的执行路径。
+
+        流程：goto 父页 → 按 nav_path 重放点击 → 校验面板签名 → 跑常规断言。
+        任一步导航失败转 `error`，不是 pass 也不是假失败；签名 / 元素断言未过才转 `fail`。
+        """
+        parent_url = panel["parent_url"]
+        mark = len(self.console_errors)
+        failure = self._navigate(parent_url)
+        if failure:
+            return self._conclude(case, ExecStatus.ERROR.value, [], [failure])
+        ok, reason = runtime_ui.replay_panel_nav(
+            self._page, panel["nav_path"], self.options.runtime_options()
+        )
+        if not ok:
+            return self._conclude(
+                case,
+                ExecStatus.ERROR.value,
+                [],
+                [SKIP_PANEL_NAV_FAILED.format(reason=reason)],
+            )
+        specs = [
+            {"kind": ASSERT_PANEL_SIGNATURE, "signature": panel["signature"]},
+            *assertions_of(step),
+        ]
+        outcomes = _evaluate_assertions(self._page, specs, self.options, self.console_errors[mark:])
+        return self._settle(case, f"{parent_url} → area::{panel['signature']}", outcomes)
+
+    def _settle(self, case: CaseSpec, label: str, outcomes: list[dict[str, Any]]) -> UiExecResult:
+        """收口断言结果：未过转 fail（落证据），全过转 pass。"""
         failed = [o for o in outcomes if not o["ok"]]
-        notes = [f"UI 层执行：{url}（断言 {len(outcomes)} 条，未通过 {len(failed)} 条）"]
+        notes = [f"UI 层执行：{label}（断言 {len(outcomes)} 条，未通过 {len(failed)} 条）"]
         notes.extend(f"未通过：{o['detail']}" for o in failed[:5])
         if failed:
             return self._conclude(case, ExecStatus.FAIL.value, outcomes, notes)

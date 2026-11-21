@@ -388,8 +388,115 @@ def _evidence_row(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 # ============================================================================
+# 质量（T5）：三 KPI + 门禁 + 三通道
+# ============================================================================
+# 三通道的中文名（报告/前端共用同一套说法，避免「本体/正文/主流程」各写一遍）
+_CHANNEL_TEXT = {"body": "本体", "impact": "影响面", "runtime": "运行时"}
+# 门禁原因 → 人话（报告必须能说清「为什么这条不算数」）
+_REASON_TEXT = {
+    "no_evidence": "没有证据（断言指不到改动行/运行时元素）",
+    "no_observable_expect": "预期无可观测对象（无法判定成败）",
+    "no_origin": "无来源标签（分不清本体/影响面/运行时）",
+    "best_effort": "需特殊环境（并发/双身份/慢依赖），诚实标未验证",
+}
+
+
+def _channels(tps: list[dict[str, Any]]) -> dict[str, Any]:
+    """按库里的事实重算三通道计数（origin/source 已落库，无需生成期快照）。
+
+    口径与 `engine/quality.channel_of` 一致：影响面看 origin 前缀，运行时看 `source`
+    的 `runtime:` 前缀，其余归本体。这里重写而不是 import engine，是为了守住
+    「报告只依赖 core」的分层（`engine/report.py` 确实是 engine，但 report 是
+    执行报告的计算层，保持不反向依赖生成引擎的模块更稳）。
+    """
+    out: dict[str, Any] = {name: {"tp": 0, "gate_ok": 0} for name in _CHANNEL_TEXT}
+    for tp in tps:
+        origin = str(tp.get("origin") or "")
+        if origin.startswith("impact"):
+            name = "impact"
+        elif str(tp.get("source") or "").startswith("runtime:"):
+            name = "runtime"
+        else:
+            name = "body"
+        out[name]["tp"] += 1
+        if not tp.get("unverified"):
+            out[name]["gate_ok"] += 1
+    for name, text in _CHANNEL_TEXT.items():
+        out[name]["label"] = text
+    out["total"] = len(tps)
+    out["consistent"] = sum(int(out[n]["tp"]) for n in _CHANNEL_TEXT) == len(tps)
+    return out
+
+
+def quality(tps: list[dict[str, Any]], generation: Mapping[str, Any]) -> dict[str, Any]:
+    """质量快照：生成期三 KPI（若有）+ 库内可算的三通道 + 未验证原因分布。
+
+    `generation` 是 `gen_tasks.result.quality`（生成期快照）。缺失时 KPI 返回
+    `available=False`——**不拿库里的数据硬凑分母**，那会得到一个看起来有值、
+    实际是编出来的覆盖率。
+    """
+    reasons: dict[str, int] = {}
+    for tp in tps:
+        if not tp.get("unverified"):
+            continue
+        reason = str(tp.get("unverified_reason") or "unknown")
+        reasons[reason] = reasons.get(reason, 0) + 1
+    blocked = sum(v for k, v in reasons.items() if k in _REASON_TEXT and k != "best_effort")
+    return {
+        "available": bool(generation),
+        "kpis": (generation or {}).get("kpis") or {},
+        "gate": (generation or {}).get("gate") or {},
+        "channels": _channels(tps),
+        "unverified": {
+            "total": sum(reasons.values()),
+            "blocked": blocked,
+            "best_effort": int(reasons.get("best_effort", 0)),
+            "by_reason": reasons,
+            "text": {k: _REASON_TEXT.get(k, k) for k in reasons},
+        },
+        "source": "generation" if generation else "none",
+    }
+
+
+# ============================================================================
 # 主入口
 # ============================================================================
+def repo_summary(pid: int, snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """多仓改造（v1.7）：按仓库分组统计 FP/TP/Case，供报告标注「本次涉及哪几个仓」。
+
+    - 有 repo_bindings 的多仓项目：按 repo_key 分组，未归属行（repo_binding_id 为空）
+      归到 ``default`` 桶（兼容迁移前的旧行）；
+    - 无 binding 的旧单仓：只返回 ``default`` 一个桶，且带 ``single_repo=True``，
+      报告据此决定是否展示分组（旧单仓不必展示）。
+    """
+    bindings = store.list_repo_bindings(pid)
+    id_to_key = {int(b["id"]): str(b["repo_key"]) for b in bindings}
+
+    def bucket(row: Mapping[str, Any]) -> str:
+        bid = row.get("repo_binding_id")
+        if bid is None:
+            return "default"
+        return id_to_key.get(int(bid), f"binding-{bid}")
+
+    buckets: dict[str, dict[str, Any]] = {}
+
+    def ensure(key: str) -> dict[str, Any]:
+        return buckets.setdefault(
+            key, {"repo_key": key, "functional_points": 0, "test_points": 0, "cases": 0}
+        )
+
+    for fp in snapshot.get("functional_points") or []:
+        ensure(bucket(fp))["functional_points"] += 1
+    for tp in snapshot.get("test_points") or []:
+        ensure(bucket(tp))["test_points"] += 1
+    for case in snapshot.get("cases") or []:
+        ensure(bucket(case))["cases"] += 1
+    return {
+        "single_repo": not bindings,
+        "repos": [buckets[k] for k in sorted(buckets)],
+    }
+
+
 def build_report(pid: int, *, batch_id: str = "") -> dict[str, Any]:
     """构建报告（只读 DB，不写任何文件）。项目 / 批次不存在时抛 `NotFoundError`。"""
     snapshot = store.report_snapshot(pid, batch_id=batch_id)
@@ -404,6 +511,7 @@ def build_report(pid: int, *, batch_id: str = "") -> dict[str, Any]:
     tps = snapshot.get("test_points") or []
     cases = snapshot.get("cases") or []
     coverage_info = coverage(fps, tps, cases)
+    quality_info = quality(tps, snapshot.get("quality") or {})
     trend_info = trend(snapshot.get("batches") or [])
     flaky_info = flaky(snapshot.get("run_index") or [])
     active = [c for c in cases if str(c.get("status") or "") not in _INACTIVE_STATUSES]
@@ -435,12 +543,15 @@ def build_report(pid: int, *, batch_id: str = "") -> dict[str, Any]:
         "counts": counts,
         "exec_summary": exec_summary(context),
         "coverage": coverage_info,
+        "quality": quality_info,
         "trend": trend_info,
         "flaky": flaky_info,
         "traceability": snapshot.get("traceability") or {},
         "evidence": [_evidence_row(r) for r in (snapshot.get("runs") or [])],
         "change": snapshot.get("last_change"),
         "reuse": _reuse(cases),
+        # 多仓改造（v1.7）：报告按仓分组的来源标注；旧单仓 single_repo=True，前端可隐藏。
+        "repo_summary": repo_summary(pid, snapshot),
     }
 
 

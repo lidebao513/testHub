@@ -176,16 +176,36 @@ Agent 可以导航到任意地址**——包括：
 
 ### 6.4 仍然拦不住的（别当成已根治）
 
-1. **DNS 指向内网**：`http://internal.corp.com` 解析到 `10.0.0.5` 不在判定范围内——本方案只判
-   host 字面量，不做 DNS 解析（解析本身会引入 TOCTOU：校验时是公网、连接时变内网）。
-   要根治得在浏览器层做 IP pin 或走出口代理，属独立课题。
-2. **重定向**：302 到元数据地址时本次动作的 URL 是合法起点，靠下一次动作判定兜底；
-   一次性的 `fetch`（已被动作黑名单挡掉）不走这条路。
-3. **`UI_PRIVATE_NET_GUARD=off`** 会放开内网段（元数据仍拦），属运维主动降级，需知情。
+1. **DNS 指向内网**（S6-c，**未根治，明确不成立**）：`http://internal.corp.com` 解析到
+   `10.0.0.5` 不在判定范围内——本方案只判 host 字面量，不做 DNS 解析。
+   **为什么不在应用层补**：在 `check()` 里加 `socket.getaddrinfo` 会引入 TOCTOU
+   （校验时公网 IP、浏览器实际连接时已变内网），反而制造虚假安全感；真正根治须在浏览器层做
+   connection-level IP pin（拦截 DNS 响应并锁定到校验通过的 IP）或强制走出口代理做统一出口策略，
+   两者都属独立课题，需改 browser-use / Playwright 网络栈，本次不做。
+   **当前缓解**：任务白名单只放可信域名、`UI_DOMAIN_GUARD=strict` 限制越域；内网域名解析类攻击
+   仍需在网络层解决，不能声称本方案已覆盖。
+   **2026-11-20 浏览器层加固（P2）**：在 Chromium 启动参数里给已知云元数据域名加
+   `--host-resolver-rules="MAP <host> ~NOTFOUND, ..."`（`_metadata_resolver_rules()`，
+   由 `UI_METADATA_DNS_PIN=off` 可关闭）。这层由浏览器自己的 DNS 解析器执行，页面脚本无论
+   怎么 rebinding 都拿不到这些**固定元数据域名**的 IP，且不经 Python 校验、无 TOCTOU。
+   覆盖范围**仅** `_METADATA_HOSTNAMES` 里的域名（正常测试不会访问，零副作用）；
+   **不覆盖**「任意内网域名（如 internal.corp.com）rebinding 到 10.x」——那仍需 connection-level
+   IP pin 或出口代理，仍属未根治的独立课题。
+2. **重定向**（S6-a，**已加固，非完全根治**）：302 到元数据地址时本次动作参数里的 URL 仍是合法
+   起点，`check()` 抓不到。原设计"靠下一次动作判定兜底"，暴露窗口是完整一步。
+   2026-11-20 加固：`_ActionGuard.check_landing_url()` 在 `on_step_end` 步末检查
+   `AgentHistory.state.url`（浏览器**实际落点**），命中云元数据 → 恒拦并中止整个任务；命中
+   非白名单内网 → 按 `UI_PRIVATE_NET_GUARD` 处理。暴露窗口从"下一步"缩短到"本步结束"。
+   **仍非完全根治**：跳转在步内已发生，页面内容可能已进入当步快照；更彻底需在网络层拦截响应。
+3. **`UI_PRIVATE_NET_GUARD=off`**（S6-b，**已留痕，仍属运维降级**）：会放开内网段（元数据仍硬拦），
+   属运维主动降级。2026-11-20 加固：`_ActionGuard.for_task()` 在 `off` 时打
+   `🛡️ [SECURITY DOWNGRADE]` warning（含"元数据仍 STILL hard-blocked"的明确说明），
+   `UI_DOMAIN_GUARD=off` 同样留痕；默认配置不再产生该告警。降级后的可观测性已具备，
+   但开关本身保留（平台自身主用例要跑 127.0.0.1:8900 / 局域网 :8099）。
 
 ### 6.5 验证
 
-`apps/ui_automation/tests/test_private_net_guard.py`（58 例，纯函数级，不依赖浏览器/网络）：
+`apps/ui_automation/tests/test_private_net_guard.py`（72 例，纯函数级，不依赖浏览器/网络）：
 
 - IP 字面量解析：点分十进制 / 十进制 / 十六进制 / `[::1]` / 非法值；
 - 元数据识别：`169.254.169.254`、`169.254.1.1`、`100.100.100.200`、混淆写法、域名写法；
@@ -193,3 +213,9 @@ Agent 可以导航到任意地址**——包括：
 - 四个「无路可绕」断言：`domain_mode=off` + `private_mode=off` 仍拦、空白名单仍拦、
   显式写进白名单仍拦、嵌套参数里仍拦；
 - 接线验证：`Registry.execute_action` 上元数据导航到不了真正的执行器。
+- **S6 新增 11 例**：降级告警留痕 3 例（`SECURITY DOWNGRADE` 出现/不出现）；
+  落点闸门 8 例（元数据恒拦含 `off` 与十进制混淆、内网默认拦/白名单放行/`off` 跳过、
+  公网与回环不受影响、空 URL、接线防回退）。
+- **P2 新增 3 例（2026-11-20）**：`TestMetadataDnsPin`（规则覆盖全部元数据域名 / 不含通配
+  `MAP *` 不误伤正常域名 / `_create_browser_profile` 接线防回退）。
+- 全量回归：`pytest apps/ui_automation/tests` → **368 passed**（S6 后 349；期间 S4/S5/S7 又增 16 例）。

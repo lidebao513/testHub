@@ -18,6 +18,8 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from urllib.parse import urlparse
 
+from .history_utils import history_steps
+
 # 加载环境变量
 load_dotenv()
 
@@ -397,6 +399,22 @@ def _is_cloud_metadata_host(host):
     return _ip_in_any(ip, _METADATA_NETS)
 
 
+def _metadata_resolver_rules() -> str:
+    """生成 Chromium --host-resolver-rules：把已知云元数据域名在**浏览器 DNS 层**钉死为不可解析。
+
+    S6-c 的残余缺口是「域名 rebinding 到内网/元数据 IP」——应用层只判 host 字面量、
+    加 getaddrinfo 又会引入 TOCTOU。这里换到浏览器网络层：`MAP <host> ~NOTFOUND` 由
+    Chromium 自己的 DNS 解析器执行，页面脚本无论怎么 rebinding 都拿不到这些域名的 IP，
+    且不经过 Python 校验，不存在「校验时公网、连接时内网」的时间差。
+
+    覆盖范围：仅 `_METADATA_HOSTNAMES` 里的固定元数据域名（它们本就不该在正常测试中出现，
+    零副作用）。不覆盖「任意内网域名 rebinding 到 10.x」——那需要 connection-level IP pin
+    或出口代理，属独立课题，见 docs/m10_prompt_injection_2026-10-30.md §6.4。
+    """
+    rules = ', '.join(f'MAP {h} ~NOTFOUND' for h in sorted(_METADATA_HOSTNAMES))
+    return f'--host-resolver-rules={rules}'
+
+
 def _is_loopback_host(host):
     name = _normalize_host(host)
     if not name:
@@ -467,6 +485,20 @@ class _ActionGuard:
 
         mode = str(os.getenv('UI_DOMAIN_GUARD', 'warn')).strip().lower() or 'warn'
         private_mode = str(os.getenv('UI_PRIVATE_NET_GUARD', 'block')).strip().lower() or 'block'
+        # S6-b：运维主动降级必须留痕。元数据端点不受 private_mode 影响、恒硬拦，
+        # 这里说清楚"关掉的是什么、没关的是什么"，避免降级后误以为全放开。
+        if private_mode == 'off':
+            logger.warning(
+                "🛡️ [SECURITY DOWNGRADE] UI_PRIVATE_NET_GUARD=off: "
+                "private-network navigation guard DISABLED (cloud metadata endpoints are "
+                "STILL hard-blocked). Ensure this is intentional and the task is trusted."
+            )
+        if mode == 'off':
+            logger.warning(
+                "🛡️ [SECURITY DOWNGRADE] UI_DOMAIN_GUARD=off: "
+                "domain allowlist check DISABLED (private-network and cloud-metadata guards "
+                "are independent and unchanged). Ensure this is intentional."
+            )
         guard = cls(
             allowed_domains=allowed,
             blocked_actions=blocked,
@@ -493,6 +525,31 @@ class _ActionGuard:
         if self.semantic_guard and any(hint in name for hint in _BLOCKED_SEMANTIC_HINTS):
             return True
         return False
+
+    def check_landing_url(self, url):
+        """S6-a：动作已执行后的「落点 URL」检查（302 重定向兜底）。
+
+        与 check() 的区别：check() 看的是**动作参数里的 URL**（跳转前），
+        这里看的是浏览器**实际停在的 URL**。302 到元数据地址时，动作参数还是合法起点，
+        check() 抓不到；本方法在 step 结束时看到落点，把"靠下一次动作兜底"提前到本步。
+
+        判定与 check() ②③ 同语义：元数据恒拦、内网按 private_mode、白名单可放行。
+        域名白名单越界这里不拦——那是 warn/strict 的策略层，落点闸门只管 SSRF 硬防线。
+        """
+        host = _normalize_host(urlparse(str(url or '')).hostname)
+        if not host:
+            return None
+        if _is_cloud_metadata_host(host):
+            return f"landed on cloud metadata endpoint '{host}' (SSRF protection)"
+        if (
+            self.private_mode != 'off'
+            and _is_private_host(host)
+            and not _host_allowed(host, self.allowed_domains)
+        ):
+            if self.private_mode == 'block':
+                return f"landed on private network host '{host}'"
+            logger.warning("🛡️ [warn] landed on private network host: %s", host)
+        return None
 
     def check(self, action_name, params):
         """返回拒绝原因字符串；None 表示放行。
@@ -788,6 +845,84 @@ def _assert_cost_allowed(model_name: str) -> None:
     if reason:
         logger.warning(f"🛡️ AI 用例被成本护栏拒绝：{reason}")
         raise ValueError(f"[cost-guard] {reason}")
+
+
+def _resolve_model_chain(raw_model_name: str) -> list:
+    """把 `a,b,c` 配置解析成通过成本护栏的候选链（保持书写顺序）。
+
+    单模型名返回单元素，行为与改动前完全一致。被护栏拒绝的模型只记日志并跳过，
+    全链都被拒时才拒绝执行——不能让一个已失效的链头堵死后面可用模型。
+    """
+    from apps.requirement_analysis.models import AIModelService
+
+    allowed = []
+    for model in AIModelService.model_chain(raw_model_name):
+        try:
+            _assert_cost_allowed(model)
+        except ValueError as exc:
+            logger.warning(f"模型链跳过 {model}：{exc}")
+            continue
+        if model not in allowed:
+            allowed.append(model)
+    return allowed
+
+
+def _is_fallback_error(exc: BaseException) -> bool:
+    """该错误是否值得换下一个模型（额度耗尽/限流/模型不可用）。
+
+    401 与鉴权错误是整链共用的 key 问题，换模型没有意义，必须原样抛出错。
+    """
+    status = getattr(exc, 'status_code', None)
+    if status is None:
+        status = getattr(getattr(exc, 'response', None), 'status_code', None)
+    text = str(exc).lower()
+    if status == 401 or 'unauthorized' in text or 'invalid api key' in text:
+        return False
+    if status in (403, 404, 429):
+        return True
+    return any(
+        token in text
+        for token in ('403', '404', '429', 'quota', 'freetieronly', 'rate limit', 'insufficient')
+    )
+
+
+def _page_text_from_history(agent_instance) -> str:
+    """终态 state 没有元素时（末步是 done），从最近有交互元素的历史步回退取文本。"""
+    from .assertions import page_text_from_state
+
+    for step in reversed(history_steps(getattr(agent_instance, 'history', None))):
+        text = page_text_from_state(getattr(step, 'state', None))
+        if text.strip():
+            return text
+    return ''
+
+
+def _page_text_from_pre_explore(agent_instance, final_url: str = '') -> str:
+    """最后兜底：用预探索抓到的元素标签做页面文本，仅当仍是同一页面。
+
+    预探索发生在任务开始，若已经跳到别的 URL 就不能拿旧元素冒充终态，
+    否则 page_contains 会假阳性。
+    """
+    summary = getattr(agent_instance, '_pre_explore_summary', None) or {}
+    if not isinstance(summary, dict) or not summary:
+        return ''
+
+    def _base(url):
+        return str(url or '').split('?')[0].split('#')[0].rstrip('/')
+
+    pre_url, cur_url = _base(summary.get('url')), _base(final_url)
+    if pre_url and cur_url and pre_url != cur_url:
+        return ''
+    labels = []
+    for element in summary.get('elements') or []:
+        label = (
+            element.get('label')
+            if isinstance(element, dict)
+            else getattr(element, 'label', None)
+        )
+        if label:
+            labels.append(str(label))
+    return '\n'.join(labels)
 
 
 def _security_boundary_prompt():
@@ -1841,7 +1976,7 @@ class BaseBrowserAgent:
 
         self.api_key = model_config.get('api_key') or os.getenv('AUTH_TOKEN')
         self.base_url = model_config.get('base_url') or os.getenv('BASE_URL')
-        self.model_name = model_config.get('model_name') or os.getenv('MODEL_NAME')
+        raw_model_name = model_config.get('model_name') or os.getenv('MODEL_NAME')
         self.provider = model_config.get('provider', 'openai')
 
         if not self.api_key:
@@ -1850,7 +1985,12 @@ class BaseBrowserAgent:
         # 成本护栏（M-cost）：AI 用例是**单价最高**的用法——browser-use 每一步都把完整 DOM
         # 作为输入重发，一条用例轻松几十万 token。付费档模型在免费额度耗尽后会被静默转按量计费，
         # 所以这里在创建 agent 之前就拦，失败即拒跑，不进入执行。
-        _assert_cost_allowed(self.model_name or '')
+        # 配置里的 `a,b,c` 是降级链：逐个过护栏，链头失效不堵死后续模型。
+        self.model_chain = _resolve_model_chain(raw_model_name or '')
+        if not self.model_chain:
+            raise ValueError('[cost-guard] 模型链中没有可用模型（全部被拦截或配置为空）')
+        self.model_name = self.model_chain[0]
+        self.model_fallback = None
 
         # 智能temperature处理：特殊模型强制值优先，其次配置值，最后默认 0.0
         self.configured_temperature = model_config.get('temperature')
@@ -2056,14 +2196,40 @@ class BaseBrowserAgent:
             return "执行操作"
 
     async def _verify_execution_llm(self):
-        """在真正启动执行前做一次轻量连通性检查，避免浏览器启动后反复空转失败。"""
-        try:
-            await asyncio.wait_for(
-                self.llm.ainvoke("Reply with OK."),
-                timeout=20.0
-            )
-        except Exception as e:
-            raise RuntimeError(f"Execution LLM unavailable: {e}") from e
+        """在真正启动执行前做轻量连通性检查；链头不可用时按书写顺序降级。
+
+        分级路由可能把 llm 换成轻档模型，因此候选链以当前实际模型开头，
+        其后接配置链里其余模型。401/鉴权错误不降级，避免拿同一个坏 key 盲试全链。
+        """
+        active = getattr(self, 'routed_model', '') or self.model_name
+        candidates = [active] + [
+            m for m in getattr(self, 'model_chain', []) if m != active
+        ]
+        last_error = None
+        for index, model in enumerate(candidates):
+            llm = self.llm if index == 0 else self._build_chat_llm(model)
+            try:
+                await asyncio.wait_for(llm.ainvoke("Reply with OK."), timeout=20.0)
+            except Exception as exc:  # noqa: BLE001 - 降级必须吞掉上游异常再判定
+                last_error = exc
+                if not _is_fallback_error(exc) or index + 1 >= len(candidates):
+                    break
+                logger.warning(f"[模型链降级] {model} 不可用（{exc}），尝试下一个模型")
+                continue
+            if index > 0:
+                self.llm = llm
+                self.model_name = model
+                self.routed_model = model
+                if getattr(self, 'routing_info', None):
+                    self.routing_info['model'] = model
+                self.model_fallback = {
+                    'from': active,
+                    'to': model,
+                    'reason': str(last_error or '')[:300],
+                }
+                logger.warning(f"[模型链降级] 生效模型 {model}（原 {active}）")
+            return
+        raise RuntimeError(f"Execution LLM unavailable: {last_error}")
 
     def _extract_structured_steps(self, text: str):
         """从原始任务文本中稳定提取步骤，作为 LLM 拆分失败时的兜底。"""
@@ -2453,6 +2619,12 @@ class BaseBrowserAgent:
             '--disable-web-security',  # 允许跨域请求
         ]
 
+        # S6-c 浏览器层加固：把云元数据域名在 Chromium DNS 层钉死为不可解析。
+        # 允许通过 UI_METADATA_DNS_PIN=off 显式关闭（排障元数据连通性时用），
+        # 默认开启。注意这只挡固定元数据域名，不挡任意内网域名 rebinding（见函数注释）。
+        if str(os.getenv('UI_METADATA_DNS_PIN', 'on')).strip().lower() not in {'0', 'false', 'off', 'no'}:
+            extra_args.append(_metadata_resolver_rules())
+
         # 根据操作系统添加特定参数
         if system == 'Linux':
             # Linux 服务器环境（特别是无头环境）必需的参数
@@ -2533,7 +2705,19 @@ class BaseBrowserAgent:
         return self._pre_explore_summary
 
     async def _capture_final_state(self, agent_instance):
-        """#181：抓一次会话终态（供三层断言对比）。只读、非阻断，失败返回 None。"""
+        """#181：抓一次会话终态（供三层断言对比）。只读、非阻断，失败返回 None。
+
+        browser-use 在 ``agent.run()`` 返回前就发了 BrowserStopEvent 并 reset 掉
+        session；此时再发 BrowserStateRequestEvent 没有 handler，必然失败。
+        所以优先复用执行历史最后一步的 BrowserStateHistory（url/title 都在），
+        只有历史里没有 state 时才兜底实时抓。
+        """
+        history = getattr(agent_instance, 'history', None)
+        for step in reversed(history_steps(history)):
+            state = getattr(step, 'state', None)
+            if state is not None:
+                return state
+
         session = getattr(agent_instance, 'browser_session', None)
         if session is None or not hasattr(session, 'get_browser_state_summary'):
             return None
@@ -2846,6 +3030,25 @@ class BaseBrowserAgent:
             if len(history) > last_processed_step:
                 for i in range(last_processed_step, len(history)):
                     step = history[i]
+
+                    # S6-a：302 落点闸门。动作参数里的 URL 是跳转前起点（check() 已判），
+                    # 这里看浏览器实际停在哪——若被 302 带到元数据/非白名单内网，立即终止
+                    # 本任务，不再在恶意页面上执行后续动作。元数据恒拦、内网按 private_mode。
+                    landing_guard = _current_action_guard.get()
+                    landing_url = str(getattr(getattr(step, 'state', None), 'url', '') or '')
+                    if landing_guard and landing_url:
+                        landing_reason = landing_guard.check_landing_url(landing_url)
+                        if landing_reason:
+                            logger.error("🛡️ [SECURITY ABORT] %s (step %d, url=%s)", landing_reason, i + 1, landing_url)
+                            try:
+                                await emit_callback({
+                                    'type': 'log',
+                                    'content': f'\n[安全中止] {landing_reason}，已停止后续动作。\n',
+                                })
+                            except Exception as e:  # noqa: BLE001 - 日志回传失败不影响安全阻断
+                                logger.warning(f"安全中止日志回传失败: {e}")
+                            raise KeyboardInterrupt(landing_reason)
+
                     # Log logic here
                     try:
                         actions = []
@@ -3069,10 +3272,22 @@ class BaseBrowserAgent:
                     }
                     final_text = page_text_from_state(final_state_raw)
 
+                # P3：文本回退独立于终态快照是否采集成功。即便 _capture_final_state
+                # 返回 None（history/session 都取不到 state），历史步与预探索仍可能
+                # 持有可用文本——此前整段回退被关在 if 分支里，一旦快照失败就全落
+                # unknown。三级来源：终态 state → 最近有元素的历史步 → 同页预探索标签。
+                if not final_text.strip():
+                    final_text = _page_text_from_history(agent)
+                if not final_text.strip():
+                    final_url = (final_state or {}).get('url', '') or str(
+                        getattr(getattr(agent, 'history', None), 'urls', None) or ''
+                    )
+                    final_text = _page_text_from_pre_explore(self, final_url)
+
                 # 是否真的执行过动作（决定会话级断言的严格程度）
                 had_actions = True
                 try:
-                    hist_steps = getattr(getattr(agent, 'history', None), 'steps', None) or []
+                    hist_steps = history_steps(getattr(agent, 'history', None))
                     had_actions = any(getattr(s, 'actions', None) for s in hist_steps)
                 except Exception:
                     pass
@@ -3103,7 +3318,7 @@ class BaseBrowserAgent:
         marked_tasks = set()  # 已标记完成的任务ID
 
         # 分析执行历史
-        for step_idx, step in enumerate(getattr(history, 'steps', [])):
+        for step_idx, step in enumerate(history_steps(history)):
             # 检查每一步中的actions
             actions = getattr(step, 'actions', [])
             for action in actions:

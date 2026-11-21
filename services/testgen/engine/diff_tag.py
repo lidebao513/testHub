@@ -177,7 +177,7 @@ def compute_changed_files(repo: str | Path, base: str, target: str | None = None
         return set()
     if cp.returncode != 0:
         return set()
-    return {ln.strip().replace("\\", "/") for ln in cp.stdout.splitlines() if ln.strip()}
+    return {ln.strip().replace("\\", "/") for ln in (cp.stdout or "").splitlines() if ln.strip()}
 
 
 def compute_diff_hunks(
@@ -193,7 +193,7 @@ def compute_diff_hunks(
 
     hunks: dict[str, list[tuple[int, int]]] = {}
     current: str | None = None
-    for line in cp.stdout.splitlines():
+    for line in (cp.stdout or "").splitlines():
         m = _DIFF_FILE_RE.match(line)
         if m:
             current = m.group(1).replace("\\", "/")

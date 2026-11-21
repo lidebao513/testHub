@@ -1,0 +1,235 @@
+{
+  "tag": "baseline",
+  "captured_at": "2026-11-18T16:10:41",
+  "preset": {
+    "base": "21fb554c2586d7a1ab2ffbb0c3a13d726b0b5b88",
+    "target": "31344820c81c5e6ea7a8f03eb18d92626be224aa",
+    "selected_paths": [
+      "backend/research-agent-source/server.py",
+      "frontend/app/src/api/adapter.ts",
+      "frontend/app/src/api/backend.ts",
+      "frontend/app/src/pages/pc/PcChatPage.tsx",
+      "frontend/app/src/pages/pc/PcShell.tsx"
+    ],
+    "mode": "incremental",
+    "scopes": [
+      "正常",
+      "异常",
+      "边界"
+    ],
+    "runtime_ui": false,
+    "expert_ui": false,
+    "llm_enhance": false
+  },
+  "a_server": {
+    "task_id": "gen-8317484a1e65",
+    "state": "success",
+    "project_id": 30,
+    "counts": {
+      "pull_changed_files": 7,
+      "files": 5,
+      "auth_wired_files": 2,
+      "fp_merged": 0,
+      "business_absorbed": 8,
+      "functional_points": 91,
+      "fp_before": 91,
+      "fp_after": 2,
+      "fp_dropped_unchanged": 89,
+      "fp_narrowed_dimensions": 2,
+      "locatable": 89,
+      "hunk_files": 7,
+      "changed_files": 7,
+      "test_points": 2,
+      "llm_added": 0,
+      "llm_rejected": 0,
+      "cases_with_runtime_detail": 0,
+      "cases": 2
+    },
+    "case_stats": {
+      "created": 0,
+      "updated": 0,
+      "reused": 2,
+      "obsolete": 311
+    },
+    "traceability": {
+      "fp_count": 2,
+      "tp_count": 2,
+      "case_count": 2,
+      "orphan_tp": [],
+      "orphan_case": [],
+      "orphan_tp_count": 0,
+      "orphan_case_count": 0
+    },
+    "channel_summary": {
+      "code": {
+        "fp": 2,
+        "tp": 2,
+        "case": 2
+      },
+      "url": {
+        "fp": 0,
+        "tp": 0,
+        "case": 0
+      },
+      "source_kind": "code+url"
+    },
+    "scope_summary": {
+      "正常": 2
+    },
+    "tag_summary": {
+      "更新": 2
+    },
+    "errors": [
+      "运行时 UI 发现失败：登录失败：页面提示「无法连接统一登录服务」——被测系统自己的统一登录服务/后端不可达，与账号、动态码无关；请先恢复被测系统的登录服务再复测"
+    ],
+    "notes": [
+      "取码[update] ok：本地 C:\\Users\\EDY\\WorkBuddy\\testhub_platform\\services\\testgen\\data\\workspaces\\research-agent，变更 7 个文件",
+      "增量变更集取自取码结果（7 个文件）；如需覆盖请显式给 --changed-files",
+      "按子集生成：勾选 5 条路径，命中 5 个文件，滤除 668 个未勾选文件",
+      "鉴权接线扫描（F8）：模式=required，全局接线=是，占位实现=否，含接线文件 2 个（信号：令牌校验 38、全局接线 2、路由依赖/装饰器 64）",
+      "鉴权接证据（示例）：backend/research-agent-source/server.py:438 [全局接线] app.add_middleware(；backend/research-agent-source/server.py:7816 [全局接线] app.add_middleware(BrowserSecurityHeaders)；backend/research-agent-source/server.py:765 [路由接线] async def query_test_ask(payload: QueryTestRequest, current: User = Depends(get_",
+      "业务调用图吞并（F6）：8 个辅助函数融入其调用方，未单独产出功能点（示例：_ChatRunner.subscribe @ backend/research-agent-source/server.py、_ChatRunner.unsubscribe @ backend/research-agent-source/server.py、_ChatRunner.mark_done @ backend/research-agent-source/server.py）",
+      "增量通道（显式变更集）：变更文件 7 个，仅做文件级打标（无 hunk 行号，未对齐到行）",
+      "增量收窄（函数级）：过滤 89 个未变更函数功能点，保留 2/91 个（依据 7 个文件的 diff hunk 行号）",
+      "增量收窄（维度收敛）：2 个无行号功能点（前端/无法定位函数）仅展开核心维度，避免泛化模板膨胀",
+      "仅规则引擎（LLM_ENHANCE=off）"
+    ],
+    "request": {
+      "mode": "incremental",
+      "base": "21fb554c2586d7a1ab2ffbb0c3a13d726b0b5b88",
+      "target": "31344820c81c5e6ea7a8f03eb18d92626be224aa",
+      "scopes": [
+        "正常",
+        "异常",
+        "安全",
+        "边界"
+      ],
+      "selected_paths": [
+        "backend/research-agent-source/server.py",
+        "frontend/app/src/api/adapter.ts",
+        "frontend/app/src/api/backend.ts",
+        "frontend/app/src/pages/pc/PcChatPage.tsx",
+        "frontend/app/src/pages/pc/PcShell.tsx"
+      ],
+      "changed_files": [],
+      "local_path": "",
+      "runtime_ui": true,
+      "runtime_scope": "targeted",
+      "expert_ui": false,
+      "llm_enhance": false,
+      "include_business": true,
+      "extract_pages": true,
+      "async_mode": false
+    },
+    "created_at": "2026-11-18T15:21:43",
+    "updated_at": "2026-11-18T15:22:01"
+  },
+  "b_outputs": {
+    "output_dir": "C:\\Users\\EDY\\WorkBuddy\\testhub_platform\\services\\testgen\\outputs\\30",
+    "summary_generated_at": "2026-11-18T16:10:19",
+    "case_count": 2,
+    "tp_count": 2,
+    "evidence": [
+      {
+        "tc_no": "TP-605cb382",
+        "tp_id": "TP-605cb382",
+        "title": "[正常] 前端屏幕（frontend/app/src/pages/pc/PcShell.tsx，无显式… · 交互元素可用",
+        "dimension": "交互元素可用",
+        "origin": "rule",
+        "tag": "更新",
+        "source": "frontend/app/src/pages/pc/PcShell.tsx"
+      },
+      {
+        "tc_no": "TP-8f86976b",
+        "tp_id": "TP-8f86976b",
+        "title": "[正常] 前端屏幕（frontend/app/src/pages/pc/PcChatPage.tsx，… · 交互元素可用",
+        "dimension": "交互元素可用",
+        "origin": "rule",
+        "tag": "更新",
+        "source": "frontend/app/src/pages/pc/PcChatPage.tsx"
+      }
+    ]
+  },
+  "c_database": {
+    "available": true,
+    "test_points_found": 2,
+    "cases_found": 2,
+    "fp_rows_total": 2,
+    "tp_missing": [],
+    "case_missing": [],
+    "case_status": {
+      "generated": 2
+    },
+    "case_priority": {
+      "P2": 2
+    }
+  },
+  "checks": {
+    "cases_a": 2,
+    "cases_b": 2,
+    "cases_c": 2,
+    "consistent": true,
+    "issues": []
+  },
+  "metrics": {
+    "cases_total": 2,
+    "test_points": 2,
+    "cases_direct": 2,
+    "cases_impact": 0,
+    "cases_runtime": 0,
+    "fp_before": 91,
+    "fp_after": 2,
+    "fp_dropped_unchanged": 89,
+    "fp_attributed": 0,
+    "dimension_kinds": 1,
+    "unverified_count": 0,
+    "cases_created": 0,
+    "cases_reused": 2,
+    "duration_s": 18.0,
+    "traceability": {
+      "fp_count": 2,
+      "tp_count": 2,
+      "case_count": 2,
+      "orphan_tp": [],
+      "orphan_case": [],
+      "orphan_tp_count": 0,
+      "orphan_case_count": 0
+    },
+    "channel_summary": {
+      "code": {
+        "fp": 2,
+        "tp": 2,
+        "case": 2
+      },
+      "url": {
+        "fp": 0,
+        "tp": 0,
+        "case": 0
+      },
+      "source_kind": "code+url"
+    }
+  },
+  "distribution": {
+    "dimension": {
+      "交互元素可用": 2
+    },
+    "origin": {
+      "rule": 2
+    },
+    "category": {
+      "正常": 2
+    },
+    "method": {
+      "PAGE": 2
+    },
+    "case_type": {
+      "正常": 2
+    },
+    "priority": {
+      "P2": 2
+    },
+    "ctype": {
+      "e2e": 2
+    }
+  }
+}

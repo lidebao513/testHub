@@ -100,6 +100,9 @@ class ExecutorOptions:
     ui_click: bool = False  # 是否执行真实点击（会改状态，默认关，与 allow_write 同思路）
     screenshot_dir: str = ""  # 非 pass 时落失败截图的目录（空=不落）
     console_slack: int = 0  # 允许超出控制台错误基线的条数
+    # A6（P1）：整批执行的总时长预算（秒），0=不限（保持旧行为）。
+    # 超预算时剩余用例如实 skipped 并记录 budget_exhausted，绝不静默丢弃或伪装通过。
+    budget_seconds: float = 0.0
     login_url: str = ""  # UI 层登录页（需登录态的被测系统）
     login_user: str = ""
     login_password: str = ""  # 不入库、不入日志
@@ -171,7 +174,10 @@ _PASS_PREDICATES: dict[str, Callable[[int], bool]] = {
 # 种类 → (通过文案, 未通过文案)；状态码由调用方拼接
 _VERDICT_DESC: dict[str, tuple[str, str]] = {
     _KIND_NORMAL: ("接口返回成功", "接口未返回成功"),
-    _KIND_ABNORMAL: ("异常路径返回 4xx", "异常路径未返回 4xx"),
+    # E2/A2：判定谓词接受 200-499（兼容「200 + 业务错误码」的软失败），
+    # 文案必须与之一致，不能写「返回 4xx」——否则接口返回 200 时会出现
+    # 「异常路径返回 4xx（200）」的自相矛盾结论。
+    _KIND_ABNORMAL: ("异常被妥善处理（未返回 5xx）", "异常未被妥善处理（返回 5xx）"),
     _KIND_AUTH: ("无凭证访问被拒", "无凭证访问未被拒绝"),
     _KIND_PRIV_ESC: ("越权访问被拒", "越权访问未被拒绝"),
     _KIND_BOUNDARY: ("非法参数被校验拒绝", "非法参数未被校验"),
@@ -439,6 +445,13 @@ def _special_probe(
             )
         return _probe_perf_baseline(case, step, opts, session)
     if Dimension.RATE_LIMIT.value in dimension:
+        # 限流探针也要过写保护：它与常规接口用例共用 `allow_write` 红线。
+        # 以前这里直接发 8 次突发请求，绕过了 `_probe_http` 中的 `_not_executable`，
+        # 导致默认 `allow_write=False` 下仍对写接口发出真实变更（安全缺陷）。
+        # 口径与常规写用例完全一致：写方法 + 未放行 → 诚实跳过，一次都不发。
+        reason = _not_executable(case, step, opts)
+        if reason:
+            return _skipped(case, reason)
         method = str(step.get("method") or "").upper().split(" ")[0]
         path = str(step.get("path") or "")
         materialized = _materialize_path(path, opts.path_param_value)[0]
@@ -666,6 +679,14 @@ def execute_all(
 
     UI 会话**惰性建立**：只有真的存在 UI 层用例且开关打开时才启动浏览器——
     接口层用例不该被迫为一次浏览器启动买单（那是数秒级开销）。
+
+    A6（P1）规模化护栏：
+    - **总预算**：`budget_seconds > 0` 时，从整批起点计时，超预算的未执行用例
+      一律 `_skipped` 并记原因，汇总标记 `budget_exhausted=True`——绝不静默丢弃、
+      也绝不伪装通过；0 表示不限（保持旧行为）。
+    - **逐条隔离**：每条 UI 用例执行前调用 `UiSession.reset_between_cases()`，
+      清掉上一条遗留的 console 缓冲与易变页面状态（`ui_click=on` 时尤其重要），
+      避免「顺序相关的随机假结果」。接口层无浏览器状态，无需隔离。
     """
     opts = options or ExecutorOptions()
     session: Any = None
@@ -677,14 +698,34 @@ def execute_all(
         if not ui_session.open():
             log.warning("UI 层执行会话未建立，UI 用例将如实跳过")
             ui_session = None  # 建不起来按「无会话」处理：UI 用例如实 skipped，绝不伪装通过
+    started = time.monotonic()
+    budget = float(opts.budget_seconds or 0)
+    budget_exhausted = False
+    results: list[ExecutionResult] = []
     try:
-        results = [execute_case(c, opts, session=session, ui_session=ui_session) for c in cases]
+        for case in cases:
+            if budget > 0 and (time.monotonic() - started) >= budget:
+                budget_exhausted = True
+                results.append(
+                    _skipped(
+                        case,
+                        f"整批执行预算 {budget:g}s 已用尽，本条未执行（**不等于通过**）；"
+                        "调大 EXEC_BUDGET_SECONDS 或分批执行以覆盖",
+                    )
+                )
+                continue
+            if ui_session is not None and _layer_of(case) == VerifyLayer.UI.value:
+                ui_session.reset_between_cases()
+            results.append(execute_case(case, opts, session=session, ui_session=ui_session))
     finally:
         if session is not None:
             _close_session(session)
         if ui_session is not None:
             ui_session.close()
-    return summarize(results)
+    summary = summarize(results)
+    summary["budget_exhausted"] = budget_exhausted
+    summary["budget_seconds"] = budget
+    return summary
 
 
 def summarize(results: list[ExecutionResult]) -> dict[str, Any]:

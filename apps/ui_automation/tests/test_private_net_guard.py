@@ -169,6 +169,33 @@ class TestPrivateNetworkGuard:
         guard = ai_base._ActionGuard.for_task('随便点点')
         assert guard.private_mode == 'block'
 
+    def test_off_mode_logs_security_downgrade(self, monkeypatch, caplog):
+        """S6-b：运维降级必须留痕，且说清元数据仍硬拦（避免误以为全放开）。"""
+        monkeypatch.setenv('UI_PRIVATE_NET_GUARD', 'off')
+        monkeypatch.delenv('UI_DOMAIN_GUARD', raising=False)
+        with caplog.at_level('WARNING'):
+            ai_base._ActionGuard.for_task('随便点点')
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any('SECURITY DOWNGRADE' in m and 'UI_PRIVATE_NET_GUARD=off' in m for m in msgs)
+        assert any('metadata' in m.lower() and 'STILL hard-blocked' in m for m in msgs)
+
+    def test_domain_guard_off_logs_downgrade(self, monkeypatch, caplog):
+        monkeypatch.setenv('UI_DOMAIN_GUARD', 'off')
+        monkeypatch.delenv('UI_PRIVATE_NET_GUARD', raising=False)
+        with caplog.at_level('WARNING'):
+            ai_base._ActionGuard.for_task('随便点点')
+        assert any(
+            'SECURITY DOWNGRADE' in r.getMessage() and 'UI_DOMAIN_GUARD=off' in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_default_mode_emits_no_downgrade_warning(self, monkeypatch, caplog):
+        monkeypatch.delenv('UI_PRIVATE_NET_GUARD', raising=False)
+        monkeypatch.delenv('UI_DOMAIN_GUARD', raising=False)
+        with caplog.at_level('WARNING'):
+            ai_base._ActionGuard.for_task('随便点点')
+        assert not any('SECURITY DOWNGRADE' in r.getMessage() for r in caplog.records)
+
     def test_loopback_allowed_by_default(self, monkeypatch):
         monkeypatch.delenv('UI_PRIVATE_NET_GUARD', raising=False)
         monkeypatch.delenv('UI_ALLOWED_DOMAINS', raising=False)
@@ -203,3 +230,83 @@ class TestGuardWiring:
 
         assert reached == []
         assert 'security-guard' in str(getattr(result, 'error', result))
+
+
+class TestLandingUrlGuard:
+    """S6-a：302 落点闸门。check_landing_url 看浏览器实际停留 URL，
+    把元数据/非白名单内网的兜底从'下一次动作'提前到'本步结束'。"""
+
+    def _guard(self, monkeypatch, private='block', allowed=None):
+        monkeypatch.setenv('UI_PRIVATE_NET_GUARD', private)
+        monkeypatch.delenv('UI_DOMAIN_GUARD', raising=False)
+        monkeypatch.delenv('UI_ALLOWED_DOMAINS', raising=False)
+        g = ai_base._ActionGuard.for_task('随便点点')
+        for h in allowed or ():
+            g.allowed_domains.add(h)
+        return g
+
+    def test_metadata_landing_always_blocked(self, monkeypatch):
+        for private in ('block', 'warn', 'off'):
+            g = self._guard(monkeypatch, private=private)
+            assert g.check_landing_url('http://169.254.169.254/latest/meta-data/')
+            assert g.check_landing_url('http://100.100.100.200/latest/meta-data/')
+
+    def test_metadata_obfuscated_landing_blocked(self, monkeypatch):
+        g = self._guard(monkeypatch)
+        assert g.check_landing_url('http://2852039166/')  # 十进制 = 169.254.169.254
+
+    def test_private_landing_blocked_by_default(self, monkeypatch):
+        g = self._guard(monkeypatch)
+        assert g.check_landing_url('http://10.1.2.3/admin')
+        assert g.check_landing_url('http://192.168.0.1/')
+
+    def test_private_landing_allowed_when_whitelisted(self, monkeypatch):
+        g = self._guard(monkeypatch, allowed={'10.1.2.3'})
+        assert g.check_landing_url('http://10.1.2.3/admin') is None
+
+    def test_private_landing_skipped_when_off(self, monkeypatch):
+        g = self._guard(monkeypatch, private='off')
+        assert g.check_landing_url('http://10.1.2.3/admin') is None
+        # 但元数据即使 off 也照拦
+        assert g.check_landing_url('http://169.254.169.254/')
+
+    def test_public_landing_unaffected(self, monkeypatch):
+        g = self._guard(monkeypatch)
+        assert g.check_landing_url('https://example.com/page') is None
+        assert g.check_landing_url('http://127.0.0.1:8900/') is None  # 回环走独立策略，不算内网
+
+    def test_empty_and_non_url_landing(self, monkeypatch):
+        g = self._guard(monkeypatch)
+        assert g.check_landing_url('') is None
+        assert g.check_landing_url('about:blank') is None
+
+    def test_wiring_in_on_step_end(self):
+        """防回退：run_task 的 step 循环里确实接了落点闸门。"""
+        import inspect
+
+        src = inspect.getsource(ai_base.BaseBrowserAgent.run_task)
+        assert 'check_landing_url(' in src
+        assert "getattr(step, 'state', None)" in src
+
+
+class TestMetadataDnsPin:
+    """S6-c 浏览器层加固：元数据域名在 Chromium DNS 层被钉死，页面 rebinding 也拿不到 IP。"""
+
+    def test_rules_cover_all_metadata_hostnames(self):
+        rules = ai_base._metadata_resolver_rules()
+        assert rules.startswith('--host-resolver-rules=')
+        for host in ai_base._METADATA_HOSTNAMES:
+            assert f'MAP {host} ~NOTFOUND' in rules
+
+    def test_rules_do_not_touch_normal_hosts(self):
+        rules = ai_base._metadata_resolver_rules()
+        # 不写通配 MAP *，否则会把正常测试域名一起拦掉
+        assert 'MAP *' not in rules
+        assert 'example.com' not in rules
+
+    def test_wiring_in_browser_profile_args(self):
+        import inspect
+
+        src = inspect.getsource(ai_base.BaseBrowserAgent._create_browser_profile)
+        assert '_metadata_resolver_rules()' in src
+        assert 'UI_METADATA_DNS_PIN' in src

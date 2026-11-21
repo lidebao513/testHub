@@ -31,7 +31,13 @@ os.environ["DB_PATH"] = os.path.join(_TMP, "data", "testgen.db")
 # （典型受害者：test_api_execute 的后台线程在写 success 终态）。DELETE 模式不产生这两个文件。
 os.environ["DB_JOURNAL_MODE"] = "DELETE"
 os.environ["LOG_FORMAT"] = "text"
-os.environ.pop("AUTH_TOKEN", None)
+# 鉴权隔离：本地 .env 若配了 AUTH_TOKEN，get_settings() 里的
+# load_dotenv(override=False) 会把它回填到已 pop 的键，使测试请求被 401 拒绝
+# （CI 无 .env 故全绿）。用「存在但为空」阻止回填，并显式开 fail-closed 逃生口，
+# 与 CI testgen-gate.yml 的 AUTH_DISABLED=1 保持一致。
+# 同类陷阱（键缺失被 dotenv 回填）见 test_llm_budget.py::usage_tmp 的注释。
+os.environ["AUTH_TOKEN"] = ""
+os.environ["AUTH_DISABLED"] = "1"
 os.environ["LLM_ENHANCE"] = "off"
 # 成本护栏：测试默认关闭（既有用例测的是降级链逻辑，不该被付费关键字/日预算拦），
 # 护栏专项用例（test_llm_budget.py）自行 monkeypatch 开启。用量文件也指向临时目录，

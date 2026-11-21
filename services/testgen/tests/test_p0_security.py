@@ -193,6 +193,59 @@ def test_m11_different_subset_does_not_collide():
     assert k1 != k2
 
 
+def test_idem_key_includes_runtime_target():
+    """同一仓库/分支，但换了被测地址或只改了智能输入框，必须得到不同键。
+
+    历史缺陷：幂等键缺 test_url，面板填了新地址点生成仍返回旧任务（0 点旧项目）。
+    """
+    k_none = _idem_key_for_generate(_req())
+    k_a = _idem_key_for_generate(_req(test_url="http://localhost:3000"))
+    k_b = _idem_key_for_generate(_req(test_url="http://10.0.0.9:8080"))
+    assert k_none != k_a
+    assert k_a != k_b
+    # 只有智能输入框不同（地址写在混排文本里）也要区分开
+    k_ai1 = _idem_key_for_generate(_req(auto_input="地址 http://localhost:3000 账号 u"))
+    k_ai2 = _idem_key_for_generate(_req(auto_input="地址 http://localhost:4000 账号 u"))
+    assert k_ai1 != k_ai2
+    # 口令不落明文：键里不应出现明文密码
+    k_pwd = _idem_key_for_generate(_req(login_password="Tp1015@test"))
+    assert "Tp1015@test" not in k_pwd
+
+
+def test_idem_key_includes_engine_revision():
+    """引擎代码一改，同参数请求不得复用旧产物。
+
+    历史缺陷：修完「变更靶向」后按原参数重新生成，幂等键完全相同 → 直接返回改造前的
+    旧任务，面板一直显示旧点数（208），看起来像修复没生效。
+    """
+    from service.app import _engine_rev
+
+    assert len(_engine_rev()) >= 4
+    assert _engine_rev() in _idem_key_for_generate(_req())
+
+
+def test_idem_key_for_execute_includes_exec_inputs():
+    """同一项目的执行验证：换地址/开关写操作/真实点击都要算不同请求。
+
+    历史缺陷：执行键只有 `exec:<项目ID>`，第二次执行直接命中第一次的任务，
+    面板复用旧结论，像「点了执行没反应」。
+    """
+    from service.app import _idem_key_for_execute
+
+    def _exec(**kw):
+        from service.app import ExecuteRequest
+
+        base = {"project_id": 7, "test_url": "http://localhost:3000/"}
+        base.update(kw)
+        return _idem_key_for_execute(ExecuteRequest(**base))
+
+    assert _exec() != _exec(test_url="http://localhost:4000/")
+    assert _exec() != _exec(allow_write=True)
+    assert _exec() != _exec(ui_click=True)
+    assert _exec() == _exec()  # 同输入稳定
+    assert "Tp1015@test" not in _exec(login_password="Tp1015@test")
+
+
 # ---------------------------------------------------------------------------
 # M4：token 写/读 统一字符串，兼容 bytes/str，非法转 ValueError
 # ---------------------------------------------------------------------------

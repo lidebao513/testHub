@@ -165,6 +165,45 @@ def test_rate_limit_skipped_when_no_429():
     assert "未触发限流" in res.notes[0]
 
 
+def test_rate_limit_write_method_skipped_when_write_not_allowed():
+    """P0 回归：限流探针不得绕过 allow_write。
+
+    默认 allow_write=False 下，写方法（POST）的限流用例必须诚实跳过，
+    **一次请求都不能发**——否则真实写请求会污染被测环境。
+    """
+    opts = executor.ExecutorOptions(base_url="http://t")  # allow_write 默认 False
+    sess = _FakeSession([200] * executor._RATE_LIMIT_BURST)
+    res = executor.execute_case(
+        _case(
+            category=TPType.ABNORMAL.value,
+            dimension=Dimension.RATE_LIMIT.value,
+            method="POST",
+        ),
+        opts,
+        session=sess,
+    )
+    assert res.status == ExecStatus.SKIPPED.value
+    assert sess._i == 0, "写操作未放行时限流探针不得发出任何请求"
+    assert "写操作（POST）默认不执行" in res.notes[0]
+
+
+def test_rate_limit_write_method_probes_when_write_allowed():
+    """放行写操作后，写方法限流探针正常工作（口径与常规写用例一致）。"""
+    opts = executor.ExecutorOptions(base_url="http://t", allow_write=True)
+    sess = _FakeSession([200] * (executor._RATE_LIMIT_BURST - 1) + [429])
+    res = executor.execute_case(
+        _case(
+            category=TPType.ABNORMAL.value,
+            dimension=Dimension.RATE_LIMIT.value,
+            method="PUT",
+        ),
+        opts,
+        session=sess,
+    )
+    assert res.status == ExecStatus.PASS.value
+    assert sess._i == executor._RATE_LIMIT_BURST, "放行后应发出完整突发请求序列"
+
+
 def test_best_effort_dims_skipped_not_failed():
     cases = [
         (TPType.ABNORMAL.value, Dimension.IDEMPOTENT.value, "POST", "幂等"),
@@ -218,3 +257,23 @@ def test_priv_esc_without_resource_honest_note():
     joined = " ".join(res.notes)
     assert "资源归属未从路由识别" in joined
     assert "置信度较低" not in joined
+
+
+def test_abnormal_verdict_wording_matches_predicate():
+    """E2/A2 回归：异常类文案必须与 200-499 通过的判定口径一致，不自相矛盾。"""
+    for status in (200, 404, 409):
+        passed, detail = executor._judge(
+            TPType.ABNORMAL.value, Dimension.RES_NOT_FOUND.value, status
+        )
+        assert passed is True, status
+        assert "4xx" not in detail, f"状态 {status} 通过时文案不应再说 4xx：{detail}"
+        assert "5xx" not in detail or "未返回 5xx" in detail, detail
+    failed, detail = executor._judge(TPType.ABNORMAL.value, Dimension.RES_NOT_FOUND.value, 500)
+    assert failed is False
+    assert "5xx" in detail
+
+
+def test_abnormal_expect_wording_matches_predicate():
+    """E2/A2：期望文案也不再单方面写「返回 4xx」，避免与软失败口径冲突。"""
+    expect = tp_expand._abnormal_expect(Dimension.RES_NOT_FOUND.value)
+    assert "200" in expect and "5xx" in expect

@@ -1,0 +1,305 @@
+{
+  "tag": "T1",
+  "captured_at": "2026-11-18T16:20:30",
+  "preset": {
+    "base": "21fb554c2586d7a1ab2ffbb0c3a13d726b0b5b88",
+    "target": "31344820c81c5e6ea7a8f03eb18d92626be224aa",
+    "selected_paths": [
+      "backend/research-agent-source/server.py",
+      "frontend/app/src/api/adapter.ts",
+      "frontend/app/src/api/backend.ts",
+      "frontend/app/src/pages/pc/PcChatPage.tsx",
+      "frontend/app/src/pages/pc/PcShell.tsx"
+    ],
+    "mode": "incremental",
+    "scopes": [
+      "正常",
+      "异常",
+      "边界"
+    ],
+    "runtime_ui": false,
+    "expert_ui": false,
+    "llm_enhance": false
+  },
+  "a_server": {
+    "task_id": "gen-dfea6fff218c",
+    "state": "success",
+    "project_id": 30,
+    "counts": {
+      "pull_changed_files": 7,
+      "files": 5,
+      "auth_wired_files": 2,
+      "fp_merged": 0,
+      "business_absorbed": 8,
+      "functional_points": 91,
+      "fp_before": 91,
+      "fp_after": 3,
+      "fp_attributed": 1,
+      "hunk_uncovered": 2,
+      "fp_dropped_unchanged": 88,
+      "fp_narrowed_dimensions": 2,
+      "locatable": 89,
+      "hunk_files": 7,
+      "changed_files": 7,
+      "test_points": 8,
+      "llm_added": 0,
+      "llm_rejected": 0,
+      "cases_with_runtime_detail": 0,
+      "cases": 8
+    },
+    "case_stats": {
+      "created": 6,
+      "updated": 0,
+      "reused": 2,
+      "obsolete": 311
+    },
+    "traceability": {
+      "fp_count": 3,
+      "tp_count": 8,
+      "case_count": 8,
+      "orphan_tp": [],
+      "orphan_case": [],
+      "orphan_tp_count": 0,
+      "orphan_case_count": 0
+    },
+    "channel_summary": {
+      "code": {
+        "fp": 3,
+        "tp": 8,
+        "case": 8
+      },
+      "url": {
+        "fp": 0,
+        "tp": 0,
+        "case": 0
+      },
+      "source_kind": "code"
+    },
+    "scope_summary": {
+      "正常": 3,
+      "边界": 1,
+      "异常": 4
+    },
+    "tag_summary": {
+      "更新": 8
+    },
+    "errors": [],
+    "notes": [
+      "取码[update] ok：本地 C:\\Users\\EDY\\WorkBuddy\\testhub_platform\\services\\testgen\\data\\workspaces\\research-agent，变更 7 个文件",
+      "增量变更集取自取码结果（7 个文件）；如需覆盖请显式给 --changed-files",
+      "按子集生成：勾选 5 条路径，命中 5 个文件，滤除 668 个未勾选文件",
+      "鉴权接线扫描（F8）：模式=required，全局接线=是，占位实现=否，含接线文件 2 个（信号：令牌校验 38、全局接线 2、路由依赖/装饰器 64）",
+      "鉴权接证据（示例）：backend/research-agent-source/server.py:438 [全局接线] app.add_middleware(；backend/research-agent-source/server.py:7816 [全局接线] app.add_middleware(BrowserSecurityHeaders)；backend/research-agent-source/server.py:765 [路由接线] async def query_test_ask(payload: QueryTestRequest, current: User = Depends(get_",
+      "业务调用图吞并（F6）：8 个辅助函数融入其调用方，未单独产出功能点（示例：_ChatRunner.subscribe @ backend/research-agent-source/server.py、_ChatRunner.unsubscribe @ backend/research-agent-source/server.py、_ChatRunner.mark_done @ backend/research-agent-source/server.py）",
+      "增量通道（显式变更集）：变更文件 7 个，仅做文件级打标（无 hunk 行号，未对齐到行）",
+      "改动归属：backend/research-agent-source/server.py:1378 的改动落在无功能点函数 _record_thread_activity（私有/被调用图吞并），已按同文件调用图归属到入口 chat（1 跳）→ FP-88d04b03",
+      "增量收窄（函数级）：过滤 88 个未变更函数功能点，保留 3/91 个（依据 7 个文件的 diff hunk 行号）",
+      "增量收窄（维度收敛）：2 个无行号功能点（前端/无法定位函数）仅展开核心维度，避免泛化模板膨胀",
+      "仅规则引擎（LLM_ENHANCE=off）"
+    ],
+    "request": {
+      "mode": "incremental",
+      "base": "21fb554c2586d7a1ab2ffbb0c3a13d726b0b5b88",
+      "target": "31344820c81c5e6ea7a8f03eb18d92626be224aa",
+      "scopes": [
+        "正常",
+        "异常",
+        "边界"
+      ],
+      "selected_paths": [
+        "backend/research-agent-source/server.py",
+        "frontend/app/src/api/adapter.ts",
+        "frontend/app/src/api/backend.ts",
+        "frontend/app/src/pages/pc/PcChatPage.tsx",
+        "frontend/app/src/pages/pc/PcShell.tsx"
+      ],
+      "changed_files": [],
+      "local_path": "",
+      "runtime_ui": false,
+      "runtime_scope": "targeted",
+      "expert_ui": false,
+      "llm_enhance": false,
+      "include_business": true,
+      "extract_pages": true,
+      "async_mode": true
+    },
+    "created_at": "2026-11-18T16:20:24",
+    "updated_at": "2026-11-18T16:20:28"
+  },
+  "b_outputs": {
+    "output_dir": "C:\\Users\\EDY\\WorkBuddy\\testhub_platform\\services\\testgen\\outputs\\30",
+    "summary_generated_at": "2026-11-18T16:20:28",
+    "case_count": 8,
+    "tp_count": 8,
+    "evidence": [
+      {
+        "tc_no": "TP-605cb382",
+        "tp_id": "TP-605cb382",
+        "title": "[正常] 前端屏幕（frontend/app/src/pages/pc/PcShell.tsx，无显式… · 交互元素可用",
+        "dimension": "交互元素可用",
+        "origin": "rule",
+        "tag": "更新",
+        "source": "frontend/app/src/pages/pc/PcShell.tsx"
+      },
+      {
+        "tc_no": "TP-8f86976b",
+        "tp_id": "TP-8f86976b",
+        "title": "[正常] 前端屏幕（frontend/app/src/pages/pc/PcChatPage.tsx，… · 交互元素可用",
+        "dimension": "交互元素可用",
+        "origin": "rule",
+        "tag": "更新",
+        "source": "frontend/app/src/pages/pc/PcChatPage.tsx"
+      },
+      {
+        "tc_no": "TP-451e1c1e",
+        "tp_id": "TP-451e1c1e",
+        "title": "[异常] research-agent-source · 创建/api/v1/chat · 异常-超时兜底",
+        "dimension": "异常-超时兜底",
+        "origin": "rule",
+        "tag": "更新",
+        "source": "backend/research-agent-source/server.py"
+      },
+      {
+        "tc_no": "TP-6409ae06",
+        "tp_id": "TP-6409ae06",
+        "title": "[异常] research-agent-source · 创建/api/v1/chat · 异常-限流",
+        "dimension": "异常-限流",
+        "origin": "rule",
+        "tag": "更新",
+        "source": "backend/research-agent-source/server.py"
+      },
+      {
+        "tc_no": "TP-746ed92a",
+        "tp_id": "TP-746ed92a",
+        "title": "[正常] research-agent-source · 创建/api/v1/chat · 正常-可用性",
+        "dimension": "正常-可用性",
+        "origin": "rule",
+        "tag": "更新",
+        "source": "backend/research-agent-source/server.py"
+      },
+      {
+        "tc_no": "TP-810201a5",
+        "tp_id": "TP-810201a5",
+        "title": "[异常] research-agent-source · 创建/api/v1/chat · 异常-幂等",
+        "dimension": "异常-幂等",
+        "origin": "rule",
+        "tag": "更新",
+        "source": "backend/research-agent-source/server.py"
+      },
+      {
+        "tc_no": "TP-8e09366e",
+        "tp_id": "TP-8e09366e",
+        "title": "[边界] research-agent-source · 创建/api/v1/chat · 边界-参数缺失/非法",
+        "dimension": "边界-参数缺失/非法",
+        "origin": "rule",
+        "tag": "更新",
+        "source": "backend/research-agent-source/server.py"
+      },
+      {
+        "tc_no": "TP-d14fe77b",
+        "tp_id": "TP-d14fe77b",
+        "title": "[异常] research-agent-source · 创建/api/v1/chat · 异常-降级",
+        "dimension": "异常-降级",
+        "origin": "rule",
+        "tag": "更新",
+        "source": "backend/research-agent-source/server.py"
+      }
+    ]
+  },
+  "c_database": {
+    "available": true,
+    "test_points_found": 8,
+    "cases_found": 8,
+    "fp_rows_total": 3,
+    "tp_missing": [],
+    "case_missing": [],
+    "case_status": {
+      "generated": 8
+    },
+    "case_priority": {
+      "P1": 5,
+      "P2": 3
+    }
+  },
+  "checks": {
+    "cases_a": 8,
+    "cases_b": 8,
+    "cases_c": 8,
+    "consistent": true,
+    "issues": []
+  },
+  "metrics": {
+    "cases_total": 8,
+    "test_points": 8,
+    "cases_direct": 8,
+    "cases_impact": 0,
+    "cases_runtime": 0,
+    "fp_before": 91,
+    "fp_after": 3,
+    "fp_dropped_unchanged": 88,
+    "fp_attributed": 1,
+    "dimension_kinds": 7,
+    "unverified_count": 3,
+    "cases_created": 6,
+    "cases_reused": 2,
+    "duration_s": 4.0,
+    "traceability": {
+      "fp_count": 3,
+      "tp_count": 8,
+      "case_count": 8,
+      "orphan_tp": [],
+      "orphan_case": [],
+      "orphan_tp_count": 0,
+      "orphan_case_count": 0
+    },
+    "channel_summary": {
+      "code": {
+        "fp": 3,
+        "tp": 8,
+        "case": 8
+      },
+      "url": {
+        "fp": 0,
+        "tp": 0,
+        "case": 0
+      },
+      "source_kind": "code"
+    }
+  },
+  "distribution": {
+    "dimension": {
+      "交互元素可用": 2,
+      "正常-可用性": 1,
+      "边界-参数缺失/非法": 1,
+      "异常-限流": 1,
+      "异常-幂等": 1,
+      "异常-降级": 1,
+      "异常-超时兜底": 1
+    },
+    "origin": {
+      "rule": 8
+    },
+    "category": {
+      "异常": 4,
+      "正常": 3,
+      "边界": 1
+    },
+    "method": {
+      "POST": 6,
+      "PAGE": 2
+    },
+    "case_type": {
+      "异常": 4,
+      "正常": 3,
+      "边界": 1
+    },
+    "priority": {
+      "P1": 5,
+      "P2": 3
+    },
+    "ctype": {
+      "api": 6,
+      "e2e": 2
+    }
+  }
+}

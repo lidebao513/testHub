@@ -251,12 +251,18 @@ def test_resolve_routes_respects_max_pages() -> None:
 # ============================================================================
 # M3.2 登录
 # ============================================================================
-def test_login_skipped_without_credentials() -> None:
+def test_login_skipped_without_credentials_but_opens_page() -> None:
+    """无凭证走匿名：**必须打开被测地址**，否则发现通道的落地页是 about:blank。
+
+    回归要点：早期实现在无凭证时直接 return，页面停在 about:blank，`_sweep_pages`
+    于是把落地页记成 `path="blank"`、0 元素，功能点 `area="blank"` 再展开成
+    「打开页面：blank」的假用例（实测评 :3900 匿名发现即如此）。
+    """
     result = runtime_ui.RuntimeUiResult(base_url="http://srv")
     page = _StubLoginPage()
     opts = runtime_ui.RuntimeUiOptions(base_url="http://srv")
     assert runtime_ui._login(page, opts, result) is False
-    assert page.visited == []  # 无凭证不应打开登录页
+    assert page.visited == ["http://srv"], "匿名也要打开被测地址（不能停在 about:blank）"
     assert any("未提供账号密码" in n for n in result.notes)
 
 
@@ -294,6 +300,28 @@ def test_login_without_password_field_is_public_page() -> None:
     page = _StubLoginPage(present=())
     assert runtime_ui._login(page, _opts(), result) is False
     assert any("未发现密码输入框" in n for n in result.notes)
+
+
+def test_login_failure_points_at_upstream_sso_outage() -> None:
+    """页面写着「无法连接统一登录服务」时，要指出是被测系统的 SSO 挂了，而不是让用户换动态码。
+
+    现场（2026-11-18，research-agent）：动态码 261015 是固定有效值，但登录页提示
+    「无法连接统一登录服务」，后端 `unified-login` 返回 502 crypto_gateway_error，
+    SSO 网关 itself 503 —— 请求根本没走到动态码校验。
+    """
+
+    class _OutagePage(_StubLoginPage):
+        def inner_text(self, selector: str) -> str:
+            return "Agent\n\n无法连接统一登录服务，请检查网络后重试\n\n登 录"
+
+    result = runtime_ui.RuntimeUiResult(base_url="http://srv")
+    page = _OutagePage(password_after=True)
+    with pytest.raises(EngineError) as ei:
+        runtime_ui._login(page, _opts(login_password=_SECRET_PASSWORD), result)
+    msg = str(ei.value)
+    assert "统一登录服务" in msg
+    assert "与账号、动态码无关" in msg
+    assert _SECRET_PASSWORD not in msg
 
 
 def test_login_missing_user_or_submit_raises() -> None:
@@ -458,6 +486,26 @@ _TASKS_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>任务�
 _SECRET_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>隐藏页</title></head>
 <body><h1>仅登录可见</h1><button id="do">执行</button></body></html>"""
 
+# 复现真实登录页的按钮结构：切换登录方式的 tab 在表单**外**，提交按钮在表单**内**。
+# 两者文本都含「登录」，`button:has-text("登录")` 会先命中 tab（实测本平台 3 个按钮全命中）。
+_LOGIN_TABS_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>密码登录</title></head>
+<body><div id="app">
+<div class="tabs">
+  <button type="button" class="mode-tab active">密码登录</button>
+  <button type="button" class="mode-tab">短信登录</button>
+</div>
+<form id="f" onsubmit="return false">
+  <input type="text" placeholder="请输入用户名">
+  <input type="password" placeholder="请输入密码">
+  <button type="button" class="login-button" onclick="doLogin()">登录</button>
+</form>
+<script>
+function doLogin() {
+  document.querySelector('form').innerHTML = '<div id="ok">已登录</div>';
+}
+</script>
+</div></body></html>"""
+
 
 class _SiteHandler(BaseHTTPRequestHandler):
     pages: ClassVar[dict[str, str]] = {}
@@ -483,6 +531,7 @@ def mini_site() -> str:
     """起一个本地迷你站点，返回其源地址（http://127.0.0.1:<port>）。"""
     _SiteHandler.pages = {
         "/login": _LOGIN_HTML,
+        "/login-tabs": _LOGIN_TABS_HTML,
         "/dashboard": _DASHBOARD_HTML,
         "/pc/tasks": _TASKS_HTML,
         "/pc/secret": _SECRET_HTML,
@@ -529,6 +578,43 @@ def test_discover_ui_end_to_end_finds_protected_pages(mini_site: str) -> None:
     assert "nav" in kinds
     assert kinds & {"input", "button", "form"}
     assert _SECRET_PASSWORD not in repr(result)  # 红线
+
+
+def test_submit_selector_skips_login_mode_tabs(mini_site: str) -> None:
+    """提交按钮必须命中表单内的「登录」，不能命中表单外的「密码登录 / 短信登录」tab。
+
+    回归要点：`button:has-text("登录")` 是**子串**匹配，真实登录页上 3 个按钮全命中，
+    选择器按 DOM 顺序返回第一个（tab）→ 点 tab 只切换登录方式，页面仍停在登录页，
+    于是被误判成「账号密码错误 / 有风控」。修复是把 `form button:*` 排在全局文本之前。
+    """
+    pytest.importorskip("playwright")
+    from playwright.sync_api import sync_playwright
+
+    opts = runtime_ui.RuntimeUiOptions(
+        base_url=f"{mini_site}/login-tabs",
+        timeout=15,
+        channel=os.environ.get("PLAYWRIGHT_CHANNEL", ""),
+    )
+    try:
+        with sync_playwright() as pw:
+            browser = runtime_ui.launch_browser(pw, opts)
+            try:
+                context = browser.new_context()
+                page = context.new_page()
+                page.goto(f"{mini_site}/login-tabs", wait_until="domcontentloaded")
+                submit = runtime_ui._first_match(page, runtime_ui._SUBMIT_SELECTORS)
+                assert submit is not None, "未定位到提交按钮"
+                assert submit.inner_text().strip() == "登录", (
+                    f"命中了非提交按钮：{submit.inner_text().strip()!r}"
+                )
+                submit.click()
+                page.wait_for_function(
+                    "() => !document.querySelector('input[type=password]')", timeout=5000
+                )
+            finally:
+                runtime_ui.close_quietly(browser)
+    except EngineError as exc:  # 内核缺失等环境问题 → 跳过而非失败
+        pytest.skip(f"浏览器不可用：{exc}")
 
 
 def test_discover_ui_end_to_end_detects_login_failure(mini_site: str) -> None:
@@ -934,3 +1020,106 @@ def test_merge_runtime_fps_runtime_wins_on_same_key() -> None:
     assert next(fp for fp in merged if fp.name == "/pc/tasks").title == "运行时"  # 运行时优先
     assert ("api", "GET /x") in keys  # 仅静态有的保留
     assert ("page", "/new") in keys  # 仅运行时有的追加
+
+
+def test_element_fps_collapse_nth_only_duplicates() -> None:
+    """同页同型同文字、选择器只差 nth 序号的列表元素收敛为 1 条代表用例。"""
+    result = runtime_ui.RuntimeUiResult(
+        base_url="http://srv",
+        pages=[
+            runtime_ui.UiPage(
+                url="http://srv/chat",
+                path="/chat",
+                title="对话",
+                elements=[
+                    runtime_ui.UiElement(
+                        selector=f"aside > div > button.block:nth-of-type({n})",
+                        kind="button",
+                        text="加班",
+                        visible=True,
+                    )
+                    for n in (1, 2, 27)
+                ]
+                + [
+                    runtime_ui.UiElement(
+                        selector="#leave", kind="button", text="请假", visible=True
+                    ),
+                    # 选择器族不同（结构不同）的「提交」不能被误并
+                    runtime_ui.UiElement(
+                        selector="form > button", kind="button", text="提交", visible=True
+                    ),
+                    runtime_ui.UiElement(
+                        selector="form > div > button", kind="button", text="提交", visible=True
+                    ),
+                ],
+            )
+        ],
+    )
+    fps = runtime_ui.to_functional_points(result)
+    ui = [fp for fp in fps if fp.ftype == FType.UI.value]
+    assert len(ui) == 4  # 加班×3→1，请假×1，提交×2（结构不同）
+    overtime = next(fp for fp in ui if "加班" in fp.name)
+    assert ":nth-of-type(1)" in overtime.name  # 保留首个代表选择器
+    assert "共 3 处实例" in overtime.semantic  # 覆盖信息不丢
+    assert any("语义收敛" in note for note in result.notes)
+
+
+def test_api_paths_normalize_dynamic_id_segments() -> None:
+    """接口路径里的 UUID / 长 hex / 数字 ID 折叠为 {id}，同名模板只留一条端点。"""
+    norm = runtime_ui._normalize_api_path
+    assert norm("/api/v1/threads/7bf1f050-c0cf-4b1a-9e2d-1a2b3c4d5e6f") == "/api/v1/threads/{id}"
+    assert norm("/api/v1/docs/0123456789abcdef0123456789abcdef") == "/api/v1/docs/{id}"
+    assert norm("/api/v1/users/12345/orders") == "/api/v1/users/{id}/orders"
+    assert norm("/api/v1/threads") == "/api/v1/threads"  # 无 ID 不动
+    assert norm("/api/v1/agents/recent") == "/api/v1/agents/recent"  # 语义段不动
+    assert norm("/api/v1/threads/abc") == "/api/v1/threads/abc"  # 短段不动
+
+
+def test_api_endpoints_dedup_by_normalized_path() -> None:
+    """同一接口的不同资源实例（UUID 不同）只生成 1 条 api 功能点。"""
+    result = runtime_ui.RuntimeUiResult(
+        base_url="http://srv",
+        pages=[],
+        api_endpoints=[
+            runtime_ui.ApiEndpoint(
+                method="GET",
+                path="/api/v1/threads/7bf1f050-c0cf-4b1a-9e2d-1a2b3c4d5e6f",
+                url="http://srv/api/v1/threads/one",
+                status=200,
+            ),
+            runtime_ui.ApiEndpoint(
+                method="GET",
+                path="/api/v1/threads/0219fdad-2a40-4c1b-8f3e-9a7b6c5d4e3f",
+                url="http://srv/api/v1/threads/two",
+                status=200,
+            ),
+        ],
+    )
+    fps = runtime_ui.to_functional_points(result)
+    api = [fp for fp in fps if fp.ftype == FType.API.value]
+    assert len(api) == 1  # 归一化后撞车，去重为 1
+    assert "{id}" in api[0].name
+
+
+def test_element_fps_collapse_same_text_across_pages() -> None:
+    """跨页面同文字同类元素（如各页都有的「退出登录」导航）收敛为 1 条代表用例。"""
+
+    def page(path: str) -> runtime_ui.UiPage:
+        return runtime_ui.UiPage(
+            url=f"http://srv{path}",
+            path=path,
+            title="福享 Agent",
+            elements=[
+                runtime_ui.UiElement(
+                    selector="aside > button.logout", kind="button", text="退出登录", visible=True
+                )
+            ],
+        )
+
+    result = runtime_ui.RuntimeUiResult(
+        base_url="http://srv", pages=[page("/chat"), page("/leave")]
+    )
+    fps = runtime_ui.to_functional_points(result)
+    ui = [fp for fp in fps if fp.ftype == FType.UI.value and "退出登录" in fp.name]
+    assert len(ui) == 1, "跨页同名导航元素应收敛为 1 条"
+    assert "跨 2 个页面" in ui[0].semantic, "覆盖页面数写入语义，不丢信息"

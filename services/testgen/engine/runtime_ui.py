@@ -32,7 +32,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -104,8 +107,147 @@ _NAV_HARVEST_JS = r"""
 # 危险菜单项（点击会退出登录 / 触发副作用），路由发现阶段跳过，避免把会话踢下线
 _DANGER_LABEL_HINTS = ("退出", "注销", "登出", "退出登录", "sign out", "log out", "logout")
 
-# 单页元素上限（防爆：超长列表页可达数千个元素）
-MAX_ELEMENTS_PER_PAGE = 200
+# ---------------------------------------------------------------------------
+# 批次 D（P3）卡片式导航启发式。默认关；四道护栏缺一不可：
+#   ① 白名单容器：只在主内容区找候选，排除导航/侧栏/页头/弹窗/表单；
+#   ② 危险标签过滤：卡片点击=真动作，比菜单更严（含删除/支付/退出等副作用词）；
+#   ③ 点击预算：硬上限 12，且不超过 max_pages 余量；
+#   ④ URL 变化确认：点完 pathname+search 必须变，否则记误报并回起点。
+# ---------------------------------------------------------------------------
+_CARD_SCOPE_SELECTOR = (
+    "main, [role=main], .ant-layout-content, .el-main, .content, [class*=content], [class*=main]"
+)
+_CARD_EXCLUDE_SELECTOR = (
+    "nav, aside, header, footer, [class*=header], [class*=footer], "
+    "[role=dialog], [class*=dialog], [class*=modal], form"
+)
+_CARD_DANGER_HINTS = (
+    "删除",
+    "移除",
+    "清空",
+    "重置",
+    "撤销",
+    "回滚",
+    "退出",
+    "注销",
+    "登出",
+    "退出登录",
+    "停用",
+    "禁用",
+    "下架",
+    "支付",
+    "付款",
+    "下单",
+    "购买",
+    "确认删除",
+    "批量删除",
+    # B2（P2）：补中文写动词——点这些按钮会真实改数据，必须点前拦截。
+    "提交",
+    "保存",
+    "发布",
+    "新增",
+    "创建",
+    "上传",
+    "delete",
+    "remove",
+    "clear",
+    "reset",
+    "revert",
+    "rollback",
+    "sign out",
+    "log out",
+    "logout",
+    "disable",
+    "deactivate",
+    "pay",
+    "checkout",
+    "purchase",
+    "submit",
+    "save",
+    "publish",
+    "create",
+    "upload",
+)
+_CARD_CLICK_BUDGET = 12
+_CARD_MAX_CANDIDATES = 30
+_CARD_CANDIDATE_JS = r"""
+() => {
+  const MAX = __MAX__;
+  const SCOPE = __SCOPE__;
+  const EXCLUDE = __EXCLUDE__;
+  const DANGER = __DANGER__;
+  const stableId = (id) => !!id
+    && !/^(el-id|:r|ember|vue-|mui-|rc-|headlessui-)/i.test(id)
+    && !/\d{4,}/.test(id);
+  // B7：CSS-in-JS 哈希 class（css-1x2y3z / emotion-* / sc-* / _1a2b3c）每次构建都变，
+  // 写进选择器会让执行假 FAIL；只保留语义 class，无稳定 class 时退化 tag+nth。
+  const stableClass = (c) => c
+    && !/^(css|emotion|sc|jss|jsx)-[a-z0-9_-]+$/i.test(c)
+    && !/^_[a-z0-9]{5,}$/i.test(c)
+    && !/^_?[a-z][a-z0-9]*-\d{4,}$/i.test(c);
+  const cssPath = (el) => {
+    const parts = [];
+    let node = el, depth = 0;
+    while (node && node.nodeType === 1 && depth < 5) {
+      if (stableId(node.id)) { parts.unshift('#' + node.id); break; }
+      let sel = node.tagName.toLowerCase();
+      const cls = (node.getAttribute('class') || '').trim().split(/\s+/).filter(stableClass).slice(0, 2);
+      // Tailwind arbitrary-value / 响应式类名含 []():., 等 CSS 特殊字符
+      // （如 min-h-[100dvh]、hover:bg-blue-500），直接拼接会被当成属性选择器 / 伪类而抛 Error。
+      // CSS.escape 是浏览器原生转义，保留语义 class 的同时生成合法选择器。
+      if (cls.length) sel += '.' + cls.map(function(c){ return CSS.escape(c); }).join('.');
+      const parent = node.parentElement;
+      if (parent) {
+        const same = Array.from(parent.children).filter((c) => c.tagName === node.tagName);
+        if (same.length > 1) sel += ':nth-of-type(' + (same.indexOf(node) + 1) + ')';
+      }
+      parts.unshift(sel);
+      node = node.parentElement; depth += 1;
+    }
+    return parts.join(' > ');
+  };
+  const textOf = (el) => String(
+    el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') || ''
+  ).trim().replace(/\s+/g, ' ').slice(0, 40);
+  const isDanger = (t) => DANGER.some((h) => t.toLowerCase().includes(h));
+  const scopes = Array.from(document.querySelectorAll(SCOPE));
+  const roots = scopes.length ? scopes : [document.body];
+  const all = [];
+  const seenText = new Set();
+  roots.forEach((root) => {
+    if (root.closest(EXCLUDE)) return;
+    root.querySelectorAll('div, li, article, section, span, [role=link]').forEach((el) => {
+      if (all.length >= MAX) return;
+      if (el.closest(EXCLUDE)) return;
+      const t = textOf(el);
+      if (!t || isDanger(t) || seenText.has(t)) return;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 12 || r.height <= 12) return;
+      const s = getComputedStyle(el);
+      if (s.visibility === 'hidden' || s.display === 'none' || s.opacity === '0') return;
+      const cls = String(el.className || '');
+      const clickable = s.cursor === 'pointer'
+        || /card|tile|entry|quick|item|link|panel/i.test(cls)
+        || el.getAttribute('role') === 'link';
+      if (!clickable) return;
+      seenText.add(t);
+      all.push({ el, text: t });
+    });
+  });
+  // 父子候选同时命中时只保留内层（点得更精确），同文字只留首个
+  const out = [];
+  for (const cur of all) {
+    if (all.some((o) => o !== cur && cur.el.contains(o.el))) continue;
+    out.push({ label: cur.text, selector: cssPath(cur.el) });
+    if (out.length >= MAX) break;
+  }
+  return out;
+}
+"""
+
+# 单页元素上限（防爆：超长列表页可达数千个元素）。
+# C2：唯一定义（此前 2351 行另有一处 =150 静默覆盖这里的 200，维护者易误读）。
+MAX_ELEMENTS_PER_PAGE = 150
 # 首页链接爬取上限
 MAX_HOME_LINKS = 300
 # 单页控制台错误上限
@@ -114,6 +256,12 @@ MAX_CONSOLE_ERRORS_PER_PAGE = 20
 MAX_CONSOLE_ERRORS_TOTAL = 500
 # SPA 路由切换后的静默等待（毫秒）
 SPA_SETTLE_MS = 900
+# 状态驱动面板发现的总时间预算（毫秒）：菜单标签可能高达 60 个，每个点击最坏等
+# timeout_ms(options)（默认 30s），累积极易拖到数分钟像「卡死」。预算到即停止探测，
+# 已采集的面板保留；不牺牲覆盖率（面板本来就是可选兜底通道，主路由发现已完成）。
+PANEL_DISCOVERY_BUDGET_MS = 25000
+# 面板探测中单次点击的上限（毫秒），远小于全局 timeout，防止单个遮挡元素耗满 30s。
+PANEL_CLICK_TIMEOUT_MS = 5000
 # 进入新页面后等「网络静默」的上限（毫秒）。
 # SPA 普遍有长轮询/心跳，`networkidle` 往往**永远不满足**；若照配置超时（几十秒）等，
 # 遍历十几个路由就会拖到数分钟。这里只需要「首屏渲染差不多完成」，故给一个短预算。
@@ -189,15 +337,32 @@ _OTP_SELECTORS = (
     'input[name*="captcha" i]',
     'input[name*="verify" i]',
 )
+# 提交按钮：**先结构、再表单内文本、最后全局文本**。
+# 为什么不能只有全局 `button:has-text("登录")`：Playwright 的 `:has-text` 是子串匹配，
+# 于是「密码登录 / 短信登录 / 扫码登录」这些**切换登录方式的 tab** 会先命中（实测本平台
+# 登录页 3 个按钮全命中，点到的是 tab），点完自然仍停在登录页 → 被误判「账号密码错误」。
+# 表单内的按钮才是提交按钮，所以把 `form button:*` 放在全局文本之前。
 _SUBMIT_SELECTORS = (
     "button[type=submit]",
     "input[type=submit]",
+    'form button:has-text("登 录")',
+    'form button:has-text("登录")',
+    'form button:has-text("Login")',
+    'form button:has-text("Sign in")',
+    "form button",
     'button:has-text("登 录")',
-    'button:has-text("登录")',
+    'button:has-text("登录"):not(:has-text("密码")):not(:has-text("短信")):not(:has-text("注册"))',
     'button:has-text("登陆")',
     'button:has-text("Login")',
     'button:has-text("Sign in")',
     ".login-button",
+)
+# 「被测系统自己的登录服务挂了」的页面级证据（见 `_login_page_hint`）
+_LOGIN_UPSTREAM_HINTS = (
+    "无法连接统一登录服务",
+    "检查网络后重试",
+    "服务不可用",
+    "Service Unavailable",
 )
 
 INSTALL_HINT = (
@@ -234,6 +399,9 @@ class RuntimeUiOptions:
     # 配置后首次登录失败会自动执行该命令取其 stdout 首行作为新 OTP 重试一次。
     login_otp_refresh_cmd: str = ""
     discover_by_menu: bool = True  # 是否靠点菜单发现 SPA 路由（无正确 href 时的唯一途径）
+    # 批次 D（P3）：卡片式导航启发式三态（off / auto / on，默认 auto）。
+    # auto 由 _card_nav_decision 按「其它渠道是否已有路由」运行期自动判定。
+    card_nav_mode: str = "auto"
     # G-7：移动端/响应式发现（默认关：需显式开启 RUNTIME_UI_MOBILE_ENABLED）
     mobile_enabled: bool = False
 
@@ -270,6 +438,11 @@ class UiPage:
     reachable: bool = True
     console_errors: list[str] = field(default_factory=list)
     elements: list[UiElement] = field(default_factory=list)
+    # 批次 C（P2）：状态驱动面板区域（area:: 签名）的重放坐标。
+    # 路由驱动页 goto(url) 即可；面板页 URL 不变，须先 goto 父页再点 nav_path。
+    # 只增字段：普通页留空，旧产物天然兼容。
+    parent_url: str = ""
+    nav_path: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -285,6 +458,8 @@ class RuntimeUiResult:
     logged_in: bool = False  # 是否执行了表单登录并成功（匿名访问为 False）
     # --- M3.3 新增（Additive）---
     discovered_routes: list[str] = field(default_factory=list)  # 菜单点击发现的路由
+    # 批次 D（P3）：卡片导航启发式的误报审计（只增字段，默认空；关闭时为空）
+    card_nav_audit: dict[str, Any] = field(default_factory=dict)
     # --- #223 新增（Additive）---
     api_endpoints: list[ApiEndpoint] = field(default_factory=list)  # 运行时拦截到的后端接口
 
@@ -307,6 +482,9 @@ class RuntimePageInfo:
     title: str = ""
     elements: list[dict[str, Any]] = field(default_factory=list)
     console_errors: list[str] = field(default_factory=list)
+    # 批次 C（P2）：面板区域的父页 + 导航点击路径（无则旧产物，执行器继续跳过）
+    parent_url: str = ""
+    nav_path: list[str] = field(default_factory=list)
 
     def visible_elements(self) -> list[dict[str, Any]]:
         return [e for e in self.elements if e.get("visible")]
@@ -318,9 +496,7 @@ class RuntimePageInfo:
         for item in visible[:limit]:
             text = str(item.get("text") or "").strip()
             label = text or str(item.get("selector") or "")
-            phrases.append(
-                f"{_ELEMENT_KIND_CN.get(str(item.get('kind') or ''), '元素')}「{label}」"
-            )
+            phrases.append(f"{element_kind_cn(str(item.get('kind') or ''))}「{label}」")
         rest = len(visible) - len(phrases)
         if rest > 0:
             phrases.append(f"等 {len(visible)} 个元素")
@@ -337,6 +513,11 @@ _ELEMENT_KIND_CN: dict[str, str] = {
     "form": "表单",
     "edit": "可编辑区域",
 }
+
+
+def element_kind_cn(kind: str) -> str:
+    """元素类型 → 中文名（`_ELEMENT_KIND_CN` 的公共入口，供 case_gen 复用）。"""
+    return _ELEMENT_KIND_CN.get(str(kind or ""), "元素")
 
 
 @dataclass
@@ -398,6 +579,7 @@ def options_from_settings(settings: Any) -> RuntimeUiOptions:
         login_url=str(settings.runtime_login_url or ""),
         routes=list(settings.runtime_routes or []),
         max_pages=int(settings.runtime_max_pages),
+        card_nav_mode=_resolve_card_nav_mode(settings),
         mobile_enabled=bool(getattr(settings, "runtime_ui_mobile_enabled", False)),
     )
 
@@ -544,10 +726,19 @@ def _fetch_otp(options: RuntimeUiOptions, *, refresh: bool = False) -> str:
     命令执行失败 / 无输出时返回空串（交由调用方回退到静态 OTP 或判登录失败）。
     """
     if refresh and options.login_otp_refresh_cmd:
+        # B9（P2）：shell=False + shlex.split 拆参。命令来自运维 env（非用户输入），
+        # 但 .env 一旦被污染，shell=True 可任意执行；去掉 shell 层可挡住注入。
+        # 含 shell 元字符（管道/重定向/命令替换）的复杂命令无法安全拆分 → 直接拒绝执行。
+        cmd = options.login_otp_refresh_cmd
+        if any(ch in cmd for ch in "|&;<>$`\n\r"):
+            return ""
         try:
+            argv = shlex.split(cmd)
+            if not argv:
+                return ""
             out = subprocess.run(
-                options.login_otp_refresh_cmd,
-                shell=True,  # nosec B602 受控：命令来自环境变量 RUNTIME_LOGIN_OTP_REFRESH_CMD，由运维可信配置，非用户输入
+                argv,
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -620,6 +811,21 @@ def _wait_login_ready(page: Any, options: RuntimeUiOptions) -> None:
         return
 
 
+def _login_page_hint(page: Any) -> str:
+    """读登录页可见文案，判断失败是「被测系统登录服务挂了」还是「凭证错」。
+
+    历史现场（2026-11-18，research-agent）：页面写着「无法连接统一登录服务，请检查网络后重试」，
+    后端 `/api/v1/auth/unified-login` 返回 `502 crypto_gateway_error`，根因是 SSO 网关
+    `ecloudtest.tppension.cntaiping.com` 返回 503 —— 动态码根本没被校验。若不区分，
+    用户会一直去换动态码（试了 261015 仍失败，被误判成「动态码过期」）。
+    """
+    try:
+        text = str(page.inner_text("body") or "")[:2000]
+    except Exception:  # 页面已崩溃 / 无 body：无证据可读，交给通用文案
+        return ""
+    return next((kw for kw in _LOGIN_UPSTREAM_HINTS if kw in text), "")
+
+
 def _login(page: Any, options: RuntimeUiOptions, result: RuntimeUiResult) -> bool:
     """检测登录表单并提交；无表单则视为已登录 / 匿名可访问。
 
@@ -627,7 +833,16 @@ def _login(page: Any, options: RuntimeUiOptions, result: RuntimeUiResult) -> boo
     失败一律抛 `EngineError`（分类提示），**绝不回显密码 / 动态口令**。
     """
     if not (options.login_user and options.login_password):
-        result.notes.append("未提供账号密码：按匿名访问处理（仅公开页可见）")
+        # 匿名也要**先打开被测地址**：早期实现直接 return False，页面停在 about:blank，
+        # 发现通道于是把落地页记成 path="blank"、0 个元素 → 功能点 area="blank"，
+        # 再展开成「打开页面：blank」的假用例（与「用文件名冒充路由」同一类缺陷）。
+        target = options.login_url or options.base_url
+        try:
+            page.goto(target, wait_until="domcontentloaded", timeout=timeout_ms(options))
+        except Exception as exc:  # 打不开如实记录，由可达性判定体现
+            result.notes.append(f"未提供账号密码：匿名打开 {target} 失败（{exc}）")
+        else:
+            result.notes.append(f"未提供账号密码：按匿名访问处理（已打开 {target}）")
         return False
 
     target = options.login_url or options.base_url
@@ -663,6 +878,12 @@ def _login(page: Any, options: RuntimeUiOptions, result: RuntimeUiResult) -> boo
     # 首次提交若仍停在登录页，且配置了刷新命令，则取新 OTP 重试一次（至多 1 次，防死循环）。
     succeeded = _login_with_retry(page, submit, options, result)
     if not succeeded:
+        hint = _login_page_hint(page)
+        if hint:
+            raise EngineError(
+                f"登录失败：页面提示「{hint}」——被测系统自己的统一登录服务/后端不可达，"
+                "与账号、动态码无关；请先恢复被测系统的登录服务再复测"
+            )
         raise EngineError(
             "登录失败：提交后仍停留在登录页（含 OTP 自动续期重试），请核对账号密码 / "
             "动态口令是否正确，或被测系统是否存在图片验证码 / 风控"
@@ -905,12 +1126,21 @@ def _route_of_nav_item(page: Any, handle: Any, options: RuntimeUiOptions, popups
     return route
 
 
-def _click_label(page: Any, label: str, options: RuntimeUiOptions, popups: list[Any]) -> str:
+def _click_label(
+    page: Any,
+    label: str,
+    options: RuntimeUiOptions,
+    popups: list[Any],
+    click_timeout_ms: int | None = None,
+) -> str:
     """按 label 点击导航项并读回路由：先 CSS 句柄，未命中则按可见文字点击（S0 治本兜底）。
 
     CSS 启发式（`_NAV_SELECTOR`）匹配不到真实菜单时，专家 S0 反推出的菜单文字也无法用
     CSS 句柄定位——此时退回 `page.get_by_text` 文本点击，仍能驱动 SPA 路由跳转，
     把 `routes=0` 修成真实菜单数。任何异常均返回空串，不影响主链路。
+
+    `click_timeout_ms`：可选的单次点击上限；面板探测传短值避免遮挡元素耗满全局 timeout，
+    不传则沿用 `options.timeout`（菜单发现 / 执行器重放保持原行为）。
     """
     popups.clear()
     handle = _locate_nav(page, label, 0)
@@ -929,7 +1159,7 @@ def _click_label(page: Any, label: str, options: RuntimeUiOptions, popups: list[
     try:
         if not el.is_visible():
             return ""
-        el.click(timeout=timeout_ms(options), no_wait_after=True)
+        el.click(timeout=click_timeout_ms or timeout_ms(options), no_wait_after=True)
     except Exception:
         return ""
     try:
@@ -969,11 +1199,17 @@ def _probe_menu_routes(probe: _MenuProbe) -> list[str]:
     limit = max(1, int(probe.options.max_pages))
     try:
         for _idx, label in enumerate(probe.labels[:limit]):
-            raw = _click_label(page, label, probe.options, popups)
+            # 单项短超时：遮挡 / 不可交互的导航项不耗满全局 timeout（默认 30s），
+            # 否则几十个菜单项逐个点击会把菜单发现拖到数分钟（真机带 OTP 复现过）。
+            raw = _click_label(
+                page, label, probe.options, popups, click_timeout_ms=PANEL_CLICK_TIMEOUT_MS
+            )
             if not raw:  # CSS 与文本点击都失败 → 回起点后重试一次（导航可能被跳转带走）
                 if not _return_to(page, probe.start_url, probe.options):
                     break
-                raw = _click_label(page, label, probe.options, popups)
+                raw = _click_label(
+                    page, label, probe.options, popups, click_timeout_ms=PANEL_CLICK_TIMEOUT_MS
+                )
             route = _normalize_route(raw, probe.options.base_url)
             if route and route != probe.start_route and route not in seen:
                 seen.add(route)
@@ -1012,6 +1248,11 @@ def _discover_menu_routes(
             if lb and lb not in merged:
                 merged.append(lb)
         labels = merged
+    # E2/A3（P1）：危险菜单项（退出登录/注销/Logout）必须在**发现路径**过滤。
+    # `_is_danger_label` 此前只在面板 replay/absorb 两处调用，真正的菜单发现
+    # `_probe_menu_routes` 从未过滤 → 点到"退出登录"会把会话踢下线，后续页面
+    # 全抓成登录页，路由发现静默腰斩、功能点被登录页元素污染。
+    labels = [lb for lb in labels if not _is_danger_label(lb)]
     if not labels:
         return []
     start_url = _safe_url(page) or options.base_url
@@ -1022,6 +1263,231 @@ def _discover_menu_routes(
     if found:
         result.notes.append(f"菜单点击发现路由 {len(found)} 条：{', '.join(found[:10])}")
     return found
+
+
+# ---------------------------------------------------------------------------
+# 批次 D（P3）：卡片式导航启发式（三态 off / auto / on）
+# ---------------------------------------------------------------------------
+_CARD_NAV_MODES = ("off", "auto", "on")
+
+
+def _resolve_card_nav_mode(settings: Any) -> str:
+    """从 Settings 解析三态，兼容旧 `runtime_ui_card_nav_enabled` 布尔字段。
+
+    优先级：新 `runtime_ui_card_nav_mode`（若合法）> 旧布尔字段（True→on / False→off）
+    > 默认 auto。测试桩与老配置对象只带旧字段时仍能工作。
+    """
+    mode = str(getattr(settings, "runtime_ui_card_nav_mode", "") or "").strip().lower()
+    if mode in _CARD_NAV_MODES:
+        return mode
+    legacy = getattr(settings, "runtime_ui_card_nav_enabled", None)
+    if legacy is not None:
+        return "on" if bool(legacy) else "off"
+    return "auto"
+
+
+def _card_nav_decision(  # noqa: PLR0913 - 判定输入含四来源 + 结构化输出，显式传参比打包对象更清晰
+    mode: str,
+    *,
+    static_paths: list[str] | None = None,
+    menu_paths: list[str] | None = None,
+    explicit_routes: list[str] | None = None,
+    home_links: list[str] | None = None,
+    sources_out: dict[str, int] | None = None,
+) -> tuple[bool, str]:
+    """按运行期发现结果决定 auto 态是否启用卡片启发式。
+
+    - off → 强制关闭；on → 强制开启；
+    - auto → 仅当「显式 routes + 菜单发现 + 静态路由 + 首页链接」四者全空时才开启
+      （无其它来源才兜底），否则关闭，避免在有确定性路由来源时点击卡片产生副作用。
+    返回 (是否启用, 判定理由)；`sources_out` 若传入，会就地写入四来源计数，
+    供 `card_nav_audit["sources"]` 结构化沉淀（便于多 SPA 实测校准判定口径）。
+    """
+    counts = {
+        "显式路由": len(explicit_routes or []),
+        "菜单发现": len(menu_paths or []),
+        "静态路由": len(static_paths or []),
+        "首页链接": len(home_links or []),
+    }
+    if sources_out is not None:
+        sources_out.update(counts)
+    m = str(mode or "").strip().lower()
+    if m == "off":
+        return False, "配置 off：强制关闭卡片探测"
+    if m == "on":
+        return True, "配置 on：强制开启卡片探测"
+    # auto（非法值也按 auto 处理，安全兜底）
+    present = [f"{k} {v} 条" for k, v in counts.items() if v]
+    if present:
+        return False, "auto：已有其它路由来源（" + "、".join(present) + "），跳过卡片探测避免副作用"
+    return True, "auto：显式路由/菜单发现/静态路由/首页链接均为空，启用卡片探测兜底"
+
+
+def _discover_card_routes(  # noqa: C901, PLR0912, PLR0915, PLR0913, PLR0917 - 启发式护栏分支多但职责单一，已收敛为审计字典
+    session: _Session,
+    options: RuntimeUiOptions,
+    result: RuntimeUiResult,
+    start_url: str,
+    decision: tuple[bool, str] | None = None,
+    sources: dict[str, int] | None = None,
+) -> list[str]:
+    """点击主内容区疑似可导航卡片，只有 URL 真变了才采信为新路由。
+
+    `decision` 由 `_sweep_pages` 传入（含 auto 态的运行期判定理由）；缺省时按
+    `options.card_nav_mode` 就地判定（单测/直调入口：off 关、on 开、auto 默认开）。
+
+    四道护栏：白名单容器（JS 侧）、危险标签过滤（JS + Python 双过滤）、
+    点击预算（≤12 且 ≤max_pages）、URL 变化确认（`_click_and_read_route` 内建）。
+    每次点击前回起点，隔离上一次点击的副作用与 DOM 重建；点完未变 URL 的记入
+    `card_nav_audit` 误报表（不采信、不臆造）。任何异常都降级为 notes，不阻断主链路。
+    """
+    mode = str(options.card_nav_mode or "auto").strip().lower()
+    if decision is None:
+        if mode == "off":
+            decision = (False, "配置 off：强制关闭卡片探测")
+        elif mode == "on":
+            decision = (True, "配置 on：强制开启卡片探测")
+        else:
+            decision = (True, "auto（直调无发现上下文）：默认启用卡片探测")
+    enabled, reason = decision
+    audit: dict[str, Any] = {
+        "mode": mode,
+        "enabled": bool(enabled),
+        "decision": reason,
+        "sources": dict(sources or {}),
+        "candidates": 0,
+        "danger_filtered": 0,
+        "clicked": 0,
+        "url_changed": 0,
+        "routes": [],
+        "no_nav_labels": [],
+    }
+    result.card_nav_audit = audit
+    if not enabled:
+        return []
+
+    page = session.page
+    popups: list[Any] = []
+    side_effect: list[str] = []  # 熔断信号：点击期间出现 dialog / 写请求
+
+    def _on_page(new_page: Any) -> None:
+        popups.append(new_page)
+
+    def _on_dialog(dialog: Any) -> None:
+        # confirm/alert/prompt 说明点击触发了真业务动作（非单纯路由跳转）→ 熔断
+        side_effect.append(f"dialog:{str(getattr(dialog, 'type', '')) or 'unknown'}")
+        try:
+            dialog.dismiss()
+        except Exception:
+            pass
+
+    def _on_request(request: Any) -> None:
+        # B2：任何写请求（POST/PUT/DELETE/PATCH）都说明点击触发了真实副作用 → 熔断；
+        # GET 放行。此前只比 netloc，跨域写（如第三方埋点/网关代理写）会被漏检。
+        try:
+            method = str(getattr(request, "method", "") or "").upper()
+            if method in {"POST", "PUT", "DELETE", "PATCH"}:
+                side_effect.append(f"write:{method}")
+        except Exception:
+            return
+
+    for event, handler in (("page", _on_page), ("dialog", _on_dialog), ("request", _on_request)):
+        try:
+            session.context.on(event, handler)
+        except Exception:
+            pass
+
+    found: list[str] = []
+    start_route = urlparse(start_url).path or "/"
+    seen: set[str] = {start_route}
+    try:
+        try:
+            raw = page.evaluate(_build_card_candidate_js())
+        except Exception as exc:
+            audit["note"] = f"候选提取失败：{str(exc)[:200]}"
+            return []
+        candidates = [x for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
+        # Python 侧二次危险过滤（与 JS 侧双保险，防止绕过 JS 的旧产物/桩）
+        safe: list[dict[str, Any]] = []
+        for cand in candidates:
+            label = str(cand.get("label") or "")
+            if _is_card_danger_label(label):
+                audit["danger_filtered"] += 1
+                continue
+            safe.append(cand)
+        audit["candidates"] = len(candidates)
+        budget = min(_CARD_CLICK_BUDGET, max(1, int(options.max_pages)))
+
+        for cand in safe[:budget]:
+            if side_effect:  # 上一张卡片的点击触发了副作用 → 熔断，不再点后续卡片
+                audit["side_effect_tripped"] = sorted(set(side_effect))
+                result.notes.append(
+                    f"卡片导航熔断：检测到副作用 {sorted(set(side_effect))}，停止后续点击"
+                )
+                break
+            label = str(cand.get("label") or "")
+            selector = str(cand.get("selector") or "")
+            if not selector:
+                continue
+            # 点击前回起点：隔离上次点击的副作用，按结构路径重新定位（DOM 已重建）
+            if not _return_to(page, start_url, options):
+                audit.setdefault("return_failed", 0)
+                audit["return_failed"] += 1
+                break
+            handle = None
+            try:
+                handle = page.query_selector(selector)
+            except Exception:
+                handle = None
+            if handle is None:
+                audit.setdefault("locate_failed", []).append(label)
+                continue
+            audit["clicked"] += 1
+            route = _click_and_read_route(page, handle, options)  # 内含 URL 变化确认
+            if not route and popups:
+                route = _popup_route(popups, options)
+            popups.clear()
+            normalized = _normalize_route(route, options.base_url) if route else ""
+            if normalized and normalized != start_route and normalized not in seen:
+                seen.add(normalized)
+                found.append(normalized)
+                audit["url_changed"] += 1
+            elif label:
+                audit["no_nav_labels"].append(label)  # 点了但 URL 未变 = 启发式噪声，不采信
+        # 最后一张卡片点击后才出现的副作用也要记录（循环内检查不到）
+        if side_effect and "side_effect_tripped" not in audit:
+            audit["side_effect_tripped"] = sorted(set(side_effect))
+            result.notes.append(
+                f"卡片导航熔断：检测到副作用 {sorted(set(side_effect))}，停止后续点击"
+            )
+        audit["routes"] = list(found)
+        if found:
+            result.notes.append(f"卡片导航发现路由 {len(found)} 条：{', '.join(found[:10])}")
+        if audit["no_nav_labels"]:
+            result.notes.append(
+                f"卡片导航误报 {len(audit['no_nav_labels'])} 项（点击后 URL 未变，已剔除）："
+                f"{'、'.join(audit['no_nav_labels'][:10])}"
+            )
+        result.notes.append(
+            f"卡片导航审计：候选 {audit['candidates']}、危险过滤 {audit['danger_filtered']}、"
+            f"实际点击 {audit['clicked']}/{budget}、确认路由 {audit['url_changed']}"
+        )
+        return found
+    except Exception as exc:  # 启发式失败绝不阻断主链路
+        audit["note"] = f"降级：{str(exc)[:200]}"
+        result.notes.append(f"卡片导航启发式降级：{str(exc)[:200]}")
+        return found
+    finally:
+        for event, handler in (
+            ("page", _on_page),
+            ("dialog", _on_dialog),
+            ("request", _on_request),
+        ):
+            try:
+                session.context.remove_listener(event, handler)
+            except Exception:
+                pass
+        close_quietly(*popups)
 
 
 # ============================================================================
@@ -1037,15 +1503,28 @@ _EXTRACT_JS_TEMPLATE = """
     const s = window.getComputedStyle(el);
     return s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
   };
+  // 只接受「稳定」的 id：Element Plus / React useId / Ember 会生成 el-id-9432-0、:r1:
+  // 这类每次加载都变的 id，当选择器写进用例必然不可复现（人工/执行器都定位不到）。
+  // 不稳定就退回 tag+class+nth 路径，虽然长一点但跨会话稳定。
+  const stableId = (id) => !!id
+    && !/^(el-id|:r|ember|vue-|mui-|rc-|headlessui-)/i.test(id)
+    && !/\\d{4,}/.test(id);
+  // B7：过滤 CSS-in-JS 哈希 class（css-* / emotion-* / sc-* / _hash），
+  // 避免构建号变化导致选择器失效；无稳定 class 时退化 tag+nth。
+  const stableClass = (c) => c
+    && !/^(css|emotion|sc|jss|jsx)-[a-z0-9_-]+$/i.test(c)
+    && !/^_[a-z0-9]{5,}$/i.test(c)
+    && !/^_?[a-z][a-z0-9]*-\\d{4,}$/i.test(c);
   const cssPath = (el) => {
     const parts = [];
     let node = el;
     let depth = 0;
     while (node && node.nodeType === 1 && depth < 5) {
-      if (node.id) { parts.unshift('#' + node.id); break; }
+      if (stableId(node.id)) { parts.unshift('#' + node.id); break; }
       let sel = node.tagName.toLowerCase();
-      const cls = (node.getAttribute('class') || '').trim().split(/\\s+/).filter(Boolean).slice(0, 2);
-      if (cls.length) sel += '.' + cls.join('.');
+      const cls = (node.getAttribute('class') || '').trim().split(/\\s+/).filter(stableClass).slice(0, 2);
+      // Tailwind arbitrary-value / 响应式类名含 []():., 等 CSS 特殊字符，CSS.escape 转义。
+      if (cls.length) sel += '.' + cls.map(function(c){ return CSS.escape(c); }).join('.');
       const parent = node.parentElement;
       if (parent) {
         const same = Array.from(parent.children).filter((c) => c.tagName === node.tagName);
@@ -1107,6 +1586,22 @@ def _build_links_js() -> str:
 def _build_nav_harvest_js() -> str:
     """广搜导航菜单项文字的脚本（不依赖特定类名，亦不依赖 LLM）。"""
     return _NAV_HARVEST_JS.replace("__MAX__", str(_MAX_NAV_HARVEST))
+
+
+def _build_card_candidate_js() -> str:
+    """卡片候选提取脚本（白名单容器 + 危险标签过滤在 JS 侧先做一遍）。"""
+    return (
+        _CARD_CANDIDATE_JS.replace("__MAX__", str(_CARD_MAX_CANDIDATES))
+        .replace("__SCOPE__", json.dumps(_CARD_SCOPE_SELECTOR))
+        .replace("__EXCLUDE__", json.dumps(_CARD_EXCLUDE_SELECTOR))
+        .replace("__DANGER__", json.dumps(list(_CARD_DANGER_HINTS), ensure_ascii=False))
+    )
+
+
+def _is_card_danger_label(label: str) -> bool:
+    """卡片标签是否命中副作用词表（Python 侧二次过滤，与 JS 侧双保险）。"""
+    low = (label or "").lower()
+    return any(h in low for h in _CARD_DANGER_HINTS)
 
 
 def _crawl_links(page: Any) -> list[str]:
@@ -1184,17 +1679,23 @@ def _absorb(result: RuntimeUiResult, ui_page: UiPage) -> None:
     result.console_errors.extend(ui_page.console_errors)
 
 
-def _collect_current_page(
+def _collect_current_page(  # noqa: PLR0913 - 面板重放坐标随包传入，避免拆成两个采集函数
     page: Any,
     key: str,
     options: RuntimeUiOptions,
     sink: ConsoleSink,
     mark: int,
+    *,
+    parent_url: str = "",
+    nav_path: list[str] | None = None,
 ) -> UiPage:
     """就地采集当前页元素（不跳转）：用于状态驱动 SPA 的「面板切换」发现。
 
     路由驱动 SPA 用 `page.goto(route)` 逐页采集；但状态驱动 SPA（如 福享Work AI工作台）
     点击菜单只切换右侧面板、URL 不变，只能就地采集当前 DOM，并用内容签名区分不同面板。
+
+    批次 C（P2）：附带 `parent_url`（父页地址）与 `nav_path`（从父页到该面板的点击标签
+    序列），让执行器能先 goto 父页、按路径点击、再按签名断言，而不是只能跳过。
     """
     try:
         title = str(page.title() or "")
@@ -1224,6 +1725,8 @@ def _collect_current_page(
         reachable=True,
         console_errors=sink.since(mark),
         elements=elements,
+        parent_url=parent_url,
+        nav_path=list(nav_path or []),
     )
 
 
@@ -1258,6 +1761,28 @@ def _panel_signature(page: Any) -> str:
     except Exception:
         return ""
     return str(sig or "").strip()
+
+
+def panel_signature(page: Any) -> str:
+    """批次 C（P2）：`_panel_signature` 的公开别名，供 UI 执行器断言面板签名。"""
+    return _panel_signature(page)
+
+
+def replay_panel_nav(page: Any, nav_path: list[str], options: RuntimeUiOptions) -> tuple[bool, str]:
+    """批次 C（P2）：从父页按 `nav_path` 依次点击导航项，重放到目标面板。
+
+    `nav_path` 是发现阶段累计的点击标签序列（含展开子菜单的点击）。逐个用与发现路径
+    相同的 `_click_label` 语义点击，危险标签拒绝重放。返回 `(是否全部成功, 失败原因)`。
+    """
+    for label in nav_path:
+        if _is_danger_label(label):
+            return False, f"拒绝重放危险导航项：{label}"
+        _click_label(page, label, options, [])
+        try:
+            page.wait_for_timeout(SPA_SETTLE_MS)
+        except Exception:
+            pass
+    return True, ""
 
 
 def _page_dom_text(page: Any) -> str:
@@ -1316,13 +1841,26 @@ def _absorb_panel_areas(  # noqa: PLR0913, PLR0917 - 面板发现器参数多但
     seen.add(landing_sig)
     collected = 0
     limit = max(1, int(options.max_pages))
+    # 批次 C（P2）：累计从 start_url 出发点过的标签。发现器不在两次面板之间回起点，
+    # 所以「到达第 N 个面板的真实点击序列」= 此前所有点击之和（含展开子菜单的无效点击，
+    # 它们本就是复现路径的一部分）。执行器据此先 goto 父页、按序点击、再校验签名。
+    click_path: list[str] = []
+    # 时间预算：菜单标签可达 60 个，逐个点击 + 等待会累积到数分钟（真机带 OTP 复现过
+    # 「runtime_ui 阶段 2 分钟进度不动」）。预算到就停，面板是可有可无的兜底通道，
+    # 主路由发现已在前面完成，不牺牲功能点覆盖。
+    deadline = time.monotonic() + PANEL_DISCOVERY_BUDGET_MS / 1000.0
+    budget_exhausted = False
     for label in labels:
         if _is_danger_label(label):
             continue
         if collected >= limit:
             break
+        if time.monotonic() >= deadline:
+            budget_exhausted = True
+            break
         before = _panel_signature(page)
-        _click_label(page, label, options, [])
+        _click_label(page, label, options, [], click_timeout_ms=PANEL_CLICK_TIMEOUT_MS)
+        click_path.append(label)
         try:
             page.wait_for_timeout(SPA_SETTLE_MS)
         except Exception:
@@ -1332,7 +1870,15 @@ def _absorb_panel_areas(  # noqa: PLR0913, PLR0917 - 面板发现器参数多但
             continue
         seen.add(sig)
         mark = len(sink.entries)
-        up = _collect_current_page(page, f"area::{sig}", options, sink, mark)
+        up = _collect_current_page(
+            page,
+            f"area::{sig}",
+            options,
+            sink,
+            mark,
+            parent_url=start_url,
+            nav_path=list(click_path),
+        )
         if up.elements:
             _absorb(result, up)
             collected += 1
@@ -1343,6 +1889,11 @@ def _absorb_panel_areas(  # noqa: PLR0913, PLR0917 - 面板发现器参数多但
     if collected:
         result.notes.append(
             f"状态驱动面板区域发现 {collected} 个（菜单点击未改 URL，按内容签名区分）"
+        )
+    if budget_exhausted:
+        result.notes.append(
+            f"面板区域发现达时间预算 {PANEL_DISCOVERY_BUDGET_MS}ms，"
+            f"已采集 {collected} 个后停止（避免大量导航项逐个点击拖长生成）"
         )
     return collected
 
@@ -1380,7 +1931,31 @@ def _sweep_pages(  # noqa: PLR0913, PLR0917 - 探索器签名参数多但职责�
         page, session.context, opts, result, extra_labels=extra_labels
     )
     result.discovered_routes = list(menu_paths)
-    routes = _resolve_routes(opts, static_paths, _crawl_links(page), menu_paths)
+    # 批次 D（P3）：卡片导航启发式（三态 off/auto/on）。菜单发现后 page 已回起点，
+    # 此处先汇总其它渠道的路由来源，让 auto 态自行决定是否探测卡片：
+    # 有任何确定性来源（显式/菜单/静态/首页链接）就不点卡片，全空才兜底探测。
+    home_links = _crawl_links(page)
+    # 四来源统一在 _card_nav_decision 判定（首页链接也在内），sources 结构化写入审计，
+    # 便于多 SPA 实测校准「什么情况该自动开/关」——不再事后单独覆盖判定。
+    card_sources: dict[str, int] = {}
+    card_decision = _card_nav_decision(
+        opts.card_nav_mode,
+        static_paths=static_paths,
+        menu_paths=menu_paths,
+        explicit_routes=opts.routes,
+        home_links=home_links,
+        sources_out=card_sources,
+    )
+    card_paths = _discover_card_routes(
+        session,
+        opts,
+        result,
+        _safe_url(page) or opts.base_url,
+        decision=card_decision,
+        sources=card_sources,
+    )
+    crawl_paths = list(menu_paths) + list(card_paths)
+    routes = _resolve_routes(opts, static_paths, home_links, crawl_paths)
     for route in routes:
         if route == landing.path:
             continue
@@ -1414,7 +1989,8 @@ _TRIGGER_SELECTORS_JS = """
       for(var i=0;i<sib.length;i++){ if(sib[i].nodeName.toLowerCase()===nm){ cnt++; if(sib[i]===el) idx=cnt; } }
       if(cnt>1) sel+=':nth-of-type('+idx+')';
       if(el.className && typeof el.className==='string' && el.className.trim()){
-        sel+='.'+el.className.trim().split(/\\s+/).join('.');
+        // 同 cssPath：Tailwind 类名含 []():., 等 CSS 特殊字符必须转义，否则 querySelector 抛 Error。
+        sel+='.'+el.className.trim().split(/\\s+/).map(function(c){return CSS.escape(c);}).join('.');
       }
       path.unshift(sel);
       el=el.parentNode;
@@ -1422,9 +1998,14 @@ _TRIGGER_SELECTORS_JS = """
     return path.join(' > ');
   }
   var verbs=__VERBS__;
+  var danger=__DANGER__;
   var nodes=Array.from(document.querySelectorAll('button,a,input[type="submit"],[role="button"]')).filter(function(e){
     if(e.offsetParent===null) return false;
     var t=(e.innerText||e.textContent||e.getAttribute('title')||'').trim();
+    var tl=t.toLowerCase();
+    // B1：命中写动词危险词表（新增/创建/提交/保存/删除…）的按钮不点——点前预检，
+    // 避免真点「一键创建」产生写操作（比事后熔断更安全，写请求无法回滚）。
+    if(danger.some(function(d){ return tl.indexOf(d)!==-1; })) return false;
     return verbs.some(function(v){ return t.indexOf(v)!==-1; });
   });
   return nodes.map(function(n){ return cssPath(n); }).filter(function(s){ return !!s; });
@@ -1464,9 +2045,16 @@ def _rescan_elements(page: Any) -> list[UiElement]:
     ]
 
 
-def _find_trigger_selectors(page: Any, verbs: tuple[str, ...]) -> list[str]:
-    """找出文本命中动词、可能打开弹窗/子视图的按钮选择器（按 CSS 路径稳定定位）。"""
+def _find_trigger_selectors(
+    page: Any, verbs: tuple[str, ...], danger: tuple[str, ...] = ()
+) -> list[str]:
+    """找出文本命中动词、可能打开弹窗/子视图的按钮选择器（按 CSS 路径稳定定位）。
+
+    `danger` 是写动词危险词表（B1）：命中者点前就排除，杜绝真点「新增/创建」写数据。
+    默认空元组保持其它调用方兼容。
+    """
     js = _TRIGGER_SELECTORS_JS.replace("__VERBS__", json.dumps(list(verbs)))
+    js = js.replace("__DANGER__", json.dumps(list(danger)))
     try:
         got = page.evaluate(js)
     except Exception:
@@ -1532,7 +2120,9 @@ def _click_triggers(pw_page: Any, opts: RuntimeUiOptions, ctx: _DeepCtx) -> int:
     while count < MAX_CLICKTHROUGH_PER_PAGE:
         try:
             _goto_settle(pw_page, ctx.uip.url, opts)
-            sels = _find_trigger_selectors(pw_page, _OPEN_VERBS)
+            # B1：点前用写动词危险词表排除「新增/创建/上传/提交/保存」等按钮，
+            # 只保留只读的弹窗/Tab 触发器，避免 click-through 真点出写操作。
+            sels = _find_trigger_selectors(pw_page, _OPEN_VERBS, _CARD_DANGER_HINTS)
         except Exception:
             break
         if count >= len(sels):
@@ -1845,7 +2435,7 @@ def _element_action(kind: str) -> str:
 # #224 量级护栏（防爆炸与噪声）：单页元素上限 + 单项目功能点总量上限。
 # 元素级分解（#221）后单页可达数十~数百元素，全量易破千；护栏保证产物落在
 # 「数百」合理区间，且高价值路径排在前面。
-MAX_ELEMENTS_PER_PAGE = 150  # 单页可见元素上限（超出截断，防单页刷量）
+# MAX_ELEMENTS_PER_PAGE 统一在本文件顶部定义（C2），此处不再重复声明。
 MAX_FP_TOTAL = 800  # 单项目功能点总量上限（超出按业务价值截断）
 # #223 click-through 深度发现（弹窗/Tab/表单）护栏：有界、故障隔离
 MAX_CLICKTHROUGH_PAGES = 10  # 参与深度点击的页面上限（保运行时长可控）
@@ -1939,12 +2529,36 @@ _STATIC_ASSET_EXT = (
 )
 
 
+# 动态路径段归一化：UUID / 长 hex / 纯数字 ID 都属于同一个「资源模板」，
+# 逐条展开会为每个 thread/user/doc id 生成一份重复用例（实测 threads/{uuid} 冗余 56 条）。
+_UUID_SEG_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+_LONG_HEX_SEG_RE = re.compile(r"^[0-9a-f]{16,}$", re.I)
+_NUM_ID_SEG_RE = re.compile(r"^\d{4,}$")
+
+
+def _normalize_api_path(path: str) -> str:
+    """把接口路径里的动态 ID 段折叠为 `{id}`，供端点去重与模板化标题。
+
+    只折叠明确是资源标识的段：标准 UUID、16 位以上连续 hex、4 位以上纯数字；
+    保留 `/api/v1`、`/me`、`/recent` 等语义段。原始 URL 仍在 `ApiEndpoint.url`
+    里供追溯，本函数只影响 `path`（功能点 name/title/semantic/去重键）。
+    """
+    segs = path.split("/")
+    out: list[str] = []
+    for seg in segs:
+        if _UUID_SEG_RE.match(seg) or _LONG_HEX_SEG_RE.match(seg) or _NUM_ID_SEG_RE.match(seg):
+            out.append("{id}")
+        else:
+            out.append(seg)
+    return "/".join(out)
+
+
 def _attach_api_listener(page: Any, result: RuntimeUiResult, base_url: str) -> None:
     """监听页面 XHR/fetch 响应，把同源后端接口记为 api 功能点来源（#223）。
 
     判定：同源 +（content-type 含 json 或路径含 /api/）视为接口；排除静态资源与
-    跨域请求。按 (method, path) 去重（忽略 query，避免同接口不同参数刷量）。
-    监听失败一律静默，不阻断主发现链路。
+    跨域请求。按 (method, 归一化 path) 去重（忽略 query 与动态 ID，避免同接口
+    不同参数/不同资源实例刷量）。监听失败一律静默，不阻断主发现链路。
     """
     from urllib.parse import urlparse
 
@@ -1956,14 +2570,15 @@ def _attach_api_listener(page: Any, result: RuntimeUiResult, base_url: str) -> N
             u = urlparse(response.url)
             if not u.netloc or u.netloc != base.netloc:
                 return
-            path = u.path.split("?")[0]
-            if path.endswith(_STATIC_ASSET_EXT):
+            raw_path = u.path.split("?")[0]
+            if raw_path.endswith(_STATIC_ASSET_EXT):
                 return
             ct = (response.headers.get("content-type") or "").lower()
             is_api = ("application/json" in ct) or ("/api/" in u.path) or u.path.startswith("/api")
             if not is_api:
                 return
             method = (response.request.method or "GET").upper()
+            path = _normalize_api_path(raw_path)
             key = (method, path)
             if key in seen:
                 return
@@ -1996,6 +2611,41 @@ def _element_fp_title(page_path: str, el: UiElement, label: str) -> str:
     return f"{kind_cn}（{el.selector}）@ {label}"
 
 
+_NTH_INDEX_RE = re.compile(r":nth-(?:last-)?(?:of-type|child)\(\s*\d+\s*\)", re.I)
+
+
+def _selector_family(selector: str) -> str:
+    """去掉纯序号 nth 限定符，得到「同一类列表项」的选择器族。
+
+    列表里 9 条同名按钮的选择器只差 `nth-of-type(1..27)`：交互语义完全相同，
+    逐条展开会产生 9 条标题一模一样的用例（实际观察到的重复缺陷）。仅折叠
+    纯数字 nth 序号，保留其它结构差异，避免把两个不同表单的「提交」误并。
+    """
+    return _NTH_INDEX_RE.sub(":nth-*", selector).strip()
+
+
+def _element_semantic_key(path: str, el: UiElement) -> tuple[str, str, str, str, bool, bool]:
+    """页内语义键：同页 + 同类 + 同文字 + 选择器族（折叠 nth 序号）。"""
+    return (
+        path,
+        el.kind,
+        " ".join((el.text or "").split()),
+        _selector_family(el.selector),
+        bool(el.deep),
+        bool(el.mobile),
+    )
+
+
+def _element_cross_page_key(el: UiElement) -> tuple[str, str, bool, bool]:
+    """跨页语义键：同类 + 同文字，不含页面与选择器。
+
+    用于合并「退出登录」「新建会话」这类每个页面都出现的全局导航，以及
+    各请假页都有的同名「上午」「登录人输入框」。不含 selector 是刻意的：
+    同名交互元素的 DOM 结构在不同页面本就不同，按 selector 区分必然漏收敛。
+    """
+    return (el.kind, " ".join((el.text or "").split()), bool(el.deep), bool(el.mobile))
+
+
 @dataclass
 class _EmitCtx:
     """to_functional_points 的跨页面共享上下文（减少 _emit_* 参数个数，规避 PLR0913/PLR0917）。"""
@@ -2008,6 +2658,10 @@ class _EmitCtx:
     out: list[FunctionalPoint]
     seen: set[tuple[str, str]]
     seen_element: set[tuple[str, str, str]]
+    seen_semantic: set[tuple[str, str, str, str, bool, bool]]
+    collapsed: dict[tuple[str, str, str, str, bool, bool], int]
+    cross_pages: dict[tuple[str, str, bool, bool], set[str]]
+    cross_rep: dict[tuple[str, str, bool, bool], FunctionalPoint]
 
 
 def to_functional_points(result: RuntimeUiResult) -> list[FunctionalPoint]:
@@ -2030,6 +2684,10 @@ def to_functional_points(result: RuntimeUiResult) -> list[FunctionalPoint]:
     out: list[FunctionalPoint] = []
     seen: set[tuple[str, str]] = set()  # (ftype, name) 全局去重
     seen_element: set[tuple[str, str, str]] = set()  # (page_path, kind, selector) 元素去重
+    seen_semantic: set[tuple[str, str, str, str, bool, bool]] = set()  # nth 序号归一后的语义去重
+    collapsed: dict[tuple[str, str, str, str, bool, bool], int] = {}
+    cross_pages: dict[tuple[str, str, bool, bool], set[str]] = {}  # 跨页同名元素覆盖的页面集合
+    cross_rep: dict[tuple[str, str, bool, bool], FunctionalPoint] = {}  # 跨页代表功能点
     for page in result.reachable_pages():
         path = page.path or "/"
         module = _module_of_path(path)
@@ -2045,9 +2703,32 @@ def to_functional_points(result: RuntimeUiResult) -> list[FunctionalPoint]:
             out=out,
             seen=seen,
             seen_element=seen_element,
+            seen_semantic=seen_semantic,
+            collapsed=collapsed,
+            cross_pages=cross_pages,
+            cross_rep=cross_rep,
         )
         _emit_page_fp(ctx)
         _emit_element_fps(ctx)
+    collapsed_total = sum(collapsed.values())
+    if collapsed_total:
+        result.notes.append(
+            f"元素级语义收敛：{collapsed_total} 个同页同型同文字元素"
+            "（选择器仅 nth 序号不同）合并为代表元素，实例数写入功能点语义"
+        )
+    cross_dup = sum(max(0, len(pages) - 1) for pages in cross_pages.values())
+    if cross_dup:
+        result.notes.append(
+            f"跨页面同名元素收敛：{cross_dup} 个重复元素（如全局导航/通用字段）"
+            "合并为代表用例，覆盖页面数写入功能点语义"
+        )
+        for ck, pages in cross_pages.items():
+            if len(pages) > 1:
+                rep = cross_rep[ck]
+                rep.semantic += (
+                    f"；跨 {len(pages)} 个页面出现同名同类元素（如全局导航/通用字段），"
+                    "已合并为 1 条代表用例，覆盖信息不丢"
+                )
     _emit_api_fps(result, out, seen)
     # #224 量级护栏：业务价值排序 + 总量上限截断
     out.sort(key=_fp_sort_key)
@@ -2074,13 +2755,41 @@ def _emit_page_fp(ctx: _EmitCtx) -> None:
         ctx.out.append(page_fp)
 
 
+def _try_cross_page_merge(
+    ctx: _EmitCtx,
+    el: UiElement,
+    sk: tuple[str, str, str, str, bool, bool],
+    fp: FunctionalPoint,
+    representatives: dict[tuple[str, str, str, str, bool, bool], FunctionalPoint],
+) -> bool:
+    """跨页同名元素合并判定：返回 True 表示当前 fp 已被合并，调用方应跳过。
+
+    只在不同页面间合并；同页不同结构的同名元素保留，避免误并「上午/下午」
+    单选组（它们 selector 族不同，页内 sk 不同，各自是代表）。
+    """
+    ck = _element_cross_page_key(el)
+    if ck not in ctx.cross_rep:
+        ctx.cross_rep[ck] = fp
+        ctx.cross_pages[ck] = {ctx.path}
+        return False
+    if ctx.path in ctx.cross_pages[ck]:
+        return False  # 同页，保留
+    ctx.cross_pages[ck].add(ctx.path)
+    representatives.pop(sk, None)  # 当前 fp 被合并，勿在页内回填里引用
+    return True
+
+
 def _emit_element_fps(ctx: _EmitCtx) -> None:
     """#221 元素级分解：每个可见交互元素 1 条 `ui` 功能点（带文字/selector/动作）。
 
     单页元素超 `MAX_ELEMENTS_PER_PAGE` 截断（#224 防单页刷量）；同 (kind, selector)
-    去重。深层视图（click-through）元素带 `deep` 标记，语义注明「深层视图」。
+    去重。此外按「同页 + 同类 + 同文字 + 选择器族（折叠 nth 序号）」做语义收敛：
+    列表里 9 个「加班」按钮只差 nth-of-type 序号，逐条展开会得到 9 条同标题用例，
+    收敛为 1 条代表用例，实例总数保留在功能点语义中（覆盖信息不丢）。
+    深层视图（click-through）元素带 `deep` 标记，语义注明「深层视图」。
     """
     page_ui_count = 0
+    representatives: dict[tuple[str, str, str, str, bool, bool], FunctionalPoint] = {}
     for el in ctx.uip.elements:
         if not el.visible:
             continue
@@ -2090,6 +2799,12 @@ def _emit_element_fps(ctx: _EmitCtx) -> None:
         if dk in ctx.seen_element:
             continue
         ctx.seen_element.add(dk)
+        sk = _element_semantic_key(ctx.path, el)
+        if sk in ctx.seen_semantic:
+            ctx.collapsed[sk] = ctx.collapsed.get(sk, 0) + 1
+            continue
+        ctx.seen_semantic.add(sk)
+        ctx.collapsed.setdefault(sk, 0)
         name = _element_fp_name(ctx.path, el)
         if (FType.UI.value, name) in ctx.seen:
             continue
@@ -2097,22 +2812,33 @@ def _emit_element_fps(ctx: _EmitCtx) -> None:
         action = _element_action(el.kind)
         kind_cn = _ELEMENT_KIND_CN.get(el.kind, "元素")
         deep_note = "（深层视图·click-through）" if el.deep else ""
-        ctx.out.append(
-            FunctionalPoint(
-                fp_id=fp_id_of(FType.UI.value, ctx.src, name),
-                ftype=FType.UI.value,
-                file_path=ctx.src,
-                name=name,
-                title=_element_fp_title(ctx.path, el, ctx.label),
-                module=ctx.module,
-                semantic=(
-                    f"页面 {ctx.path} 可见{kind_cn}交互元素{deep_note}："
-                    f"文字={el.text or '（无文字）'}，动作={action}，选择器={el.selector}"
-                ),
-                description=el.selector,
-            )
+        fp = FunctionalPoint(
+            fp_id=fp_id_of(FType.UI.value, ctx.src, name),
+            ftype=FType.UI.value,
+            file_path=ctx.src,
+            name=name,
+            title=_element_fp_title(ctx.path, el, ctx.label),
+            module=ctx.module,
+            semantic=(
+                f"页面 {ctx.path} 可见{kind_cn}交互元素{deep_note}："
+                f"文字={el.text or '（无文字）'}，动作={action}，选择器={el.selector}"
+            ),
+            description=el.selector,
         )
+        # 跨页同名元素（全局导航/通用字段）合并到代表。
+        if _try_cross_page_merge(ctx, el, sk, fp, representatives):
+            continue
+        ctx.out.append(fp)
+        representatives[sk] = fp
         page_ui_count += 1
+    # 重复实例在代表元素之后才被统计，循环结束后回填实例数（覆盖信息不丢）
+    for sk, fp in representatives.items():
+        instances = ctx.collapsed[sk] + 1
+        if instances > 1:
+            fp.semantic += (
+                f"；同页同类同文字共 {instances} 处实例（选择器仅 nth 序号不同），"
+                "已语义收敛为 1 条代表用例，覆盖信息不丢"
+            )
 
 
 def _emit_api_fps(
@@ -2121,7 +2847,10 @@ def _emit_api_fps(
     """#223 运行时拦截到的同源后端接口 → 1 条 `api` 功能点（覆盖参数/鉴权边界）。"""
     api_src = f"runtime:{_desensitize_runtime_source(result.base_url)}"
     for ep in result.api_endpoints:
-        name = f"{ep.method} {ep.path}"
+        # 再归一化一次：listener 已归一，但手工构造/其它来源的端点也遵守同一口径，
+        # 保证 /threads/{uuid} 与 /threads/{id} 撞成同一模板只留 1 条。
+        path = _normalize_api_path(ep.path)
+        name = f"{ep.method} {path}"
         if (FType.API.value, name) in seen:
             continue
         seen.add((FType.API.value, name))
@@ -2131,11 +2860,9 @@ def _emit_api_fps(
                 ftype=FType.API.value,
                 file_path=api_src,
                 name=name,
-                title=f"接口 {ep.method} {ep.path}（运行时拦截）",
-                module=_module_of_path(ep.path),
-                semantic=(
-                    f"运行时拦截到后端接口 {ep.method} {ep.path}（样例响应状态 {ep.status}）"
-                ),
+                title=f"接口 {ep.method} {path}（运行时拦截）",
+                module=_module_of_path(path),
+                semantic=(f"运行时拦截到后端接口 {ep.method} {path}（样例响应状态 {ep.status}）"),
                 description=ep.url,
             )
         )
@@ -2167,6 +2894,8 @@ def to_runtime_index(result: RuntimeUiResult | None) -> dict[str, RuntimePageInf
                 for e in page.elements
             ],
             console_errors=list(page.console_errors),
+            parent_url=page.parent_url,
+            nav_path=list(page.nav_path),
         )
     return index
 
@@ -2252,6 +2981,27 @@ def _record_summary(result: RuntimeUiResult, logged_in: bool, reachable: int) ->
         f"菜单发现路由 {len(result.discovered_routes)} 条，"
         f"控制台错误 {len(result.console_errors)} 条"
     )
+    # 批次 D（P3）：卡片启发式的自动判定与误报审计显式沉淀到报告 notes。
+    # off 态（旧产物/显式关闭，audit 无 mode）保持零输出；auto/on 态必写判定理由，
+    # 让「系统自动开了还是关了、为什么」可追溯，启用时再补一行明细。
+    audit = result.card_nav_audit
+    if audit.get("mode"):
+        decision = audit.get("decision", "")
+        state = "启用" if audit.get("enabled") else "未启用"
+        result.notes.append(f"[卡片导航 P3] 模式={audit.get('mode')}，{state}：{decision}")
+        if audit.get("sources"):
+            src = audit["sources"]
+            result.notes.append(
+                "[卡片导航 P3] 判定来源计数：" + "、".join(f"{k} {v} 条" for k, v in src.items())
+            )
+        if audit.get("enabled"):
+            result.notes.append(
+                f"[卡片导航 P3] 候选 {audit.get('candidates', 0)}，"
+                f"危险过滤 {audit.get('danger_filtered', 0)}，"
+                f"点击 {audit.get('clicked', 0)}，确认路由 {audit.get('url_changed', 0)}，"
+                f"误报 {len(audit.get('no_nav_labels', []))}；"
+                f"确认路由={audit.get('routes', [])}"
+            )
     log.info(
         "运行时 UI 发现完成",
         extra=log_extra(

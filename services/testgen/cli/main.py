@@ -125,6 +125,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="显式变更文件清单（F2，逗号分隔；@文件 逐行读）；优先于本地 git diff",
     )
     pipe.add_argument("--name", default="", help="项目名（缺省用目录名或被测主机名）")
+    pipe.add_argument(
+        "--repo-spec",
+        default="",
+        help=(
+            "多仓改造（v1.7）：仓库清单 JSON 数组字符串或 @文件；每项含 repo_key/"
+            "local_path/repo_url/base/target/ref。给了就走多仓编排（一个项目下 N 仓）"
+        ),
+    )
     pipe.add_argument("--mode", default=None, choices=list(MODE_CHOICES))
     pipe.add_argument("--base", default=None, help="增量模式基线 ref")
     pipe.add_argument(
@@ -297,6 +305,47 @@ def _parse_list(raw: str) -> list[str]:
     return [p.strip().replace("\\", "/") for p in parts if p.strip()]
 
 
+def _parse_repo_specs(raw: str) -> list[pipeline.RepoSpec]:
+    """解析 `--repo-spec`（JSON 数组字符串或 @文件）为 RepoSpec 列表。
+
+    repo_key 必填且项目内应唯一（唯一键由 DB 保证）；缺 repo_key 的项被忽略。
+    路径统一转正斜杠，与 F2 清单口径一致。解析失败抛 ValueError（CLI 顶层转非零退出）。
+    """
+    if not (raw or "").strip():
+        return []
+    text = _read_text(raw)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--repo-spec 不是合法 JSON：{exc}") from exc
+    if not isinstance(data, list):
+        raise ValueError("--repo-spec 必须是 JSON 数组")
+    specs: list[pipeline.RepoSpec] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("repo_key") or "").strip()
+        if not key:
+            continue
+        specs.append(
+            pipeline.RepoSpec(
+                repo_key=key,
+                local_path=str(item.get("local_path") or "").replace("\\", "/"),
+                repo_url=str(item.get("repo_url") or ""),
+                base=item.get("base"),
+                target=item.get("target"),
+                ref=str(item.get("ref") or ""),
+                changed_files=[
+                    str(f).replace("\\", "/") for f in (item.get("changed_files") or [])
+                ],
+                selected_paths=[
+                    str(p).replace("\\", "/") for p in (item.get("selected_paths") or [])
+                ],
+            )
+        )
+    return specs
+
+
 def _read_text(raw: str) -> str:
     """解析输入文本：`@文件` 从文件读取，否则原样返回（空则返回空串）。"""
     text = (raw or "").strip()
@@ -380,6 +429,10 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
         adopted = pipeline.apply_auto_input(opts, parsed)
         _report_auto_input(parsed, adopted)
     _apply_cli_target(args, opts)
+    # 多仓改造（v1.7）：--repo-spec 非空时设置 repo_specs，入口自动走多仓编排。
+    specs = _parse_repo_specs(getattr(args, "repo_spec", ""))
+    if specs:
+        opts.repo_specs = specs
 
     opts.include_business = not args.no_business
     opts.extract_pages = not args.no_pages
@@ -394,7 +447,7 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
     def on_progress(stage: str, info: dict[str, Any]) -> None:
         print(f"[pipeline] {stage} {info}", file=sys.stderr)
 
-    result = pipeline.run_pipeline(opts, progress=on_progress)
+    result = pipeline.run_pipeline_auto(opts, progress=on_progress)
 
     payload: dict[str, Any] = {"result": result.to_dict()}
     if result.project_id and not args.no_output:

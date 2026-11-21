@@ -65,6 +65,13 @@ _DIMENSION_SLOTS: dict[str, dict[str, int]] = {
         Dimension.BIZ_LOGIC.value: 0,
         Dimension.PAGE_REACH.value: 0,
         Dimension.INTERACTIVE.value: 0,
+        # T3 语义维度（正常类）：独立槽位，避免与「可用性/交互元素」撞号
+        Dimension.LIST_INSERT_VISIBLE.value: 1,
+        Dimension.LIST_DEDUPE.value: 2,
+        Dimension.LIST_ORDER_CONSISTENCY.value: 3,
+        Dimension.PAGINATION_NO_OVERLAP.value: 4,
+        Dimension.BRANCH_ISOLATION.value: 5,
+        Dimension.CONTRACT_SHAPE.value: 6,
     },
     TPType.ABNORMAL.value: {
         Dimension.RES_NOT_FOUND.value: 0,
@@ -80,6 +87,8 @@ _DIMENSION_SLOTS: dict[str, dict[str, int]] = {
         Dimension.UI_SERVER_ERROR.value: 8,
         # scope 增强（2026-09-21）：业务函数异常路径维度（独立槽位）
         Dimension.BIZ_ABNORMAL.value: 9,
+        # T3 语义维度（异常类）
+        Dimension.FALLBACK_DEFAULT.value: 10,
     },
     TPType.SECURITY.value: {
         Dimension.AUTH_MISS.value: 0,
@@ -105,6 +114,9 @@ _DIMENSION_SLOTS: dict[str, dict[str, int]] = {
         Dimension.UI_POOR_VIEWPORT.value: 5,
         # scope 增强（2026-09-21）：业务函数参数边界维度（独立槽位，避免与超长输入撞号）
         Dimension.BIZ_BOUNDARY.value: 6,
+        # T3 语义维度（边界类）
+        Dimension.PAGINATION_OFFSET_SYNC.value: 7,
+        Dimension.GUARD_ZERO_VS_EMPTY.value: 8,
     },
     # G-8：性能/并发（独立行为维度「性能」，slot 0=基线 1=并发）
     TPType.PERFORMANCE.value: {
@@ -190,6 +202,39 @@ class ExpandContext:
     # F8：鉴权接线画像（`engine.auth_scan.AuthProfile`）。为空时安全维度退回
     # 「应当鉴权」的保守口径（保持 v1.0 行为，不影响既有测试与产物）。
     auth_profile: Any = None
+    # 增量收窄：这些 fp_id 拿不到函数行号（前端/无行号文件），只展开核心维度，
+    # 避免限流/降级/令牌过期等泛化模板在无行号文件上膨胀。空集合=不收敛（兼容全量）。
+    narrow_fp_ids: set[str] = field(default_factory=set)
+    # T3 语义维度：`fp_id → [(行为维度, 子维度)]`，来自 `engine/change_semantics`
+    # 对本次 diff hunk 的识别结果。非空时按「1 个核心类型维度 + 语义维度」合并，
+    # 总维度数截断到 `semantic_max_dims`（语义维度优先占位）。空字典=关闭（与基线一致）。
+    semantic_dims: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+    semantic_max_dims: int = 4
+
+
+# 维度收敛白名单：按 ftype 只保留「核心可验证」维度（行为维度, 子维度）。
+# 仅对 narrow_fp_ids 命中的功能点生效；未命中走完整 plan_of（既有行为不变）。
+_NARROW_PLAN: dict[str, tuple[tuple[str, str], ...]] = {
+    FType.PAGE.value: (
+        (TPType.NORMAL.value, Dimension.PAGE_REACH.value),
+        (TPType.SECURITY.value, Dimension.UI_UNAUTH_PAGE.value),
+        # 无路由页面（`has_route=False`，如 `pages/pc/PcChatPage.tsx` 未在本文件声明 path）
+        # 的完整 plan 只有「交互元素可用」这一档；白名单里若不列它，交集为空 →
+        # 变更命中的页面功能点展开 0 条（实测 project 30：91 FP → 保留 2 个页面 FP → 0 TP）。
+        (TPType.NORMAL.value, Dimension.INTERACTIVE.value),
+    ),
+    FType.UI.value: ((TPType.NORMAL.value, Dimension.INTERACTIVE.value),),
+    FType.COMPONENT.value: ((TPType.NORMAL.value, Dimension.INTERACTIVE.value),),
+    FType.API.value: (
+        (TPType.NORMAL.value, Dimension.AVAIL.value),
+        (TPType.SECURITY.value, Dimension.AUTH_MISS.value),
+        (TPType.BOUNDARY.value, Dimension.PARAM_ILLEGAL.value),
+    ),
+    FType.BUSINESS.value: (
+        (TPType.NORMAL.value, Dimension.BIZ_LOGIC.value),
+        (TPType.BOUNDARY.value, Dimension.BIZ_BOUNDARY.value),
+    ),
+}
 
 
 def _method_of(fp: FunctionalPoint) -> str:
@@ -230,7 +275,14 @@ def _tp_method(fp: FunctionalPoint) -> str:
 
 
 def _area_of(fp: FunctionalPoint) -> str:
-    """测试点定位字段：接口取 URL 路径，其余取符号/路由名（业务函数即函数名）。"""
+    """测试点定位字段：接口取 URL 路径，其余取符号/路由名（业务函数即函数名）。
+
+    T4：无 `path:` 声明的页面若已从仓库静态路由表反查到真实路由（`route_hint`），
+    定位字段用它——用例步骤写「打开页面 /pc/chat」才可执行；若仍用文件路径，
+    用例正文会变成「打开页面：frontend/app/src/pages/pc/PcChatPage.tsx」，无法操作。
+    """
+    if fp.ftype == FType.PAGE.value and fp.route_hint:
+        return fp.route_hint
     if fp.ftype == FType.API.value and " " in fp.name:
         return fp.name.split(" ", 1)[1]
     return fp.name
@@ -342,7 +394,94 @@ _BUSINESS_EXPECT: dict[str, str] = {
 }
 
 
-def _expect_of(
+# T3 语义维度的预期文案：每条都写成「对什么输入/操作 → 观察什么 → 判定标准」，
+# 保证人工或执行器都能判 pass/fail（不是「验证分页正确」这种无法判定的空话）。
+_SEMANTIC_EXPECT: dict[str, str] = {
+    Dimension.LIST_INSERT_VISIBLE.value: (
+        "新增一条记录后 → 列表立即出现该条且位于排序规则首位/末位（无需刷新），"
+        "总条数 +1，不出现空白行或占位行"
+    ),
+    Dimension.LIST_DEDUPE.value: (
+        "对同一对象重复触发新增/合并（同一业务主键或同一 id）→ 列表只保留一条，"
+        "条数不重复增长，不出现两行同名/同 id 数据"
+    ),
+    Dimension.LIST_ORDER_CONSISTENCY.value: (
+        "新增/更新/删除若干条后 → 列表顺序仍符合声明的排序规则（如创建时间倒序），"
+        "被更新项不跳到错误位置、不出现重复或丢失"
+    ),
+    Dimension.PAGINATION_NO_OVERLAP.value: (
+        "连续翻页（第 1→2→3 页，每页 N 条）→ 各页数据不重叠、不遗漏，"
+        "累计条数 = 去重后并集大小；末页 hasMore=false"
+    ),
+    Dimension.PAGINATION_OFFSET_SYNC.value: (
+        "本地新增/删除若干条后继续取下一页 → offset/limit 与实际条数同步："
+        "不出现空页、不跳过未返回的记录、不因 offset 偏移触发 4xx/5xx"
+    ),
+    Dimension.BRANCH_ISOLATION.value: (
+        "在模式/渠道 A 与 B 下分别执行同一操作 → 两边的数据与状态互不串扰"
+        "（切换后不残留另一模式的条目、A 的新增不出现在 B 的列表）"
+    ),
+    Dimension.FALLBACK_DEFAULT.value: (
+        "主路径输入缺失或依赖返回空（None/空串/空数组）→ 走兜底分支返回默认值"
+        "（如「未命名对话」），不抛未捕获异常、不写入空标题/空字段"
+    ),
+    Dimension.CONTRACT_SHAPE.value: (
+        "返回/传递的数据结构变更后 → 消费方仍能按旧字段名与类型取到必需字段；"
+        "新增字段不影响旧解析，不出现 undefined/KeyError/字段错位"
+    ),
+    Dimension.GUARD_ZERO_VS_EMPTY.value: (
+        "分别传入「未提供（None/缺省）」「空值（空串/空数组/0）」→ 两者被区分处理："
+        "空值走「已发起但内容为空」分支，未提供走「仅预留」分支，不互相覆盖"
+    ),
+}
+
+
+def _merge_semantic(
+    plan: list[tuple[str, str]],
+    semantic: list[tuple[str, str]],
+    scopes: set[str],
+    max_dims: int,
+) -> list[tuple[str, str]]:
+    """类型维度 ∪ 语义维度 → 最终维度计划（T3）。
+
+    合并规则（与任务文档 §T3 一致，另加一条「核心维度保底」）：
+    1. **保留 1 个核心类型维度**（plan 首条，即该来源类型最本质的维度，如
+       API 的「正常-可用性」/ 页面的「交互元素可用」）——否则语义维度占满预算后，
+       功能点会连一条「主流程能跑通」的用例都没有；
+    2. 语义维度优先占余下槽位（这次改了什么就先测什么）；
+    3. 语义维度不足时，用剩余类型维度补位，但**总数不超过 `max_dims`**；
+    4. 全部按 `scopes` 过滤——用户只勾「正常+边界」时，语义里的异常维度同样不生成。
+    """
+    limit = max(1, int(max_dims))
+    allowed = set(scopes) if scopes else set(DEFAULT_SCOPE)
+    base = [(c, d) for c, d in plan if c in allowed]
+    sem = [(c, d) for c, d in semantic if c in allowed]
+    merged: list[tuple[str, str]] = []
+    for item in base[:1] + sem + base[1:]:
+        if item in merged:
+            continue
+        merged.append(item)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def _business_expect_of(fp: FunctionalPoint, dimension: str) -> str:
+    """业务函数预期：第一步 B——把真实签名拼进固定话术，让预期可判定。
+
+    固定话术（如「返回预期结果/状态」）对任何函数都一样，用户看不出测什么。
+    这里在句首补上该函数的真实入参与返回类型（来自 AST，见 `signature_hint`），
+    使预期变成「入参 domain_id、top_n；返回 DomainDetail → 返回领域详情对象」这类
+    针对本函数的命题。无签名信息时原样退回固定话术，保持旧行为。
+    """
+    base = _BUSINESS_EXPECT[dimension]
+    hint = (fp.signature_hint or "").strip()
+    if not hint:
+        return base
+    return f"（{hint}）{base}"
+
+
+def _expect_of(  # noqa: PLR0911 - 按维度分支，拆函数反而更难对照
     fp: FunctionalPoint, category: str, dimension: str = "", auth_mode: str = "", resource: str = ""
 ) -> str:
     """按维度给出可判定的预期结果文案。
@@ -351,9 +490,17 @@ def _expect_of(
     不再写死 401/403——对本来就该公开的接口写死 401/403 会产出假失败。
     `resource`（G-3）用于把越权用例变成「操作他人资源应被拒」的具体命题。
     """
-    # scope 增强（2026-09-21）：业务函数三档维度无 HTTP 语义，优先走 _BUSINESS_EXPECT
+    # T3 语义维度优先：这几条维度是「本次改动具体是什么」的命题，必须压过按来源
+    # 类型生成的泛化文案（否则无路由页面的语义维度会退回「交互元素可用」）。
+    if dimension in _SEMANTIC_EXPECT:
+        return _SEMANTIC_EXPECT[dimension]
+    # 无显式路由的屏幕：只展开交互维度，预期按交互口径（地址未知，不能承诺「页面可达」）。
+    if fp.ftype == FType.PAGE.value and not fp.has_route:
+        return "交互元素可用，点击后产生预期状态变化，且不新增控制台错误"
+    # scope 增强（2026-09-21）：业务函数三档维度无 HTTP 语义，优先走 _BUSINESS_EXPECT。
+    # 第一步 B：有真实签名时拼进预期，让「返回预期结果」变成可判定命题。
     if dimension in _BUSINESS_EXPECT:
-        return _BUSINESS_EXPECT[dimension]
+        return _business_expect_of(fp, dimension)
     if category == TPType.NORMAL.value:
         return expect_of(fp.ftype, fp.name, _method_of(fp))
     if category == TPType.ABNORMAL.value:
@@ -385,7 +532,12 @@ def _abnormal_expect(dimension: str) -> str:
     }
     if dimension in table:
         return table[dimension]
-    return "返回 4xx（资源不存在 404 / 状态非法 409），响应体为结构化错误信息，服务不抛未捕获异常"
+    # E2/A2：与 executor._PASS_PREDICATES[_KIND_ABNORMAL]（200-499 通过）口径一致。
+    # 4xx 是典型形态，但「200 + 业务错误码」的软失败也算妥善处理；5xx 才算未通过。
+    return (
+        "异常被妥善处理：返回 4xx（资源不存在 404 / 状态非法 409）或 200+结构化错误码，"
+        "不返回 5xx、不抛未捕获异常"
+    )
 
 
 # G-8：性能维度的预期文案（与 executor 判定口径一致：基线真实测延迟；并发需并行 harness）。
@@ -400,7 +552,10 @@ _PERF_EXPECT: dict[str, str] = {
 
 
 def _semantic_of(fp: FunctionalPoint, category: str) -> str:
-    return f"{_SEMANTIC_ACTION[category]}：{fp.title}"
+    # 第一步 A（仅业务函数）：验证项主体用中文语义（与标题一致），而非英文裸
+    # `模块 · 函数名`。其他类型（API/PAGE/UI）保持原行为，避免连锁变化。
+    core = _readable_core(fp) if fp.ftype == FType.BUSINESS.value else fp.title
+    return f"{_SEMANTIC_ACTION[category]}：{core}"
 
 
 # 标题可读性（2026-10-14）：`[正常] agents · register_m3_harness_profiles` 这种裸 `模块 · 函数名`
@@ -410,9 +565,24 @@ _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
 def _readable_core(fp: FunctionalPoint) -> str:
-    """标题主体：有中文功能描述用描述，否则退回 `模块 · 名称`。"""
+    """标题主体：有中文功能描述用描述，否则退回 `模块 · 名称`。
+
+    业务函数的 semantic 形如 `Cls.method（入参 …）`。类名前缀对「测什么」无帮助，
+    统一剥掉只留方法名（标题/验证项风格一致，也避免长前缀把标题顶过 48 字被截断）。
+    完整签名始终保留在 `fp.signature_hint` 里供预期展示，可判定性不降低；
+    追溯用的 fp_id / fp_contract_id 仍带类名，不受影响。
+    """
+    # 运行时 UI 元素：semantic 句式统一以「页面 {path} 可见{类型}交互元素：文字=…」开头，
+    # 同页所有元素前缀相同，48 字截断后标题撞车（23 个不同按钮生成同一标题）。
+    # fp.title 把元素文字放在最前（`按钮「深色模式」@ area::…`），优先用它保住区分度。
+    if fp.ftype == FType.UI.value and fp.title:
+        return fp.title if len(fp.title) <= 48 else fp.title[:46] + "…"
     sem = (fp.semantic or "").strip()
     if sem and _CJK_RE.search(sem) and len(sem) > len(fp.name) + 2:
+        # 统一剥类名前缀（不限于超长）：`Cls.method（…）` → `method（…）`
+        if fp.ftype == FType.BUSINESS.value and "." in fp.name and sem.startswith(fp.name):
+            method = fp.name.rsplit(".", 1)[-1]
+            sem = method + sem[len(fp.name) :]
         return sem if len(sem) <= 48 else sem[:46] + "…"
     return fp.title
 
@@ -438,6 +608,13 @@ _BEST_EFFORT_DIMS: frozenset[str] = frozenset(
         Dimension.BIZ_ABNORMAL.value,
         Dimension.BIZ_INPUT_VALID.value,
         Dimension.BIZ_BOUNDARY.value,
+        # T3 语义维度：需要「多页数据 / 重复触发 / 双模式数据 / 依赖故障」才能构造，
+        # 单次探活无法判定 → 与 G-5/G-8/G-9 同口径标为 best-effort（expect 仍可人工判定）。
+        Dimension.LIST_DEDUPE.value,
+        Dimension.PAGINATION_NO_OVERLAP.value,
+        Dimension.PAGINATION_OFFSET_SYNC.value,
+        Dimension.BRANCH_ISOLATION.value,
+        Dimension.FALLBACK_DEFAULT.value,
     }
 )
 # 限流可发突发请求自动验证（置信度高于纯故障注入类）
@@ -453,7 +630,7 @@ def _confidence_of(dimension: str) -> float:
     return 1.0
 
 
-def plan_of(fp: FunctionalPoint) -> list[tuple[str, str]]:  # noqa: C901
+def plan_of(fp: FunctionalPoint) -> list[tuple[str, str]]:  # noqa: C901, PLR0911
     """功能点 → [(行为维度, 子维度)]，**与 legacy 展开规则逐条对齐**（P1 契约冻结）。
 
     对齐表（顺序即产出顺序，也是 tp_id 序号的规范顺序）：
@@ -504,6 +681,11 @@ def plan_of(fp: FunctionalPoint) -> list[tuple[str, str]]:  # noqa: C901
         plan.append((TPType.PERFORMANCE.value, Dimension.PERF_CONCURRENCY.value))
         return plan
     if fp.ftype == FType.PAGE.value:
+        if not fp.has_route:
+            # 无显式路由声明的屏幕（`views/Home.vue` 这类）：地址未知，**不能**生成
+            # 「页面可达/未授权/极端视口/断网…」这些需要 URL 的维度——那会对一条不存在
+            # 的地址产出必然失败的假用例。只验证它身上真实存在的交互元素，与 component 同口径。
+            return [(TPType.NORMAL.value, Dimension.INTERACTIVE.value)]
         # #222：页面套 DEFAULT_SCOPE → 正常(可达) + 安全(未授权访问) + 边界(极端视口)
         # G-5：UI 异常流（网络中断/错误回显/空状态/错误页）—— 行为维度同属「异常」，
         #      需 DEFAULT_SCOPE 含异常（2026-09-15 已纳入）才默认生成。
@@ -557,7 +739,19 @@ def expand_functional_point(
     out: list[TestPoint] = []
     produced = 0
     resource = _resource_entity_of(fp)  # G-3：资源归属（仅 API 有语义）
-    for category, dimension in plan_of(fp):
+    plan = plan_of(fp)
+    # T3：本次 diff 识别出的语义维度（空=该功能点所在文件没识别出语义，走旧逻辑）
+    semantic = list(ctx.semantic_dims.get(fp.fp_id) or ())
+    semantic_set = set(semantic)
+    if semantic:
+        # 语义维度优先：保留 1 个核心类型维度保底，其余槽位给「这次到底改了什么」。
+        plan = _merge_semantic(plan, semantic, ctx.scopes, ctx.semantic_max_dims)
+    elif fp.fp_id in ctx.narrow_fp_ids and fp.ftype in _NARROW_PLAN:
+        narrowed = [x for x in plan if x in _NARROW_PLAN[fp.ftype]]
+        # 收窄的目的只是「砍泛化模板」，不是把功能点砍成 0 条：交集为空时保留原 plan 的
+        # 第一条（该 ftype 最核心的维度），避免「只改了这一个文件，却生成 0 条用例」。
+        plan = narrowed or plan[:1]
+    for category, dimension in plan:
         if category not in ctx.scopes:
             continue
         # G-3/G-9：越权与跨租户写用例标记属主隔离（资源实体已识别且为资源级操作）
@@ -580,7 +774,11 @@ def expand_functional_point(
                 category=category,
                 module=fp.module,
                 title=f"[{category}] {_readable_core(fp)} · {dimension}",
-                semantic=_semantic_of(fp, category),
+                semantic=(
+                    f"变更语义：{_readable_core(fp)} · {dimension}"
+                    if (category, dimension) in semantic_set
+                    else _semantic_of(fp, category)
+                ),
                 source=fp.file_path,
                 method=method,
                 area=area,
@@ -594,6 +792,9 @@ def expand_functional_point(
                 owner_scoped=owner_scoped,
                 confidence=_confidence_of(dimension),
                 unverified=dimension in _BEST_EFFORT_DIMS,
+                # T3：语义维度产出的测试点标 origin=semantic，供报告把「本体/影响面/运行时」
+                # 分开统计（T5 三 KPI 依赖来源标签，混在 rule 里就分不出来了）。
+                origin=("semantic" if (category, dimension) in semantic_set else "rule"),
             )
         )
         produced += 1

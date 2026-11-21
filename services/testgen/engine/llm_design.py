@@ -46,6 +46,8 @@ class DesignOptions:
     max_cases_per_fp: int = 3
     # 降级链：模型不可用（如免费额度 AllocationQuota.FreeTierOnly.）时按顺序切换的备选模型。
     model_chain: list[str] = field(default_factory=list)
+    # 第二步 C：文件级中文业务背景（file_path -> describe 缓存描述），注入提示词。
+    file_context: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -97,12 +99,19 @@ def _prd_text(prd: Any | None) -> str:
     return ""
 
 
-def _build_prompt(fps: list[FunctionalPoint], tps: list[TestPoint], prd: Any | None) -> str:
+def _build_prompt(
+    fps: list[FunctionalPoint],
+    tps: list[TestPoint],
+    prd: Any | None,
+    file_context: dict[str, str] | None = None,
+) -> str:
     lines = [
-        "以下是代码中真实存在的功能点（只能基于它们的 fp_id 设计用例，不得新增）：",
+        "以下是代码中真实存在的功能点（只能基于它们的 fp_id 设计用例，不得新增）。"
+        "请结合真实签名、功能语义与文件业务背景，设计贴题的用例：",
     ]
     for fp in fps:
-        lines.append(f"- fp_id={fp.fp_id} | type={fp.ftype} | name={fp.name} | module={fp.module}")
+        # 第二步 C：复用 semantic_enrich 的事实行口径，喂入真实签名/语义/文件背景。
+        lines.append(semantic_enrich.fp_fact_line(fp, file_context))
     if tps:
         lines.append("\n现有测试点维度（供你避免重复，仅在确有补充价值时设计新用例）：")
         seen: set[str] = set()
@@ -132,6 +141,7 @@ def _to_enrich_options(options: DesignOptions) -> semantic_enrich.EnrichOptions:
         api_key=options.api_key,
         timeout=options.timeout,
         model_chain=options.model_chain,
+        file_context=options.file_context,
     )
 
 
@@ -223,7 +233,7 @@ def design_cases(
         return result
 
     try:
-        candidates = client.complete_json(_build_prompt(fps, tps, prd))
+        candidates = client.complete_json(_build_prompt(fps, tps, prd, opts.file_context))
     except Exception as exc:  # noqa: BLE001 - 任一 LLM 失败都不应中断主链路
         result.notes.append(f"LLM 调用失败，已降级为纯规则用例：{exc}")
         return result

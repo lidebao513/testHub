@@ -129,3 +129,16 @@ ui_verify/shots/
 ui_verify/shots_p1/
 ui_verify/*.png
 ui_verify/*.log
+# SQLite WAL 模式运行时临时文件（随主库 *.db 一并忽略，可重建）
+*.db-shm
+*.db-wal
+# 本机调试登录态快照（含真实 JWT/token，禁止入库）
+ul3000.json
+# UI 验证运行时数据快照/报告（体积大、可重跑生成；验证脚本 .py/.md 仍入库）
+ui_verify/*.json
+ui_verify/*.html
+ui_verify/*_meta.txt
+ui_verify/*_proc.txt
+ui_verify/*_info.txt
+ui_verify/*restart*.txt
+ui_verify/*pre_restart*.txt

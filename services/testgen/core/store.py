@@ -96,12 +96,105 @@ def list_projects(conn: sqlite3.Connection | None = None) -> list[dict[str, Any]
 
 
 # ============================================================================
+# 仓库绑定（多仓改造 v1.7）：project 作容器，一个项目下 N 条 binding
+# ============================================================================
+def upsert_repo_binding(  # noqa: PLR0913 - 仓库绑定字段本就多，显式关键字参数更直观
+    project_id: int,
+    repo_key: str,
+    *,
+    local_path: str = "",
+    repo_url: str = "",
+    base: str = "",
+    target: str = "",
+    ref: str = "",
+    conn: sqlite3.Connection | None = None,
+) -> int:
+    """按 (project_id, repo_key) 注册或更新一个仓库绑定，返回 binding id。
+
+    repo_key 是项目内稳定短名（backend/frontend/shared），由调用方约定；
+    'default' 保留给旧单仓 project 的隐式绑定（迁移脚本创建）。
+    """
+    own = conn is None
+    conn = conn or connect()
+    init_db(conn)
+    try:
+        with conn:
+            row = conn.execute(
+                "SELECT id FROM repo_bindings WHERE project_id = ? AND repo_key = ?",
+                (project_id, repo_key),
+            ).fetchone()
+            if row:
+                bid = int(row["id"])
+                conn.execute(
+                    "UPDATE repo_bindings SET local_path=?, repo_url=?, base=?, target=?,"
+                    " ref=? WHERE id=?",
+                    (local_path, repo_url, base, target, ref, bid),
+                )
+                return bid
+            cur = conn.execute(
+                "INSERT INTO repo_bindings(project_id, repo_key, local_path, repo_url,"
+                " base, target, ref, created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (project_id, repo_key, local_path, repo_url, base, target, ref, _now()),
+            )
+            return int(cur.lastrowid or 0)
+    finally:
+        if own:
+            conn.close()
+
+
+def list_repo_bindings(
+    project_id: int, conn: sqlite3.Connection | None = None
+) -> list[dict[str, Any]]:
+    """列出某项目下所有仓库绑定（按 repo_key 排序，稳定）。"""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        return [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM repo_bindings WHERE project_id = ? ORDER BY repo_key",
+                (project_id,),
+            )
+        ]
+    finally:
+        if own:
+            conn.close()
+
+
+def get_repo_binding(
+    binding_id: int, conn: sqlite3.Connection | None = None
+) -> dict[str, Any] | None:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        row = conn.execute("SELECT * FROM repo_bindings WHERE id = ?", (binding_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if own:
+            conn.close()
+
+
+def repo_binding_map(project_id: int, conn: sqlite3.Connection | None = None) -> dict[str, int]:
+    """repo_key → binding id 映射，供生成期把 repo_key 解析成 repo_binding_id。"""
+    return {b["repo_key"]: int(b["id"]) for b in list_repo_bindings(project_id, conn)}
+
+
+# ============================================================================
 # 功能点
 # ============================================================================
 def replace_functional_points(
-    pid: int, fps: list[FunctionalPoint], *, conn: sqlite3.Connection | None = None
+    pid: int,
+    fps: list[FunctionalPoint],
+    *,
+    repo_binding_id: int | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> dict[str, int]:
-    """整批替换某项目的功能点（先删后插，保证与分析结果一致）。"""
+    """整批替换功能点（先删后插，保证与分析结果一致）。
+
+    多仓改造（v1.7）：`repo_binding_id` 为 None 时**完全走旧逻辑**（删整项目、
+    INSERT 不写归属列），旧单仓零回归；传入时删除/插入都以仓为界，绝不因
+    生成仓 B 而删掉仓 A 的功能点。
+    """
     own = conn is None
     conn = conn or connect()
     try:
@@ -116,7 +209,13 @@ def replace_functional_points(
             seen.add(fp.fp_id)
             deduped.append(fp)
         with conn:
-            conn.execute("DELETE FROM functional_points WHERE project_id = ?", (pid,))
+            if repo_binding_id is None:
+                conn.execute("DELETE FROM functional_points WHERE project_id = ?", (pid,))
+            else:
+                conn.execute(
+                    "DELETE FROM functional_points WHERE project_id = ? AND repo_binding_id = ?",
+                    (pid, repo_binding_id),
+                )
             rows = [
                 (
                     pid,
@@ -131,15 +230,24 @@ def replace_functional_points(
                     fp.title,
                     fp.module,
                     fp.semantic,
+                    repo_binding_id,
                 )
                 for fp in deduped
             ]
-            conn.executemany(
-                "INSERT INTO functional_points(project_id, commit_ref, file_path, name,"
-                " description, ftype, review_status, created_at, contract_id, title, module,"
-                " semantic) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                rows,
-            )
+            if repo_binding_id is None:
+                conn.executemany(
+                    "INSERT INTO functional_points(project_id, commit_ref, file_path, name,"
+                    " description, ftype, review_status, created_at, contract_id, title, module,"
+                    " semantic) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [r[:-1] for r in rows],
+                )
+            else:
+                conn.executemany(
+                    "INSERT INTO functional_points(project_id, commit_ref, file_path, name,"
+                    " description, ftype, review_status, created_at, contract_id, title, module,"
+                    " semantic, repo_binding_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    rows,
+                )
         return {"functional_points": len(rows)}
     finally:
         if own:
@@ -176,9 +284,17 @@ def fp_row_map(pid: int, conn: sqlite3.Connection | None = None) -> dict[str, in
 # 测试点
 # ============================================================================
 def replace_test_points(
-    pid: int, tps: list[TestPoint], *, conn: sqlite3.Connection | None = None
+    pid: int,
+    tps: list[TestPoint],
+    *,
+    repo_binding_id: int | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> dict[str, int]:
-    """整批替换某项目的测试点。"""
+    """整批替换测试点。
+
+    多仓改造（v1.7）：`repo_binding_id` 缺省 None 走旧逻辑（零回归）；传入时
+    删除/插入都以仓为界。
+    """
     own = conn is None
     conn = conn or connect()
     try:
@@ -215,18 +331,37 @@ def replace_test_points(
                 tp.confidence,
                 tp.origin,
                 1 if tp.unverified else 0,
+                tp.channel,
+                tp.unverified_reason,
+                tp.verify_layer,
+                repo_binding_id,
             )
             for tp in deduped
         ]
         with conn:
-            conn.execute("DELETE FROM test_points WHERE project_id = ?", (pid,))
-            conn.executemany(
-                "INSERT INTO test_points(project_id, tp_id, fp_contract_id, category, module,"
-                " semantic, title, source, method, area, expect, dimension, tag, review_status,"
-                " created_at, evidence, confidence, origin, unverified)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                rows,
-            )
+            if repo_binding_id is None:
+                conn.execute("DELETE FROM test_points WHERE project_id = ?", (pid,))
+                conn.executemany(
+                    "INSERT INTO test_points(project_id, tp_id, fp_contract_id, category, module,"
+                    " semantic, title, source, method, area, expect, dimension, tag, review_status,"
+                    " created_at, evidence, confidence, origin, unverified, channel,"
+                    " unverified_reason, verify_layer)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [r[:-1] for r in rows],
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM test_points WHERE project_id = ? AND repo_binding_id = ?",
+                    (pid, repo_binding_id),
+                )
+                conn.executemany(
+                    "INSERT INTO test_points(project_id, tp_id, fp_contract_id, category, module,"
+                    " semantic, title, source, method, area, expect, dimension, tag, review_status,"
+                    " created_at, evidence, confidence, origin, unverified, channel,"
+                    " unverified_reason, verify_layer, repo_binding_id)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    rows,
+                )
         return {"test_points": len(rows)}
     finally:
         if own:
@@ -266,8 +401,12 @@ def _duplicate_tp_ids(specs: list[CaseSpec]) -> list[str]:
     return dupes
 
 
-def reconcile_cases(
-    pid: int, specs: list[CaseSpec], *, conn: sqlite3.Connection | None = None
+def reconcile_cases(  # noqa: C901, PLR0912 - 多仓分支与单仓分支并存，显式列出比合并更可审计
+    pid: int,
+    specs: list[CaseSpec],
+    *,
+    repo_binding_id: int | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> dict[str, int]:
     """按 `tp_id` 对账生成用例，幂等。
 
@@ -279,6 +418,10 @@ def reconcile_cases(
 
     传入 `specs` 内部若出现重复 tp_id，说明上游编号算法发生了碰撞，**直接失败**：
     静默插入两行会绕开以 tp_id 为键的对账，重复行将永远无法被更新或作废。
+
+    多仓改造（v1.7）：`repo_binding_id` 缺省 None 走旧逻辑（零回归）；传入时
+    existing 查询 / 作废判定 / INSERT 归属都以仓为界——生成仓 B 不会把仓 A 的
+    用例误标 obsolete。
     """
     dupes = _duplicate_tp_ids(specs)
     if dupes:
@@ -290,49 +433,87 @@ def reconcile_cases(
     own = conn is None
     conn = conn or connect()
     try:
-        stats = {"created": 0, "updated": 0, "reused": 0, "obsolete": 0}
+        stats = {"created": 0, "updated": 0, "reused": 0, "obsolete": 0, "revived": 0}
         with conn:
-            existing = {
-                str(r["tp_id"]): dict(r)
-                for r in conn.execute(
+            if repo_binding_id is None:
+                existing_rows = conn.execute(
                     "SELECT * FROM cases WHERE project_id = ? AND tp_id IS NOT NULL", (pid,)
                 )
-            }
+            else:
+                existing_rows = conn.execute(
+                    "SELECT * FROM cases WHERE project_id = ? AND repo_binding_id = ?"
+                    " AND tp_id IS NOT NULL",
+                    (pid, repo_binding_id),
+                )
+            existing = {str(r["tp_id"]): dict(r) for r in existing_rows}
             incoming: set[str] = set()
             for spec in specs:
                 incoming.add(spec.tp_id)
                 old = existing.get(spec.tp_id)
                 payload = _case_payload(spec)
                 if old is None:
-                    conn.execute(
-                        "INSERT INTO cases(project_id, fp_id, title, steps, ctype,"
-                        " review_status, status, created_at, tp_id, fp_contract_id, tc_no,"
-                        " module, case_type, priority, precondition, doc_steps, version,"
-                        " test_type) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (
-                            pid,
-                            spec.fp_row_id,
-                            spec.title,
-                            _dumps(spec.steps),
-                            spec.ctype,
-                            "approved",
-                            "generated",
-                            _now(),
-                            spec.tp_id,
-                            spec.fp_contract_id,
-                            spec.tc_no,
-                            spec.module,
-                            spec.case_type,
-                            spec.priority,
-                            spec.precondition,
-                            _dumps(spec.doc_steps),
-                            1,
-                            spec.test_type,
-                        ),
-                    )
+                    if repo_binding_id is None:
+                        conn.execute(
+                            "INSERT INTO cases(project_id, fp_id, title, steps, ctype,"
+                            " review_status, status, created_at, tp_id, fp_contract_id, tc_no,"
+                            " module, case_type, priority, precondition, doc_steps, version,"
+                            " test_type) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (
+                                pid,
+                                spec.fp_row_id,
+                                spec.title,
+                                _dumps(spec.steps),
+                                spec.ctype,
+                                "approved",
+                                "generated",
+                                _now(),
+                                spec.tp_id,
+                                spec.fp_contract_id,
+                                spec.tc_no,
+                                spec.module,
+                                spec.case_type,
+                                spec.priority,
+                                spec.precondition,
+                                _dumps(spec.doc_steps),
+                                1,
+                                spec.test_type,
+                            ),
+                        )
+                    else:
+                        conn.execute(
+                            "INSERT INTO cases(project_id, fp_id, title, steps, ctype,"
+                            " review_status, status, created_at, tp_id, fp_contract_id, tc_no,"
+                            " module, case_type, priority, precondition, doc_steps, version,"
+                            " test_type, repo_binding_id)"
+                            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (
+                                pid,
+                                spec.fp_row_id,
+                                spec.title,
+                                _dumps(spec.steps),
+                                spec.ctype,
+                                "approved",
+                                "generated",
+                                _now(),
+                                spec.tp_id,
+                                spec.fp_contract_id,
+                                spec.tc_no,
+                                spec.module,
+                                spec.case_type,
+                                spec.priority,
+                                spec.precondition,
+                                _dumps(spec.doc_steps),
+                                1,
+                                spec.test_type,
+                                repo_binding_id,
+                            ),
+                        )
                     stats["created"] += 1
                     continue
                 if _case_changed(old, payload):
+                    # B8：内容变化且旧行已作废，说明它「复活且内容有更新」——
+                    # 除 updated 外也要计 revived，否则复活数少算、报告与 active 集合对不上。
+                    was_obsolete = str(old.get("status") or "") == "obsolete"
                     conn.execute(
                         "UPDATE cases SET title=?, steps=?, ctype=?, tc_no=?, module=?,"
                         " case_type=?, priority=?, precondition=?, doc_steps=?, version=?,"
@@ -356,8 +537,27 @@ def reconcile_cases(
                         ),
                     )
                     stats["updated"] += 1
+                    if was_obsolete:
+                        stats["revived"] += 1
                 else:
                     stats["reused"] += 1
+                    # 内容未变 → reused，但**已作废的行必须复活**：作废是「上次没再产出它」的
+                    # 结果，本次又产出了说明它仍有效。不复活会让产物有 N 条、库里 active 少几条
+                    # （典型触发：先跑全量把旧行全标 obsolete，再用收窄子集重跑同一批 tp_id），
+                    # 而且完全静默——报告与执行只认 active，三口径对不上却查不出原因。
+                    if str(old.get("status") or "") == "obsolete":
+                        conn.execute(
+                            "UPDATE cases SET status='generated', fp_id=?, fp_contract_id=?,"
+                            " tc_no=?, module=? WHERE id=?",
+                            (
+                                spec.fp_row_id,
+                                spec.fp_contract_id,
+                                spec.tc_no,
+                                spec.module,
+                                old["id"],
+                            ),
+                        )
+                        stats["revived"] += 1
 
             stale = [tid for tid in existing if tid not in incoming]
             for tid in stale:
@@ -372,6 +572,16 @@ def reconcile_cases(
 
 
 def _case_payload(spec: CaseSpec) -> dict[str, Any]:
+    """参与「内容是否变化」比对的列。
+
+    B8：稳定的业务追溯列（fp_contract_id / tc_no / module）此前不在 payload 里，
+    导致 FP 重排后旧行追溯链错乱却始终走 reused、永不自愈。纳入比对后，
+    只要这些列变化就走 updated 分支刷新。
+
+    **不含 `fp_id`（数据库自增行 id）**：它每次生成都会变（FP 行被删了重建），
+    纳入比对会让内容未变的用例也走 updated —— 破坏对账幂等（第二次运行全部
+    updated 而非 reused）。`fp_id` 仍在 UPDATE 语句里被刷新，只是不作为「内容变化」依据。
+    """
     return {
         "title": spec.title,
         "steps": spec.steps,
@@ -379,6 +589,9 @@ def _case_payload(spec: CaseSpec) -> dict[str, Any]:
         "priority": spec.priority,
         "precondition": spec.precondition,
         "case_type": spec.case_type,
+        "fp_contract_id": spec.fp_contract_id,
+        "tc_no": spec.tc_no,
+        "module": spec.module,
     }
 
 
@@ -533,8 +746,11 @@ def record_execution(
                     )
                 )
                 if tp_id:
+                    # B8：只回填活跃行——obsolete 行不该拿到执行结论，否则同一 tp_id
+                    # 的新旧行结论分裂（报告读 active、History 读 obsolete 会对不上）。
                     cursor = conn.execute(
-                        "UPDATE cases SET last_result = ? WHERE project_id = ? AND tp_id = ?",
+                        "UPDATE cases SET last_result = ?"
+                        " WHERE project_id = ? AND tp_id = ? AND status != 'obsolete'",
                         (status, pid, tp_id),
                     )
                     backfilled += int(cursor.rowcount or 0)
@@ -763,6 +979,29 @@ def _select_batch(batches: list[dict[str, Any]], batch_id: str) -> dict[str, Any
     )
 
 
+def _latest_quality(conn: sqlite3.Connection, pid: int) -> dict[str, Any]:
+    """取该项目最近一次成功生成的 T5 质量快照（门禁 + 三 KPI + 三通道）。
+
+    为什么不按「当前库里的测试点」重算：三个 KPI 的分母需要本次 hunk 行号、改动函数、
+    被截断的引用方总数——这些只在生成期存在，落库后无从还原。快照是**事实记录**，
+    重算会变成猜测（分母缺失时只能编）。库表缺失/无任务时返回空字典，报告照常出。
+    """
+    try:
+        row = conn.execute(
+            "SELECT result FROM gen_tasks WHERE project_id = ? AND result IS NOT NULL"
+            " AND result != '' ORDER BY COALESCE(finished_at, created_at, '') DESC, rowid DESC"
+            " LIMIT 1",
+            (pid,),
+        ).fetchone()
+    except sqlite3.OperationalError:  # 极旧库没有 gen_tasks：降级为「无快照」
+        return {}
+    if row is None:
+        return {}
+    data = _loads(row["result"], {})
+    quality = data.get("quality") if isinstance(data, dict) else None
+    return dict(quality) if isinstance(quality, dict) else {}
+
+
 def report_snapshot(
     pid: int, *, batch_id: str = "", conn: sqlite3.Connection | None = None
 ) -> dict[str, Any]:
@@ -784,18 +1023,23 @@ def report_snapshot(
     try:
         project = conn.execute("SELECT * FROM projects WHERE id = ?", (pid,)).fetchone()
         fps = rows(
-            "SELECT id, contract_id, name, module, ftype, file_path FROM functional_points"
-            " WHERE project_id = ? ORDER BY id",
+            "SELECT id, contract_id, name, module, ftype, file_path, repo_binding_id"
+            " FROM functional_points WHERE project_id = ? ORDER BY id",
             (pid,),
         )
         tps = rows(
             "SELECT tp_id, fp_contract_id, category, module, title, dimension, method,"
-            " expect, source, tag FROM test_points WHERE project_id = ? ORDER BY id",
+            " expect, source, tag, evidence, confidence, origin, unverified, channel,"
+            " unverified_reason, verify_layer, repo_binding_id FROM test_points"
+            " WHERE project_id = ? ORDER BY id",
             (pid,),
         )
+        for t in tps:
+            t["evidence"] = _loads(t.get("evidence"), [])
+            t["unverified"] = int(t.get("unverified") or 0)
         cases = rows(
             "SELECT id, tp_id, fp_contract_id, module, title, case_type, priority, status,"
-            " test_type, last_result FROM cases WHERE project_id = ? ORDER BY id",
+            " test_type, last_result, repo_binding_id FROM cases WHERE project_id = ? ORDER BY id",
             (pid,),
         )
         batches = rows(
@@ -840,6 +1084,8 @@ def report_snapshot(
             "run_index": run_index,
             "last_change": changes[0] if changes else None,
             "traceability": traceability(pid, conn),
+            # T5：生成期算出的门禁/KPI 快照（无则空字典，报告降级但不出错）
+            "quality": _latest_quality(conn, pid),
         }
     finally:
         if own:
