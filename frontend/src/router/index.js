@@ -100,6 +100,11 @@ const routes = [
                 component: () => import('@/views/requirement-analysis/TestgenConsole.vue')
             },
             {
+                path: 'url-first-console',
+                name: 'UrlFirstConsole',
+                component: () => import('@/views/requirement-analysis/UrlFirstConsole.vue')
+            },
+            {
                 path: 'projects',
                 name: 'Projects',
                 component: ProjectList

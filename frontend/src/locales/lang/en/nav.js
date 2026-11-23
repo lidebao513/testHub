@@ -24,6 +24,7 @@ export default {
     intelligentCaseGeneration: 'Intelligent Case Generation',
     aiCaseGeneration: 'AI Case Generation',
     codeGenerationConsole: 'Code Generation (testgen)',
+    urlFirstConsole: 'URL-First Generation (New)',
     aiGeneratedTestcases: 'AI Generated Test Cases',
     requirementThreeProducts: 'Requirement Three Products',
     promptConfig: 'Prompt Configuration',

@@ -1836,6 +1836,36 @@ def get_file_descriptions(
             conn.close()
 
 
+def list_file_descriptions(
+    repo_url: str, *, prefix: str = "", conn: sqlite3.Connection | None = None
+) -> list[dict[str, Any]]:
+    """按命名空间列出描述缓存；prefix 可筛出特定来源（如 runtime: 扫描模块）。
+
+    复用既有 file_descriptions 表，不新增模块实体表；substr 精确匹配前缀，
+    避免 LIKE 的通配符语义误伤。
+    """
+    own = conn is None
+    conn = conn or connect()
+    try:
+        if prefix:
+            rows = conn.execute(
+                "SELECT file_path, description, symbols_sig, model, updated_at"
+                " FROM file_descriptions WHERE repo_url = ?"
+                " AND substr(file_path, 1, ?) = ? ORDER BY file_path",
+                (repo_url, len(prefix), prefix),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT file_path, description, symbols_sig, model, updated_at"
+                " FROM file_descriptions WHERE repo_url = ? ORDER BY file_path",
+                (repo_url,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if own:
+            conn.close()
+
+
 def upsert_file_description(
     repo_url: str,
     path: str,

@@ -24,6 +24,7 @@ export default {
     intelligentCaseGeneration: '智能用例生成',
     aiCaseGeneration: 'AI用例生成',
     codeGenerationConsole: '代码生成（testgen）',
+    urlFirstConsole: '地址优先生成（新）',
     aiGeneratedTestcases: 'AI生成用例记录',
     requirementThreeProducts: '需求三件套',
     promptConfig: '提示词配置',
