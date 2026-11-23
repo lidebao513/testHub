@@ -29,7 +29,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from core import store
+from core import store, url_modules, url_projects
 from core.auto_input import parse_auto_input
 from core.config import get_settings
 from core.contracts import CONTRACT_VERSION
@@ -43,7 +43,7 @@ from core.errors import (
     ValidationError,
 )
 from core.log import get_logger, log_extra, set_request_id
-from engine import analytics, pipeline
+from engine import analytics, pipeline, url_code_bridge
 from engine import report as report_engine
 from engine.codeup_client import CodeupError, parse_repo_to_repo_id
 from engine.comparator import (
@@ -318,6 +318,35 @@ class PipelineRequest(BaseModel):
             "（任务模型与 /generate 一致）；默认 false 保持同步语义。"
         ),
     )
+
+
+class UrlGenerationRequest(BaseModel):
+    """地址优先入口的专用生成请求。
+
+    与 ``PipelineRequest`` 的区别：本模型**固定走地址通道 + 生成-only**，
+    强制 ``runtime_ui=True`` / ``execute=False`` / 默认 ``mode=incremental`` +
+    ``runtime_scope=targeted``；可选带变更文件与取码凭证，经轻量取码桥为靶向供文本。
+    """
+
+    test_url: str = Field("", description="被测环境地址（必填）")
+    login_url: str = Field("", description="登录页地址（缺省自动判定）")
+    login_user: str = Field("", description="登录账号")
+    login_password: str = Field("", description="登录密码")
+    login_otp: str = Field("", description="动态口令")
+    runtime_routes: list[str] = Field(default_factory=list, description="显式路由（优先级最高）")
+    changed_files: list[str] = Field(
+        default_factory=list, description="变更文件（正斜杠相对路径，靶向辅助证据）"
+    )
+    repo_url: str = Field("", description="代码仓库地址（轻量取码桥；空则靶向按文件名推断）")
+    code_source: dict[str, Any] = Field(default_factory=dict, description="取码凭证（PAT）")
+    base: str | None = Field(None, description="增量基线 ref（取 hunk 用）")
+    target: str | None = Field(None, description="增量目标 ref（取 hunk / blob 用）")
+    project_id: int | None = Field(
+        None, description="已识别的 testgen 项目 id（复用，避免重复建项）"
+    )
+    project_name: str = Field("", description="项目名（缺省用被测主机名）")
+    runtime_scope: str = Field("targeted", description="targeted=变更靶向（默认）/ full=全站巡检")
+    scopes: list[str] = Field(default_factory=list, description="行为维度范围")
 
 
 class ParseInputRequest(BaseModel):
@@ -846,6 +875,92 @@ def submit_generate_core(req: PipelineRequest) -> JSONResponse:
     return _task_accepted(task, status_code=202)
 
 
+@app.post("/api/v1/url-generation/generate", dependencies=[Depends(require_auth)])
+def submit_url_generation(req: UrlGenerationRequest) -> JSONResponse:
+    """地址优先入口专用生成端点：地址+凭证为主，变更文件经轻量取码桥做靶向辅助。
+
+    与 `/api/v1/generate` 的差异（均为新增能力，不改旧端点）：
+    - 强制 ``runtime_ui=True``、``execute=False``（生成-only 红线）；
+    - 默认 ``mode=incremental`` + ``runtime_scope=targeted``（地址为主、变更辅助）；
+    - 有 ``repo_url`` + ``changed_files`` 时经 ``url_code_bridge`` 只取文件文本供靶向，
+      不 clone、不展开代码功能点；复用已识别的 ``project_id`` 避免重复建项。
+    异步语义、幂等键、轮询 URL 与 `/generate` 完全一致（同一任务状态机）。
+    """
+    if not req.test_url.strip():
+        raise ValidationError("地址通道生成必须提供被测地址（test_url）")
+
+    # 构造等价的 PipelineRequest，复用现有映射/幂等/掩码/任务机制（零逻辑分叉）。
+    # model_validate：与构造函数等价，但避免 mypy 对 Pydantic 默认字段的误报。
+    pr = PipelineRequest.model_validate(
+        {
+            "test_url": req.test_url.strip(),
+            "login_url": req.login_url,
+            "login_user": req.login_user,
+            "login_password": req.login_password,
+            "login_otp": req.login_otp,
+            "runtime_routes": req.runtime_routes,
+            "changed_files": req.changed_files,
+            "repo_url": req.repo_url,
+            "code_source": req.code_source,
+            "base": req.base,
+            "target": req.target,
+            "project_name": req.project_name,
+            "mode": "incremental" if req.changed_files else "full",
+            "runtime_ui": True,
+            "runtime_scope": req.runtime_scope,
+            "scopes": req.scopes,
+            "persist": True,
+            "execute": False,
+        }
+    )
+    opts = build_opts_from_request(pr)
+    opts.target_req.execute = False  # 双保险：生成-only，绝不落入 stage_execute
+    if req.project_id is not None and req.project_id > 0:
+        opts.project_id = req.project_id  # 复用已识别项目，避免每次生成都新建
+
+    # 轻量取码桥：只给靶向供文本，失败降级为空（内部吞异常、记 note）。
+    bridge = None
+    if req.repo_url.strip() and req.changed_files:
+        bridge = url_code_bridge.fetch_changed_sources(
+            req.repo_url.strip(),
+            req.changed_files,
+            code_source=req.code_source,
+            base=req.base or "",
+            target=req.target or "",
+        )
+        opts.target_sources = bridge.sources
+        opts.target_hunks = bridge.hunks
+
+    idem = (
+        _idem_key_for_generate(pr)
+        + "|urlgen:"
+        + hashlib.sha1(  # nosec B324 - 幂等键摘要，非安全用途
+            (
+                ",".join(sorted(req.changed_files))
+                + "|"
+                + req.repo_url
+                + "|"
+                + str(req.project_id or "")
+            ).encode("utf-8")
+        ).hexdigest()[:10]
+    )
+    existing = task_store.find_by_idempotency(idem)
+    if existing and existing.state != TaskState.CANCELLED.value:
+        return _task_accepted(existing, status_code=202, reused=True)
+    task = task_store.create(
+        kind="url-generation", idempotency_key=idem, request=_redacted_request(pr)
+    )
+
+    def _job() -> dict[str, Any]:
+        result = _run_generation_job(task.task_id, opts)
+        if bridge:
+            result.setdefault("url_code_bridge", bridge.as_dict())
+        return result
+
+    executor.submit(task.task_id, _job)
+    return _task_accepted(task, status_code=202)
+
+
 # ============================================================================
 # P1-2 对话代理：模板优先 + 自由文本兜底（只生成用例，不执行）
 # ============================================================================
@@ -1263,6 +1378,53 @@ def list_stages(
 @app.get("/api/v1/projects", dependencies=[Depends(require_auth)])
 def list_projects() -> dict[str, Any]:
     return {"projects": store.list_projects()}
+
+
+class EnsureProjectRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    base_url: str = Field(..., min_length=1, max_length=2048)
+
+
+@app.post("/api/v1/projects/ensure", dependencies=[Depends(require_auth)])
+def ensure_project(req: EnsureProjectRequest) -> dict[str, Any]:
+    """地址优先入口专用建项：按归一 URL（再按同名）查重，命中不覆盖已有字段。
+
+    与 ``stage_register`` 的 upsert 语义隔离，旧生成链路行为不变。
+    """
+    return url_projects.ensure_project(name=req.name.strip(), base_url=req.base_url)
+
+
+@app.get("/api/v1/projects/{pid}/modules", dependencies=[Depends(require_auth)])
+def project_modules(pid: int) -> dict[str, Any]:
+    """地址优先入口：读取项目模块（既有功能点 + 已扫描页面，不新建模块表）。"""
+    return url_modules.read_modules(pid)
+
+
+class ScanModulesRequest(BaseModel):
+    max_pages: int = Field(8, ge=1, le=60)
+    timeout: int = Field(8, ge=1, le=60)
+    login_user: str = ""
+    login_password: str = ""
+    login_otp: str = ""
+    login_url: str = ""
+    routes: list[str] = Field(default_factory=list)
+    discover_by_menu: bool = True
+
+
+@app.post("/api/v1/projects/{pid}/modules/scan", dependencies=[Depends(require_auth)])
+def scan_project_modules(pid: int, req: ScanModulesRequest) -> dict[str, Any]:
+    """地址优先入口：只做浏览器发现并持久化模块，不生成/执行用例。"""
+    return url_modules.scan_modules(
+        pid,
+        max_pages=req.max_pages,
+        timeout=req.timeout,
+        login_user=req.login_user,
+        login_password=req.login_password,
+        login_otp=req.login_otp,
+        login_url=req.login_url,
+        routes=req.routes,
+        discover_by_menu=req.discover_by_menu,
+    )
 
 
 @app.get("/api/v1/projects/{pid}/repos", dependencies=[Depends(require_auth)])

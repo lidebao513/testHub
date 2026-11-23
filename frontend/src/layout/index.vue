@@ -22,6 +22,7 @@
               </template>
               <el-menu-item index="/ai-generation/requirement-analysis">{{ $t('menu.aiCaseGeneration') }}</el-menu-item>
               <el-menu-item index="/ai-generation/testgen-console">{{ $t('menu.codeGenerationConsole') }}</el-menu-item>
+              <el-menu-item index="/ai-generation/url-first-console">{{ $t('menu.urlFirstConsole') }}</el-menu-item>
               <el-menu-item index="/ai-generation/generated-testcases">{{ $t('menu.aiGeneratedTestcases') }}</el-menu-item>
               <el-menu-item index="/ai-generation/requirement-three-products">{{ $t('menu.requirementThreeProducts') }}</el-menu-item>
             </el-sub-menu>
@@ -515,6 +516,7 @@ const breadcrumbTitle = computed(() => {
   const routeMap = {
     // AI用例生成
     '/ai-generation/requirement-analysis': t('menu.aiCaseGeneration'),
+    '/ai-generation/url-first-console': t('menu.urlFirstConsole'),
     '/ai-generation/generated-testcases': t('menu.aiGeneratedTestcases'),
     '/ai-generation/projects': t('menu.projectManagement'),
     '/ai-generation/testcases': t('menu.testCases'),

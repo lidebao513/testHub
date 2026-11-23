@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from django.urls import path
 
+from .url_gen_views import UrlGenerationView
+from .url_project_views import (
+    UrlModulesScanView,
+    UrlModulesView,
+    UrlProjectEnsureView,
+)
+from .url_sync_views import UrlGenerationSyncView
 from .views import (
     TestgenBranchesView,
     TestgenCommitsView,
@@ -25,6 +32,31 @@ from .views import (
 app_name = "testgen_integration"
 
 urlpatterns = [
+    path(
+        "url-projects/ensure",
+        UrlProjectEnsureView.as_view(),
+        name="url_project_ensure",
+    ),
+    path(
+        "url-projects/modules",
+        UrlModulesView.as_view(),
+        name="url_modules_read",
+    ),
+    path(
+        "url-projects/modules/scan",
+        UrlModulesScanView.as_view(),
+        name="url_modules_scan",
+    ),
+    path(
+        "url-generation/generate",
+        UrlGenerationView.as_view(),
+        name="url_generation_generate",
+    ),
+    path(
+        "url-generation/sync",
+        UrlGenerationSyncView.as_view(),
+        name="url_generation_sync",
+    ),
     path("generate", TestgenGenerateView.as_view(), name="generate"),
     path("scan", TestgenScanView.as_view(), name="scan"),
     path("branches", TestgenBranchesView.as_view(), name="branches"),

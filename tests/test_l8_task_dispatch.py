@@ -6,6 +6,7 @@
 - broker 不可用退回**固定大小**线程池，池满返回 429（明确拒绝，不静默堆积）。
 """
 
+import threading
 import time
 
 import pytest
@@ -95,6 +96,12 @@ def test_fallback_pool_rejects_when_saturated(monkeypatch):
         "delay",
         lambda *a, **k: (_ for _ in ()).throw(ConnectionError("broker down")),
     )
+    # 前序兜底测试的子线程可能仍持有模块级信号量，换独立实例消除顺序依赖
+    monkeypatch.setattr(
+        api_views,
+        "_FALLBACK_SEM",
+        threading.BoundedSemaphore(api_views._FALLBACK_MAX_WORKERS),
+    )
 
     # 占满所有槽位
     acquired = 0
@@ -138,6 +145,11 @@ def test_run_now_returns_429_when_queue_full(monkeypatch):
         api_tasks.execute_scheduled_task,
         "delay",
         lambda *a, **k: (_ for _ in ()).throw(ConnectionError("broker down")),
+    )
+    monkeypatch.setattr(
+        api_views,
+        "_FALLBACK_SEM",
+        threading.BoundedSemaphore(api_views._FALLBACK_MAX_WORKERS),
     )
 
     acquired = 0

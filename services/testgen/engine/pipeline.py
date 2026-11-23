@@ -169,6 +169,10 @@ class PipelineOptions:
     # 增量 + 地址通道：是否把运行时发现的页面/接口收窄到「本次变更相关」（默认关，
     # 保持 CLI/测试的既有全站语义；HTTP 入口按请求的「地址通道范围」显式开启）。
     target_runtime: bool = False
+    # 地址优先入口的「轻量取码桥」：只取变更文件的**文本**供靶向字面量匹配，
+    # 不落盘、不展开代码功能点。默认空 → 靶向照旧读 result.files（旧链路零回归）。
+    target_sources: dict[str, str] = field(default_factory=dict)
+    target_hunks: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
     write_channel_records: bool = True  # 需求1：落库后是否把各通道独立记录写到 outputs/<pid>/
     # 「URL + 账号密码」通道的请求级参数（A1）
     target_req: TargetRequest = field(default_factory=TargetRequest)
@@ -1549,10 +1553,14 @@ def _build_target_plan(opts: PipelineOptions, result: PipelineResult) -> Any:
         if str(p.path or "").startswith("/")
     ]
     endpoints = [(e.method, e.path) for e in (found.api_endpoints if found is not None else [])]
+    # 轻量取码桥：地址优先入口只取变更文件的文本供字面量匹配（接口目标），
+    # 优先级高于 result.files（纯地址下为空）。未注入时完全走旧口径。
+    sources = opts.target_sources or result.files or {}
+    hunks = opts.target_hunks or _resolve_hunks(opts, result)
     return change_targeting.build_target_plan(
         changed_files=_target_changed_files(opts),
-        hunks=_resolve_hunks(opts, result),
-        sources=result.files or {},
+        hunks=hunks,
+        sources=sources,
         api_endpoints=endpoints,
         page_paths=pages,
     )
