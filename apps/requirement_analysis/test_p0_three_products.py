@@ -9,7 +9,6 @@ from django.contrib.auth import get_user_model
 from .services import (
     RequirementThreeProductsService,
     _extract_json,
-    _get_active_llm_config,
 )
 
 User = get_user_model()
@@ -38,6 +37,10 @@ CANNED = json.dumps(
         ],
     }
 )
+
+# generate_three_products 现在走 _call_llm_raw（完整响应字典，含 finish_reason），
+# _call_llm 只是它的一层薄封装。mock 原始方法即可同时覆盖生成与修订两条路径。
+CANNED_RESPONSE = {"choices": [{"message": {"content": CANNED}, "finish_reason": "stop"}]}
 
 
 def test_extract_json_plain():
@@ -68,8 +71,8 @@ def test_generate_three_products_mocked(monkeypatch):
     )
     monkeypatch.setattr(
         RequirementThreeProductsService,
-        "_call_llm",
-        classmethod(lambda cls, *a, **k: CANNED),
+        "_call_llm_raw",
+        classmethod(lambda cls, *a, **k: CANNED_RESPONSE),
     )
     user = User.objects.create_user(username="p0ra", password="x")
     doc = __import__(
@@ -85,7 +88,7 @@ def test_generate_three_products_mocked(monkeypatch):
     assert counts["functional_inventory"] == 2
     assert counts["ui_descriptions"] == 1
     assert counts["clarifications"] == 1
-    from .models import FunctionalInventory, UIElementDescription, ClarificationItem
+    from .models import ClarificationItem, FunctionalInventory, UIElementDescription
 
     assert FunctionalInventory.objects.filter(document=document).count() == 2
     assert UIElementDescription.objects.filter(document=document).count() == 1
@@ -100,13 +103,11 @@ def test_revise_with_clarification_mocked(monkeypatch):
     )
     monkeypatch.setattr(
         RequirementThreeProductsService,
-        "_call_llm",
-        classmethod(lambda cls, *a, **k: CANNED),
+        "_call_llm_raw",
+        classmethod(lambda cls, *a, **k: CANNED_RESPONSE),
     )
     user = User.objects.create_user(username="p0ra2", password="x")
-    models = __import__(
-        "apps.requirement_analysis.models", fromlist=["RequirementDocument"]
-    )
+    models = __import__("apps.requirement_analysis.models", fromlist=["RequirementDocument"])
     document = models.RequirementDocument.objects.create(
         title="示例需求2",
         document_type="txt",
