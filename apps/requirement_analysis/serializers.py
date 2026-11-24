@@ -1,9 +1,20 @@
 from rest_framework import serializers
+
 from apps.requirement_analysis import llm_budget
+
 from .models import (
-    RequirementDocument, RequirementAnalysis, BusinessRequirement,
-    GeneratedTestCase, AnalysisTask, AIModelConfig, PromptConfig, TestCaseGenerationTask,
-    GenerationConfig, FunctionalInventory, UIElementDescription, ClarificationItem
+    AIModelConfig,
+    AnalysisTask,
+    BusinessRequirement,
+    ClarificationItem,
+    FunctionalInventory,
+    GeneratedTestCase,
+    GenerationConfig,
+    PromptConfig,
+    RequirementAnalysis,
+    RequirementDocument,
+    TestCaseGenerationTask,
+    UIElementDescription,
 )
 
 
@@ -31,12 +42,14 @@ class BusinessRequirementSerializer(serializers.ModelSerializer):
     requirement_type_display = serializers.CharField(source='get_requirement_type_display', read_only=True)
     requirement_level_display = serializers.CharField(source='get_requirement_level_display', read_only=True)
     parent_requirement_name = serializers.CharField(source='parent_requirement.requirement_name', read_only=True)
-    
+    module_ref_name = serializers.CharField(source='module_ref.name', read_only=True, allow_null=True)
+
     class Meta:
         model = BusinessRequirement
-        fields = ['id', 'requirement_id', 'requirement_name', 'requirement_type', 
+        fields = ['id', 'requirement_id', 'requirement_name', 'requirement_type',
                  'requirement_type_display', 'parent_requirement', 'parent_requirement_name',
-                 'module', 'requirement_level', 'requirement_level_display', 'reviewer', 
+                 'module', 'module_ref', 'module_ref_name',
+                 'requirement_level', 'requirement_level_display', 'reviewer',
                  'estimated_hours', 'description', 'acceptance_criteria', 'created_at', 'updated_at']
 
 
