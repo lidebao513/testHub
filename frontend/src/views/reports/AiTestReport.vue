@@ -138,6 +138,31 @@
           <div ref="workloadChartRef" class="chart-body"></div>
         </div>
       </div>
+
+      <!-- Fourth row: module distribution (parallel dimension, not a channel) -->
+      <div class="chart-row">
+        <div class="chart-card">
+          <div class="chart-header">
+            <h3>{{ $t('report.moduleDistribution') }}</h3>
+          </div>
+          <div class="chart-body table-body">
+            <el-table :data="dashboardData.by_module || []" style="width: 100%" size="small">
+              <el-table-column :label="$t('report.moduleName')" min-width="160">
+                <template #default="{ row }">
+                  {{ row.name || $t('report.unassignedModule') }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="source" :label="$t('report.moduleSource')" width="120" />
+              <el-table-column prop="total" :label="$t('report.totalCases')" width="100" align="center" />
+              <el-table-column :label="$t('report.moduleShare')" min-width="180">
+                <template #default="{ row }">
+                  <el-progress :percentage="modulePercent(row.total)" />
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -195,6 +220,12 @@ const fetchDashboardData = async () => {
   } catch (error) {
     console.error(t('report.fetchDashboardFailed'), error)
   }
+}
+
+// 模块维度占比：分母沿用 dashboard 的 total_cases，不另起口径
+const modulePercent = (count) => {
+  const total = dashboardData.value.total_cases || 0
+  return total ? Math.min(100, Math.round((count / total) * 100)) : 0
 }
 
 // 初始化图表
