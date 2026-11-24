@@ -94,9 +94,10 @@ class UrlGenerationSyncView(APIView):
         if not task_id:
             return Response({"ok": False, "error": "task_id 为必填"}, status=400)
 
+        raw_url = str(body.get("base_url") or body.get("test_url") or "").strip()
         project_id = body.get("project_id")
+        mapping = None
         if not project_id:
-            raw_url = str(body.get("base_url") or body.get("test_url") or "").strip()
             mapping = find_url_project(raw_url=raw_url) if raw_url else None
             if mapping is None:
                 return Response(
@@ -119,11 +120,24 @@ class UrlGenerationSyncView(APIView):
             return _sidecar_error(exc)
 
         cases = active_cases_of(payload)
+
+        # 批次 2：地址通道的模块归属走 runtime 命名空间，避免裸 module 名撞名。
+        from .module_resolver import runtime_module_resolver
+        from .url_identity import normalize_url
+
+        if mapping is not None:
+            normalized = mapping["normalized_url"]
+        elif raw_url:
+            normalized = normalize_url(raw_url)["normalized"]
+        else:
+            normalized = ""
+
         result = flow.sync_cases(
             cases,
             project_id=pid,
             author_id=request.user.id,
             upsert=_make_upsert(pid),
+            module_resolver=runtime_module_resolver(pid, normalized),
         )
 
         # 与旧回流保持同等语义：UI 层用例桥接 AICase，失败不阻断主回流。

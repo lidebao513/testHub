@@ -44,6 +44,7 @@ urlpatterns = [
     # MCP 管理端 REST（日志/待确认）；协议端点 /api/mcp/ 在 ASGI 层分流
     path('api/mcp/', include('apps.mcp.urls')),
     path('api/testgen/', include('apps.testgen_integration.urls')),  # testgen 代码生成 sidecar 集成
+    path('api/biz-modules/', include('apps.biz_modules.urls')),  # 业务模块实体
     path('api/taskcenter/', include('apps.taskcenter.urls')),  # 后台任务中心
     # testgen 分支阶段对比完整控制台（Django 自渲染，UI 走 /api/testgen/*）
     #   与下方 /testgen/（sidecar 反代）并存；?embed=1&zone=stage-compare 可只渲染阶段对比区

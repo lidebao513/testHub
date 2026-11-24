@@ -240,12 +240,15 @@ class TestgenSyncView(APIView):
             TestCase.objects.create(**payload)
             return flow.CREATED
 
+        from .module_resolver import code_module_resolver
+
         result = flow.sync_cases(
             cases,
             project_id=int(project_id),
             author_id=author_id,
             upsert=_upsert,
             suite_id=suite_id,
+            module_resolver=code_module_resolver(int(project_id), int(testgen_project_id)),
         )
 
         # #199 桥接：testgen UI 用例 → AICase（闭环作业来源）；project 保持 null 避免 FK 错配。

@@ -232,6 +232,12 @@
               <el-table-column prop="tc_no" label="编号" width="120" />
               <el-table-column prop="title" label="标题" min-width="240" show-overflow-tooltip />
               <el-table-column prop="priority" label="优先级" width="80" align="center" />
+              <el-table-column prop="module" label="模块" width="110" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <span v-if="row.module">{{ row.module }}</span>
+                  <span v-else class="hint">-</span>
+                </template>
+              </el-table-column>
               <el-table-column label="通道" width="90">
                 <template #default="{ row }">
                   <el-tag :type="channelTagType(row.channel)" size="mini">{{ channelLabel(row.channel) }}</el-tag>

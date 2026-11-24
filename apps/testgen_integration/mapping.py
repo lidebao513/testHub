@@ -207,6 +207,7 @@ def case_spec_to_testcase(
     project_id: int,
     author_id: int,
     suite_id: int | None = None,
+    module_id: int | None = None,
 ) -> dict:
     """testgen 用例 dict → testhub TestCase payload（字段对齐真实模型）。
 
@@ -240,7 +241,7 @@ def case_spec_to_testcase(
     if len(full_steps_text) > 1000:
         description += "\n完整步骤：\n" + full_steps_text
 
-    return {
+    payload = {
         "project_id": int(project_id),
         "author_id": int(author_id),
         "title": (cs.get("title") or "").strip() or f"testgen {testgen_id_of(cs)}",
@@ -253,6 +254,10 @@ def case_spec_to_testcase(
         "tags": build_tags(cs),
         "status": "active",
     }
+    # 业务模块归属（批次 2）：仅解析到模块时才写 module_id，避免覆盖已有归属。
+    if module_id is not None:
+        payload["module_id"] = module_id
+    return payload
 
 
 def case_spec_to_aicase(cs: dict, *, project_id: int, author_id: int) -> dict:

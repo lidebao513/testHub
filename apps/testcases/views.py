@@ -105,7 +105,7 @@ class TestCaseListCreateView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = TestCasePagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['priority', 'test_type']
+    filterset_fields = ['priority', 'test_type', 'module']
     search_fields = ['title', 'description']
     ordering_fields = ['created_at', 'updated_at', 'priority']
     ordering = ['-created_at']
@@ -121,7 +121,7 @@ class TestCaseListCreateView(generics.ListCreateAPIView):
         queryset = TestCase.objects.filter(
             project__in=accessible_projects
         ).select_related(
-            'author', 'assignee', 'project'
+            'author', 'assignee', 'project', 'module'
         ).prefetch_related(
             'versions'
         ).distinct()
