@@ -51,6 +51,13 @@ export default {
   executedCases: 'Executed Cases',
   priorityDistribution: 'Priority Distribution',
 
+  // Module dimension (parallel to the three channels)
+  moduleDistribution: 'Cases by Module',
+  moduleName: 'Business Module',
+  moduleSource: 'Source',
+  moduleShare: 'Share of Cases',
+  unassignedModule: 'Unassigned',
+
   // Others
   noData: 'No Data',
   caseTitle: 'Case Title',

@@ -10,6 +10,41 @@ from apps.executions.models import TestPlan, TestRun, TestRunCase
 from apps.testcases.models import TestCase
 from apps.requirement_analysis.models import RequirementAnalysis, GeneratedTestCase, BusinessRequirement
 
+def _by_module(cases_qs):
+    """模块维度统计（by_module），与 body/impact/runtime 三通道平行，不替代任何既有口径。
+
+    分母就是传入的 ``cases_qs``（与 dashboard 的 total_cases 同源），并包含
+    ``module_id`` 为空的「未归属」组，因此各组 total 之和恒等于 total_cases。
+    这里的 module 是主平台的 BizModule（TestCase.module FK），不读写 sidecar 的
+    quality 快照，也不引入 channel_summary / KPI 字段。
+    """
+    rows = list(
+        cases_qs.values(
+            'module_id', 'module__name', 'module__namespace', 'module__source'
+        ).annotate(
+            total=Count('id'),
+            active=Count('id', filter=Q(status='active')),
+            draft=Count('id', filter=Q(status='draft')),
+            deprecated=Count('id', filter=Q(status='deprecated')),
+        )
+    )
+    # 有归属的按用例数降序，未归属固定放最后
+    rows.sort(key=lambda r: (r['module_id'] is None, -r['total'], r['module__name'] or ''))
+    return [
+        {
+            'module_id': r['module_id'],
+            'name': r['module__name'],
+            'namespace': r['module__namespace'],
+            'source': r['module__source'],
+            'total': r['total'],
+            'active': r['active'],
+            'draft': r['draft'],
+            'deprecated': r['deprecated'],
+        }
+        for r in rows
+    ]
+
+
 class TestReportViewSet(viewsets.ModelViewSet):
     """测试报告视图集"""
     queryset = TestReport.objects.all()
@@ -74,7 +109,9 @@ class TestReportViewSet(viewsets.ModelViewSet):
             'plan_progress': avg_plan_progress,
             'total_cases': total_cases,
             'total_defects': defects_count,
-            'pass_rate': pass_rate
+            'pass_rate': pass_rate,
+            # 平行维度：只新增字段，不改 total_cases / pass_rate 等既有口径
+            'by_module': _by_module(cases_qs),
         })
 
     @action(detail=False, methods=['get'])

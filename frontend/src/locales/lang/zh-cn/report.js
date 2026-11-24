@@ -51,6 +51,13 @@ export default {
   executedCases: '执行用例',
   priorityDistribution: '优先级分布',
 
+  // 模块维度（与三通道平行）
+  moduleDistribution: '模块用例分布',
+  moduleName: '业务模块',
+  moduleSource: '来源',
+  moduleShare: '用例占比',
+  unassignedModule: '未归属模块',
+
   // 其他
   noData: 'No Data',
   caseTitle: '用例标题',
