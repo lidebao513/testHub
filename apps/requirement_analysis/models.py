@@ -175,6 +175,10 @@ class BusinessRequirement(models.Model):
     parent_requirement = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True,
                                            verbose_name='父级需求')
     module = models.CharField(max_length=100, verbose_name='所属模块')
+    module_ref = models.ForeignKey(
+        'biz_modules.BizModule', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='requirements', verbose_name='归属业务模块'
+    )
     requirement_level = models.CharField(max_length=10, choices=REQUIREMENT_LEVEL_CHOICES, verbose_name='需求级别')
     reviewer = models.CharField(max_length=50, verbose_name='评审人', default='admin')
     estimated_hours = models.PositiveIntegerField(verbose_name='预计工时', default=8)

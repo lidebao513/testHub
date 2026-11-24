@@ -15,6 +15,11 @@ from rest_framework.test import APIClient
 
 from apps.biz_modules.models import BizModule
 from apps.projects.models import Project
+from apps.requirement_analysis.models import (
+    BusinessRequirement,
+    RequirementAnalysis,
+    RequirementDocument,
+)
 from apps.testcases.models import TestCase
 
 User = get_user_model()
@@ -39,9 +44,7 @@ BY_MODULE_FIELDS = {
 
 
 def _project(name: str) -> Project:
-    return Project.objects.create(
-        name=name, owner=User.objects.create_user(username=f"u-{name}")
-    )
+    return Project.objects.create(name=name, owner=User.objects.create_user(username=f"u-{name}"))
 
 
 def _case(project: Project, title: str, *, module=None, status: str = "active") -> TestCase:
@@ -151,3 +154,37 @@ def test_by_module_sums_to_total_cases_across_mixed_statuses():
         row["total"] == row["active"] + row["draft"] + row["deprecated"]
         for row in data["by_module"]
     )
+
+
+@pytest.mark.django_db
+def test_requirement_module_binding_does_not_change_testcase_report():
+    """#453：需求侧 BizModule 归属与 TestCase 报表口径正交。"""
+    project = _project("req-only")
+    document = RequirementDocument.objects.create(
+        title="需求文档",
+        file="requirement_docs/a.md",
+        document_type="md",
+        uploaded_by=project.owner,
+        project=project,
+    )
+    analysis = RequirementAnalysis.objects.create(document=document, requirements_count=1)
+    requirement = BusinessRequirement.objects.create(
+        analysis=analysis,
+        requirement_id="R1",
+        requirement_name="登录",
+        requirement_type="functional",
+        module="用户管理",
+        requirement_level="high",
+        description="d",
+        acceptance_criteria="a",
+    )
+    requirement.refresh_from_db()
+    assert requirement.module_ref is not None  # 需求已挂模块
+
+    client = APIClient()
+    client.force_authenticate(user=project.owner)
+    data = client.get(DASHBOARD_URL, {"project": project.id}).json()
+
+    # by_module 只统计 apps.testcases.TestCase，不混入需求侧归属
+    assert data["total_cases"] == 0
+    assert data["by_module"] == []
