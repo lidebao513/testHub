@@ -168,6 +168,8 @@ class PipelineOptions:
     expert_mode: bool = True
     # 增量 + 地址通道：是否把运行时发现的页面/接口收窄到「本次变更相关」（默认关，
     # 保持 CLI/测试的既有全站语义；HTTP 入口按请求的「地址通道范围」显式开启）。
+    # 增量模式下无条件生效；full 模式下仅当 changed_files ∩ selected_paths 非空时生效，
+    # 避免纯全站巡检（无变更集）被空靶向计划误伤成 0 条 URL 用例。
     target_runtime: bool = False
     # 地址优先入口的「轻量取码桥」：只取变更文件的**文本**供靶向字面量匹配，
     # 不落盘、不展开代码功能点。默认空 → 靶向照旧读 result.files（旧链路零回归）。
@@ -1577,10 +1579,16 @@ def stage_target_runtime(
     产出几百条与变更无关的用例（实测「改 5 个文件出 294 条」）。本阶段用
     `engine/change_targeting` 把变更映射成目标集合，剔除无关的页面/接口/元素。
 
-    只在 `opts.target_runtime and opts.is_incremental` 时生效；计划为空（改的是样式/
-    配置等无可映射目标）时同样剔除全部 URL 功能点，并如实写 notes，绝不静默。
+    生效条件：`opts.target_runtime` 开启，且满足以下之一：
+    1. 增量模式（旧语义，保持 CLI/HTTP 既有行为）；
+    2. 全量模式但显式给了可参与靶向的变更文件（`changed_files ∩ selected_paths` 非空）
+       —— 即「地址为主 + 变更辅助」，让 full 模式也能按变更收窄运行时用例。
+
+    纯全站巡检（full 且无变更集）不进入本阶段，避免空靶向计划把 URL 用例全部剔除。
+    计划为空（改的是样式/配置等无可映射目标）时同样剔除全部 URL 功能点，并如实写 notes，
+    绝不静默。
     """
-    if not (opts.target_runtime and opts.is_incremental):
+    if not opts.target_runtime or not (opts.is_incremental or _target_changed_files(opts)):
         return
     if result.runtime_ui is None or not result.functional_points:
         return

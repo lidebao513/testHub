@@ -1,0 +1,272 @@
+{
+  "captured_at": "2026-11-23T17:33:25",
+  "base_url": "http://127.0.0.1:3900/",
+  "changed_files": [
+    "frontend/src/views/requirement-analysis/UrlFirstConsole.vue",
+    "frontend/src/layout/index.vue"
+  ],
+  "isolated": "persist=False / write_channel_records=False：不落库、不覆盖主证据项目",
+  "results": {
+    "pure_url": {
+      "mode": "full",
+      "source_kind": "url",
+      "duration_s": 126.4,
+      "counts": {
+        "cases": 326,
+        "test_points": 326,
+        "functional_points": 112,
+        "runtime_ui_pages": 11,
+        "runtime_ui_reachable": 11,
+        "runtime_ui_elements": 326,
+        "runtime_ui_routes": 0,
+        "runtime_ui_fp_added": 55
+      },
+      "quality": {
+        "enabled": true,
+        "gate": {
+          "quality_gated": 326,
+          "gate_blocked": 51,
+          "no_evidence": 0,
+          "no_observable_expect": 51,
+          "no_origin": 0,
+          "best_effort": 83,
+          "evidence_total": 326,
+          "evidence_unique": 12,
+          "evidence_duplicate": 314
+        },
+        "kpis": {
+          "changed_func_coverage": {
+            "value": 1.0,
+            "covered": 0,
+            "total": 0,
+            "uncovered": []
+          },
+          "impact_entry_coverage": {
+            "value": 1.0,
+            "covered": 0,
+            "total": 0,
+            "backend": {
+              "covered": 0,
+              "total": 0
+            },
+            "frontend": {
+              "covered": 0,
+              "total": 0
+            }
+          },
+          "dimension_coverage": {
+            "value": 0.882,
+            "actual": 15,
+            "theory": 17,
+            "missing": [
+              "边界-重复点击",
+              "边界-非法选项"
+            ]
+          },
+          "note": "分子只统计过门禁的测试点；changed_func 的分母是本次 hunk 落到的函数（前端无 AST 时按顶层声明近似），dimension 的分母是按维度去重后的适用矩阵（未按每功能点上限截断，故 <100% 属预算收敛的正常结果）。"
+        },
+        "channels": {
+          "body": {
+            "tp": 0,
+            "gate_ok": 0
+          },
+          "impact": {
+            "tp": 0,
+            "gate_ok": 0
+          },
+          "runtime": {
+            "tp": 326,
+            "gate_ok": 192
+          },
+          "total": 326,
+          "consistent": true
+        },
+        "summary": {
+          "total": 326,
+          "gate_ok": 275,
+          "blocked": 51,
+          "gate_pass_rate": 0.844
+        }
+      },
+      "notes_tail": [
+        "仅规则引擎（LLM_ENHANCE=off）",
+        "质量门禁：326 条过检，拦下 51 条（无证据 0 / 预期不可观测 51 / 无来源标签 0），另有 83 条需特殊环境（诚实标未验证，不算水货）",
+        "三 KPI：改动函数覆盖 0/0 = 100%；影响入口覆盖 0/0 = 100%（后端 0/0、前端 0/0）；维度覆盖 15/17 = 88%"
+      ],
+      "errors": []
+    },
+    "code_only": {
+      "mode": "incremental",
+      "source_kind": "code",
+      "duration_s": 26.6,
+      "counts": {
+        "cases": 2,
+        "test_points": 2,
+        "functional_points": 2
+      },
+      "quality": {
+        "enabled": true,
+        "gate": {
+          "quality_gated": 2,
+          "gate_blocked": 0,
+          "no_evidence": 0,
+          "no_observable_expect": 0,
+          "no_origin": 0,
+          "best_effort": 0,
+          "evidence_total": 2,
+          "evidence_unique": 2,
+          "evidence_duplicate": 0
+        },
+        "kpis": {
+          "changed_func_coverage": {
+            "value": 1.0,
+            "covered": 0,
+            "total": 0,
+            "uncovered": []
+          },
+          "impact_entry_coverage": {
+            "value": 1.0,
+            "covered": 0,
+            "total": 0,
+            "backend": {
+              "covered": 0,
+              "total": 0
+            },
+            "frontend": {
+              "covered": 0,
+              "total": 0
+            }
+          },
+          "dimension_coverage": {
+            "value": 0.167,
+            "actual": 1,
+            "theory": 6,
+            "missing": [
+              "边界-极端视口渲染",
+              "异常-网络中断",
+              "异常-错误回显",
+              "异常-空状态",
+              "异常-错误页"
+            ]
+          },
+          "note": "分子只统计过门禁的测试点；changed_func 的分母是本次 hunk 落到的函数（前端无 AST 时按顶层声明近似），dimension 的分母是按维度去重后的适用矩阵（未按每功能点上限截断，故 <100% 属预算收敛的正常结果）。"
+        },
+        "channels": {
+          "body": {
+            "tp": 2,
+            "gate_ok": 2
+          },
+          "impact": {
+            "tp": 0,
+            "gate_ok": 0
+          },
+          "runtime": {
+            "tp": 0,
+            "gate_ok": 0
+          },
+          "total": 2,
+          "consistent": true
+        },
+        "summary": {
+          "total": 2,
+          "gate_ok": 2,
+          "blocked": 0,
+          "gate_pass_rate": 1.0
+        }
+      },
+      "notes_tail": [
+        "仅规则引擎（LLM_ENHANCE=off）",
+        "质量门禁：2 条过检，拦下 0 条（无证据 0 / 预期不可观测 0 / 无来源标签 0），另有 0 条需特殊环境（诚实标未验证，不算水货）",
+        "三 KPI：改动函数覆盖 0/0 = 100%；影响入口覆盖 0/0 = 100%（后端 0/0、前端 0/0）；维度覆盖 1/6 = 17%"
+      ],
+      "errors": []
+    },
+    "url_plus_changes": {
+      "mode": "full",
+      "source_kind": "url",
+      "duration_s": 121.1,
+      "counts": {
+        "cases": 15,
+        "test_points": 15,
+        "functional_points": 3,
+        "runtime_ui_pages": 11,
+        "runtime_ui_reachable": 11,
+        "runtime_ui_elements": 326,
+        "runtime_ui_routes": 0,
+        "runtime_ui_fp_added": 55,
+        "runtime_fp_targeted": 3,
+        "runtime_fp_skipped_by_target": 109
+      },
+      "quality": {
+        "enabled": true,
+        "gate": {
+          "quality_gated": 15,
+          "gate_blocked": 0,
+          "no_evidence": 0,
+          "no_observable_expect": 0,
+          "no_origin": 0,
+          "best_effort": 6,
+          "evidence_total": 15,
+          "evidence_unique": 1,
+          "evidence_duplicate": 14
+        },
+        "kpis": {
+          "changed_func_coverage": {
+            "value": 1.0,
+            "covered": 0,
+            "total": 0,
+            "uncovered": []
+          },
+          "impact_entry_coverage": {
+            "value": 1.0,
+            "covered": 0,
+            "total": 0,
+            "backend": {
+              "covered": 0,
+              "total": 0
+            },
+            "frontend": {
+              "covered": 0,
+              "total": 0
+            }
+          },
+          "dimension_coverage": {
+            "value": 1.0,
+            "actual": 5,
+            "theory": 5,
+            "missing": []
+          },
+          "note": "分子只统计过门禁的测试点；changed_func 的分母是本次 hunk 落到的函数（前端无 AST 时按顶层声明近似），dimension 的分母是按维度去重后的适用矩阵（未按每功能点上限截断，故 <100% 属预算收敛的正常结果）。"
+        },
+        "channels": {
+          "body": {
+            "tp": 0,
+            "gate_ok": 0
+          },
+          "impact": {
+            "tp": 0,
+            "gate_ok": 0
+          },
+          "runtime": {
+            "tp": 15,
+            "gate_ok": 9
+          },
+          "total": 15,
+          "consistent": true
+        },
+        "summary": {
+          "total": 15,
+          "gate_ok": 15,
+          "blocked": 0,
+          "gate_pass_rate": 1.0
+        }
+      },
+      "notes_tail": [
+        "仅规则引擎（LLM_ENHANCE=off）",
+        "质量门禁：15 条过检，拦下 0 条（无证据 0 / 预期不可观测 0 / 无来源标签 0），另有 6 条需特殊环境（诚实标未验证，不算水货）",
+        "三 KPI：改动函数覆盖 0/0 = 100%；影响入口覆盖 0/0 = 100%（后端 0/0、前端 0/0）；维度覆盖 5/5 = 100%"
+      ],
+      "errors": []
+    }
+  }
+}
