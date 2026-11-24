@@ -120,6 +120,11 @@ const routes = [
                 component: () => import('@/views/testcases/TestCaseList.vue')
             },
             {
+                path: 'biz-modules',
+                name: 'BizModules',
+                component: () => import('@/views/testcases/BizModuleList.vue')
+            },
+            {
                 path: 'testcases/import-records',
                 name: 'TestCaseImportRecords',
                 component: () => import('@/views/testcases/TestCaseImportRecordList.vue')

@@ -168,5 +168,30 @@ export default {
     title: 'Test Suites',
     newSuite: 'New Suite',
     inDevelopment: 'Test suite feature is under development...'
+  },
+  bizModuleManage: {
+    title: 'Business Modules',
+    newModule: 'New Module',
+    editModule: 'Edit Module',
+    searchPlaceholder: 'Search module name / description',
+    project: 'Project',
+    name: 'Module Name',
+    namePlaceholder: 'e.g. pc / api / user management',
+    namespace: 'Source Namespace',
+    source: 'Source',
+    description: 'Description',
+    caseCount: 'Cases',
+    createdAt: 'Created At',
+    selectProject: 'Select a project',
+    requiredFields: 'Project and module name are required',
+    fetchFailed: 'Failed to load modules',
+    fetchProjectsFailed: 'Failed to load projects',
+    createSuccess: 'Module created',
+    updateSuccess: 'Module updated',
+    saveFailed: 'Failed to save module',
+    deleteSuccess: 'Module deleted',
+    deleteFailed: 'Failed to delete module',
+    deleteConfirm: 'Delete this module?',
+    deleteConfirmWithCases: 'This module has {count} cases. Their module assignment will be cleared. Delete anyway?'
   }
 }

@@ -30,6 +30,7 @@ export default {
     promptConfig: 'Prompt Configuration',
     projectManagement: 'Project Management',
     testCases: 'Test Cases',
+    bizModules: 'Business Modules',
     versionManagement: 'Version Management',
     reviewManagement: 'Review Management',
     reviewList: 'Review List',
