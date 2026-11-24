@@ -21,3 +21,5 @@ target-version = "py310"
 # API 服务/业务逻辑层在边界处有意宽泛捕获 Exception（转 500 / 友好错误），
 # 与团队既有 services.py:291 的 `# noqa: BLE001` 惯例一致；此处统一配置豁免。
 "apps/**/services.py" = ["BLE001"]
+# Django 自动生成的迁移：导入顺序与类属 list 由 migrator 固定，保持原样不手工改。
+"apps/**/migrations/*.py" = ["I001", "RUF012"]

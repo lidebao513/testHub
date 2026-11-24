@@ -22,6 +22,8 @@ export default {
     project: 'Project',
     relatedProject: 'Related Project',
     relatedVersions: 'Related Versions',
+    bizModule: 'Business module',
+    moduleFilter: 'Filter by module',
     priority: 'Priority',
     status: 'Status',
     testType: 'Test Type',

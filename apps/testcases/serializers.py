@@ -26,6 +26,12 @@ class ProjectSimpleSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     name = serializers.CharField()
 
+class ModuleSimpleSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+    source = serializers.CharField(required=False)
+
+
 class TestCaseSerializer(serializers.ModelSerializer):
     author = UserSerializer(read_only=True)
     assignee = UserSerializer(read_only=True)
@@ -34,7 +40,8 @@ class TestCaseSerializer(serializers.ModelSerializer):
     step_details = TestCaseStepSerializer(many=True, read_only=True)
     attachments = TestCaseAttachmentSerializer(many=True, read_only=True)
     comments = TestCaseCommentSerializer(many=True, read_only=True)
-    
+    module = ModuleSimpleSerializer(read_only=True)
+
     class Meta:
         model = TestCase
         fields = '__all__'
@@ -45,13 +52,15 @@ class TestCaseListSerializer(serializers.ModelSerializer):
     assignee = serializers.SerializerMethodField()
     project = serializers.SerializerMethodField()
     versions = serializers.SerializerMethodField()
-    
+    module = serializers.SerializerMethodField()
+
     class Meta:
         model = TestCase
         fields = [
             'id', 'title', 'description', 'preconditions', 'steps', 'expected_result',
             'priority', 'test_type',
-            'author', 'assignee', 'project', 'versions', 'tags', 'created_at', 'updated_at'
+            'author', 'assignee', 'project', 'versions', 'module', 'tags',
+            'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
     
@@ -67,27 +76,36 @@ class TestCaseListSerializer(serializers.ModelSerializer):
     def get_versions(self, obj):
         return [{'id': v.id, 'name': v.name, 'is_baseline': v.is_baseline} for v in obj.versions.all()]
 
+    def get_module(self, obj):
+        if not obj.module_id:
+            return None
+        return {'id': obj.module.id, 'name': obj.module.name, 'source': obj.module.source}
+
 class TestCaseCreateSerializer(serializers.ModelSerializer):
     project_id = serializers.IntegerField(required=False, allow_null=True, help_text="项目ID，可选")
+    module_id = serializers.IntegerField(required=False, allow_null=True, help_text="业务模块ID，可选")
     version_ids = serializers.ListField(
-        child=serializers.IntegerField(), 
-        required=False, 
+        child=serializers.IntegerField(),
+        required=False,
         allow_empty=True,
         help_text="关联版本ID列表"
     )
-    
+
     class Meta:
         model = TestCase
         fields = [
             'title', 'description', 'preconditions', 'steps', 'expected_result',
-            'priority', 'test_type', 'tags', 'project_id', 'version_ids'
+            'priority', 'test_type', 'tags', 'project_id', 'module_id', 'version_ids'
         ]
     
     def create(self, validated_data):
         version_ids = validated_data.pop('version_ids', [])
         # project_id会在视图的perform_create中处理
         validated_data.pop('project_id', None)
-        
+        module_id = validated_data.pop('module_id', None)
+        if module_id:
+            validated_data['module_id'] = module_id
+
         testcase = super().create(validated_data)
         
         # 设置版本关联
@@ -98,25 +116,28 @@ class TestCaseCreateSerializer(serializers.ModelSerializer):
 
 class TestCaseUpdateSerializer(serializers.ModelSerializer):
     project_id = serializers.IntegerField(required=False, allow_null=True, help_text="项目ID，可选")
+    module_id = serializers.IntegerField(required=False, allow_null=True, help_text="业务模块ID，可选")
     version_ids = serializers.ListField(
-        child=serializers.IntegerField(), 
-        required=False, 
+        child=serializers.IntegerField(),
+        required=False,
         allow_empty=True,
         help_text="关联版本ID列表"
     )
-    
+
     class Meta:
         model = TestCase
         fields = [
             'title', 'description', 'preconditions', 'steps', 'expected_result',
-            'priority', 'test_type', 'tags', 'project_id', 'version_ids'
+            'priority', 'test_type', 'tags', 'project_id', 'module_id', 'version_ids'
         ]
-    
+
     def update(self, instance, validated_data):
         version_ids = validated_data.pop('version_ids', None)
         # project_id会在视图中处理
         validated_data.pop('project_id', None)
-        
+        if 'module_id' in validated_data:
+            instance.module_id = validated_data.pop('module_id')
+
         instance = super().update(instance, validated_data)
         
         # 更新版本关联

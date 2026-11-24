@@ -30,6 +30,7 @@ def sync_cases(
     author_id: int,
     upsert: Callable[[str, dict[str, Any]], str],
     suite_id: int | None = None,
+    module_resolver: Callable[[dict[str, Any]], int | None] | None = None,
 ) -> dict[str, int]:
     """把 testgen 用例列表映射并回流到 testhub。
 
@@ -39,6 +40,8 @@ def sync_cases(
       author_id    testhub 用户 id（TestCase.author 必填）
       upsert       注入的写库回调，返回 CREATED/UPDATED/SKIPPED
       suite_id     可选，仅作追溯写入 description
+      module_resolver 可选，注入的模块归属解析回调（返回 BizModule id 或 None）；
+                       None 时 payload 不带 module_id，与旧回流行为完全一致
 
     返回：{"total","created","updated","skipped"}
     """
@@ -49,8 +52,13 @@ def sync_cases(
             # 无稳定指纹，无法幂等，跳过避免重复污染
             skipped += 1
             continue
+        module_id = module_resolver(cs) if module_resolver is not None else None
         payload = case_spec_to_testcase(
-            cs, project_id=project_id, author_id=author_id, suite_id=suite_id
+            cs,
+            project_id=project_id,
+            author_id=author_id,
+            suite_id=suite_id,
+            module_id=module_id,
         )
         result = upsert(tg_id, payload)
         if result == CREATED:

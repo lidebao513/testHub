@@ -63,7 +63,25 @@
         </el-row>
         
         <el-row :gutter="20">
-          <el-col :span="24">
+          <el-col :span="12">
+            <el-form-item :label="$t('testcase.bizModule')">
+              <el-select
+                v-model="form.module_id"
+                :placeholder="$t('testcase.bizModule')"
+                clearable
+                filterable
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="mod in moduleOptions"
+                  :key="mod.id"
+                  :label="mod.name"
+                  :value="mod.id"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
             <el-form-item :label="$t('testcase.relatedVersions')">
               <el-select
                 v-model="form.version_ids"
@@ -137,11 +155,13 @@ const formRef = ref()
 const submitting = ref(false)
 const projects = ref([])
 const projectVersions = ref([])
+const moduleOptions = ref([])
 
 const form = reactive({
   title: '',
   description: '',
   project_id: null,
+  module_id: null,
   priority: 'medium',
   test_type: 'functional',
   preconditions: '',
@@ -188,9 +208,21 @@ const fetchProjectVersions = async (projectId) => {
   }
 }
 
+const fetchModules = async (projectId) => {
+  try {
+    const params = projectId ? { project: projectId } : {}
+    const response = await api.get('/biz-modules/', { params })
+    moduleOptions.value = response.data.results || []
+  } catch (error) {
+    moduleOptions.value = []
+  }
+}
+
 const onProjectChange = (projectId) => {
   form.version_ids = []
+  form.module_id = null
   fetchProjectVersions(projectId)
+  fetchModules(projectId)
 }
 
 const onVersionChange = () => {
@@ -219,5 +251,6 @@ const handleSubmit = async () => {
 
 onMounted(() => {
   fetchProjects()
+  fetchModules(null)
 })
 </script>

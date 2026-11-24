@@ -22,6 +22,8 @@ export default {
     project: '归属项目',
     relatedProject: '关联项目',
     relatedVersions: '关联版本',
+    bizModule: '业务模块',
+    moduleFilter: '模块筛选',
     priority: '优先级',
     status: '状态',
     testType: '测试类型',

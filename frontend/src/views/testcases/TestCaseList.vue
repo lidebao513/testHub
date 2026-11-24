@@ -49,7 +49,7 @@
             </el-input>
           </el-col>
           <el-col :span="4">
-            <el-select v-model="projectFilter" :placeholder="$t('testcase.relatedProject')" clearable @change="handleFilter">
+            <el-select v-model="projectFilter" :placeholder="$t('testcase.relatedProject')" clearable @change="handleModuleSourceChange">
               <el-option
                 v-for="project in projects"
                 :key="project.id"
@@ -64,6 +64,16 @@
               <el-option :label="$t('testcase.medium')" value="medium" />
               <el-option :label="$t('testcase.high')" value="high" />
               <el-option :label="$t('testcase.critical')" value="critical" />
+            </el-select>
+          </el-col>
+          <el-col :span="4">
+            <el-select v-model="moduleFilter" :placeholder="$t('testcase.moduleFilter')" clearable filterable @change="handleFilter">
+              <el-option
+                v-for="mod in moduleOptions"
+                :key="mod.id"
+                :label="mod.name"
+                :value="mod.id"
+              />
             </el-select>
           </el-col>
         </el-row>
@@ -119,6 +129,12 @@
           <el-table-column prop="test_type" :label="$t('testcase.testType')" width="120">
             <template #default="{ row }">
               {{ getTypeText(row.test_type) }}
+            </template>
+          </el-table-column>
+          <el-table-column :label="$t('testcase.bizModule')" width="130">
+            <template #default="{ row }">
+              <span v-if="row.module">{{ row.module.name }}</span>
+              <span v-else class="text-muted">-</span>
             </template>
           </el-table-column>
           <el-table-column prop="author.username" :label="$t('testcase.author')" width="120" />
@@ -237,6 +253,8 @@ const total = ref(0)
 const searchText = ref('')
 const projectFilter = ref('')
 const priorityFilter = ref('')
+const moduleFilter = ref('')
+const moduleOptions = ref([])
 const selectedTestCases = ref([])
 const isDeleting = ref(false)
 const importDialogVisible = ref(false)
@@ -256,6 +274,7 @@ const fetchTestCases = async () => {
       project: projectFilter.value,
       priority: priorityFilter.value
     }
+    if (moduleFilter.value) params.module = moduleFilter.value
     const response = await api.get('/testcases/', { params })
     testcases.value = response.data.results || []
     total.value = response.data.count || 0
@@ -264,6 +283,23 @@ const fetchTestCases = async () => {
   } finally {
     loading.value = false
   }
+}
+
+// 模块下拉：按当前项目过滤；项目未选时拉全部（用户只能看到有权项目的模块）
+const fetchModules = async () => {
+  try {
+    const params = projectFilter.value ? { project: projectFilter.value } : {}
+    const response = await api.get('/biz-modules/', { params })
+    moduleOptions.value = response.data.results || []
+  } catch (error) {
+    moduleOptions.value = []
+  }
+}
+
+const handleModuleSourceChange = () => {
+  moduleFilter.value = ''
+  fetchModules()
+  handleFilter()
 }
 
 const handleSearch = () => {
@@ -642,6 +678,7 @@ const fetchProjects = async () => {
 
 onMounted(() => {
   fetchProjects()
+  fetchModules()
   fetchTestCases()
 })
 </script>
@@ -793,6 +830,10 @@ onMounted(() => {
 
 .step-content {
   min-height: 200px;
+}
+
+.text-muted {
+  color: #909399;
 }
 
 .preview-info {
