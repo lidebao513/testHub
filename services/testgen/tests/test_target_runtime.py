@@ -105,16 +105,46 @@ def test_targeting_disabled_keeps_everything():
     assert "runtime_fp_skipped_by_target" not in res.counts
 
 
-def test_full_mode_is_not_targeted():
-    """全量模式不做靶向（用户要的就是全站现状巡检）。"""
+def test_full_mode_without_changes_is_not_targeted():
+    """纯全站巡检（full 且无变更集）不启动靶向，保留全部功能点。"""
     res = _result()
     before = len(res.functional_points)
+    opts = pipeline.default_options("", mode="full")
+    opts.target_runtime = True
+    # 刻意不给 changed_files：全站巡检场景
+    pipeline.stage_target_runtime(opts, res, None)
+    assert len(res.functional_points) == before
+    assert "runtime_fp_skipped_by_target" not in res.counts
+
+
+def test_full_mode_with_changed_files_is_targeted():
+    """full + 显式变更文件：地址为主也能按变更收窄（阶段一 #435）。"""
+    res = _result()
     opts = pipeline.default_options("", mode="full")
     opts.target_runtime = True
     opts.changed_files = ["frontend/app/src/api/backend.ts"]
     res.files = {"frontend/app/src/api/backend.ts": _API_SRC}
     pipeline.stage_target_runtime(opts, res, None)
+    names = sorted(fp.name for fp in res.functional_points)
+    assert "GET /api/v1/threads" in names
+    assert "GET /api/v1/memories" not in names
+    assert res.counts["runtime_fp_targeted"] == 1
+    assert res.counts["runtime_fp_skipped_by_target"] == 6
+    assert "listThreadsPage" in names  # 代码通道不受影响
+
+
+def test_full_mode_with_changes_outside_selection_is_not_targeted():
+    """变更集被 selected_paths 过滤为空时视为无靶向输入，不误伤全站巡检。"""
+    res = _result()
+    before = len(res.functional_points)
+    opts = pipeline.default_options("", mode="full")
+    opts.target_runtime = True
+    opts.changed_files = ["frontend/app/src/api/backend.ts"]
+    opts.selected_paths = ["docs/"]  # 与变更集无交集
+    res.files = {"frontend/app/src/api/backend.ts": _API_SRC}
+    pipeline.stage_target_runtime(opts, res, None)
     assert len(res.functional_points) == before
+    assert "runtime_fp_skipped_by_target" not in res.counts
 
 
 def test_empty_plan_drops_all_runtime_fps_but_keeps_code_fps():
