@@ -43,6 +43,7 @@ export default {
   // 测试用例模块
   testcase: testcaseModule.testcase,
   testSuite: testcaseModule.testSuite,
+  bizModuleManage: testcaseModule.bizModuleManage,
 
   // 评审模块
   reviewList: reviewModule.reviewList,

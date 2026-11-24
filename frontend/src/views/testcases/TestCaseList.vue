@@ -234,7 +234,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Download, Delete, Upload } from '@element-plus/icons-vue'
@@ -244,6 +244,7 @@ import * as XLSX from 'xlsx'
 
 const { t } = useI18n()
 const router = useRouter()
+const route = useRoute()
 const loading = ref(false)
 const testcases = ref([])
 const projects = ref([])
@@ -677,6 +678,8 @@ const fetchProjects = async () => {
 }
 
 onMounted(() => {
+  // 从模块管理页点「用例数」跳转时，直接带上限定的模块筛选
+  if (route.query.module) moduleFilter.value = String(route.query.module)
   fetchProjects()
   fetchModules()
   fetchTestCases()

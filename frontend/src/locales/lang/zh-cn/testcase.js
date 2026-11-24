@@ -168,5 +168,30 @@ export default {
     title: '测试套件',
     newSuite: '新建套件',
     inDevelopment: '测试套件功能开发中...'
+  },
+  bizModuleManage: {
+    title: '业务模块',
+    newModule: '新建模块',
+    editModule: '编辑模块',
+    searchPlaceholder: '搜索模块名称/描述',
+    project: '归属项目',
+    name: '模块名称',
+    namePlaceholder: '如 pc / api / 用户管理',
+    namespace: '来源命名空间',
+    source: '模块来源',
+    description: '描述',
+    caseCount: '用例数',
+    createdAt: '创建时间',
+    selectProject: '请选择项目',
+    requiredFields: '项目和模块名称必填',
+    fetchFailed: '模块列表加载失败',
+    fetchProjectsFailed: '项目列表加载失败',
+    createSuccess: '模块创建成功',
+    updateSuccess: '模块更新成功',
+    saveFailed: '模块保存失败',
+    deleteSuccess: '模块删除成功',
+    deleteFailed: '模块删除失败',
+    deleteConfirm: '确定删除该模块吗？',
+    deleteConfirmWithCases: '该模块下有 {count} 条用例，删除后这些用例的模块归属将被清空。确定删除吗？'
   }
 }

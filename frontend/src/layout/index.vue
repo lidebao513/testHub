@@ -34,6 +34,10 @@
               <el-icon><Document /></el-icon>
               <span>{{ $t('menu.testCases') }}</span>
             </el-menu-item>
+            <el-menu-item index="/ai-generation/biz-modules">
+              <el-icon><Files /></el-icon>
+              <span>{{ $t('menu.bizModules') }}</span>
+            </el-menu-item>
             <el-menu-item index="/ai-generation/versions">
               <el-icon><Flag /></el-icon>
               <span>{{ $t('menu.versionManagement') }}</span>
@@ -451,7 +455,7 @@ import {
   Monitor, Folder, Document, Flag, Check, Collection, VideoPlay,
   DataAnalysis, ChatDotRound, DocumentCopy, Link, MagicStick,
   Odometer, Timer, Setting, AlarmClock, Bell, Aim, Edit, Cpu, ArrowDown, Cellphone, Connection, FolderOpened, Tickets, Plus,
-  SetUp, TrendCharts
+  SetUp, TrendCharts, Files
 } from '@element-plus/icons-vue'
 import logoSvg from '@/assets/images/logo.svg'
 import logoHomePng from '@/assets/images/logo_home.png'
@@ -520,6 +524,7 @@ const breadcrumbTitle = computed(() => {
     '/ai-generation/generated-testcases': t('menu.aiGeneratedTestcases'),
     '/ai-generation/projects': t('menu.projectManagement'),
     '/ai-generation/testcases': t('menu.testCases'),
+    '/ai-generation/biz-modules': t('menu.bizModules'),
     '/ai-generation/versions': t('menu.versionManagement'),
     '/ai-generation/reviews': t('menu.reviewList'),
     '/ai-generation/review-templates': t('menu.reviewTemplates'),

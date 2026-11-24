@@ -30,6 +30,7 @@ export default {
     promptConfig: '提示词配置',
     projectManagement: '项目管理',
     testCases: '测试用例',
+    bizModules: '业务模块',
     versionManagement: '版本管理',
     reviewManagement: '评审管理',
     reviewList: '评审列表',
