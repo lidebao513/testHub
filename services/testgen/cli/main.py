@@ -4,6 +4,7 @@
     python -m cli.main pipeline --repo-url <仓库地址> [--path <目录>] [--deepen N]
     python -m cli.main pipeline --changed-files a.py,b.ts [--mode incremental]
     python -m cli.main pipeline --url <地址> --user <账号> --password <密码> [--otp <动态口令>]
+    python -m cli.main pipeline --url <地址> --changed-files a.ts --target-runtime  # 地址变更靶向
     python -m cli.main pipeline --auto-input "<一段混排文本>"
     python -m cli.main parse-input "<一段混排文本>"
     python -m cli.main pull     --repo-url <仓库地址> [--path <目录>] [--base REF --target REF]
@@ -162,6 +163,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--runtime-ui",
         action="store_true",
         help="启用运行时 UI 发现（等价于 RUNTIME_UI_ENABLED=on）",
+    )
+    pipe.add_argument(
+        "--target-runtime",
+        action="store_true",
+        help=(
+            "地址通道按变更靶向（等价 HTTP runtime_scope=targeted）："
+            "full 模式需配合 --changed-files；缺省保持 CLI 旧行为（全站巡检）"
+        ),
     )
     pipe.add_argument(
         "--auto-input",
@@ -384,6 +393,8 @@ _OPTION_FIELDS: tuple[tuple[str, str], ...] = (
     ("base", "base"),
     ("target", "target"),
     ("prd", "prd_source"),
+    # CLI 默认 False（等价 HTTP 的 full 语义）；显式 --target-runtime 才覆盖为 True。
+    ("target_runtime", "target_runtime"),
 )
 
 # 地址通道参数 → TargetRequest 属性
