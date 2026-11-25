@@ -629,6 +629,49 @@ def list_cases(
             conn.close()
 
 
+def list_cases_page(
+    pid: int,
+    *,
+    offset: int = 0,
+    limit: int = 200,
+    include_obsolete: bool = False,
+    conn: sqlite3.Connection | None = None,
+) -> tuple[int, list[dict[str, Any]]]:
+    """分页读取用例（Batch 4 C-1）：返回 (总数, 当前页)。
+
+    与 `list_cases` 同一过滤/反序列化口径，但在 SQL 层 LIMIT/OFFSET——大仓（4000+
+    条、每条带 steps/doc_steps 大字段）不再整表读出再切片。默认排除 obsolete，
+    与 `list_cases` 的默认口径一致。`offset/limit` 由路由层做上界钳制。
+    """
+    own = conn is None
+    conn = conn or connect()
+    try:
+        where = "project_id = ?"
+        params: list[Any] = [pid]
+        if not include_obsolete:
+            where += " AND status != ?"
+            params.append(CaseLifecycleStatus.OBSOLETE.value)
+        total = int(
+            conn.execute(
+                f"SELECT COUNT(*) AS n FROM cases WHERE {where}", tuple(params)
+            ).fetchone()["n"]
+        )
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                f"SELECT * FROM cases WHERE {where} ORDER BY id LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            )
+        ]
+        for r in rows:
+            r["steps"] = _loads(r.get("steps"), [])
+            r["doc_steps"] = _loads(r.get("doc_steps"), [])
+        return total, rows
+    finally:
+        if own:
+            conn.close()
+
+
 def case_stats(pid: int, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
     own = conn is None
     conn = conn or connect()

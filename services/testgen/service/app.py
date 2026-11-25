@@ -17,6 +17,7 @@ import json
 import re
 import threading
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from functools import lru_cache, partial
 from pathlib import Path
@@ -638,6 +639,19 @@ def _redacted_request(req: PipelineRequest) -> str:
         if data.get(key):
             data[key] = "***"
     return json.dumps(data, ensure_ascii=False)
+
+
+def submit_aux_task(kind: str, request: str, job: Callable[[], dict[str, Any]]) -> JSONResponse:
+    """把只读分析类请求（describe / analyze）转后台任务（Batch 4 A-2/D-2）。
+
+    与 `/generate` 共用同一套 task_store / executor / _task_accepted 状态机：
+    调用方拿到 202 + task_id + poll_url，结果经 `GET /api/v1/tasks/{task_id}` 轮询。
+    仅当请求显式 `async_mode=true` 时走这里，默认同步分支零行为变化。
+    分析类作业不含敏感登录凭证，request 仅作可观测留痕。
+    """
+    task = task_store.create(kind=kind, request=request)
+    executor.submit(task.task_id, job)
+    return _task_accepted(task, 202)
 
 
 def _runtime_sig(req: PipelineRequest) -> str:

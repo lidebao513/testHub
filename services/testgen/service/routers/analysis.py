@@ -7,7 +7,9 @@ compare_one / compare_batch / ComparatorOptions / _stage_store 保留在 app.py 
 
 from __future__ import annotations
 
+import json
 import os
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +39,10 @@ class AnalyzeRequest(BaseModel):
     project_name: str = ""
     include_business: bool = True
     extract_pages: bool = True
+    async_mode: bool = Field(
+        False,
+        description="true=提交后台任务返回 202+poll_url；默认同步返回，老调用方零影响",
+    )
 
 
 class PullRequest(BaseModel):
@@ -104,8 +110,22 @@ def pull_code(req: PullRequest) -> dict[str, Any]:
 
 
 @router.post("/api/v1/analyze")
-def analyze(req: AnalyzeRequest) -> dict[str, Any]:
-    """只做扫描 + 功能点提取，不生成测试点与用例（与 pipeline 同一套语义合并口径）。"""
+def analyze(req: AnalyzeRequest) -> Any:
+    """只做扫描 + 功能点提取，不生成测试点与用例（与 pipeline 同一套语义合并口径）。
+
+    Batch 4 D-2：`async_mode=true` 时提交后台任务，避免大仓扫描长时间占用连接。
+    """
+    if req.async_mode:
+        return A.submit_aux_task(
+            "analyze",
+            json.dumps(req.model_dump(), ensure_ascii=False),
+            partial(analyze_sync, req),
+        )
+    return analyze_sync(req)
+
+
+def analyze_sync(req: AnalyzeRequest) -> dict[str, Any]:
+    """analyze 的同步实现（供默认分支与后台作业共用，返回值即轮询 result）。"""
     from engine import fp_extract, fp_merge, scan
 
     scanner = scan.Scanner(req.local_path)
