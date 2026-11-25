@@ -179,6 +179,9 @@ class PipelineOptions:
     write_channel_records: bool = True  # 需求1：落库后是否把各通道独立记录写到 outputs/<pid>/
     # 「URL + 账号密码」通道的请求级参数（A1）
     target_req: TargetRequest = field(default_factory=TargetRequest)
+    # C-4：阶段内长循环的协作式取消探针。运行时回调（命中即抛 TaskCancelledError），
+    # 不参与序列化/持久化，CLI 与单测不传时恒为 None → 零行为变化。
+    cancel_probe: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
     @property
     def is_incremental(self) -> bool:
@@ -272,6 +275,17 @@ class PipelineResult:
 def _emit(progress: ProgressFn | None, stage: str, **info: Any) -> None:
     if progress:
         progress(stage, info)
+
+
+def cancel_tick(probe: Callable[[], None] | None, index: int, every: int = 16) -> None:
+    """在阶段内长循环里周期触发取消探针（C-4）。
+
+    进度回调只在阶段边界触发，大仓逐文件扫描/逐 TP 生成/逐用例执行期间无法及时
+    响应取消。调用方在循环内按序号调用本函数，`index % every == 0` 时才真正探测，
+    避免每次迭代都查取消标志带来的锁/DB 开销。probe 为 None（CLI/单测默认）时恒为空操作。
+    """
+    if probe is not None and index % every == 0:
+        probe()
 
 
 def _now_iso() -> str:
@@ -411,7 +425,7 @@ def stage_scan(opts: PipelineOptions, result: PipelineResult, progress: Progress
         result.counts["files"] = 0
         return
     _emit(progress, "scan", path=opts.local_path)
-    files = scan.Scanner(opts.local_path).index()
+    files = scan.Scanner(opts.local_path, cancel_probe=opts.cancel_probe).index()
     # T4：仓库级事实（静态路由表 + 前端 import 边）必须在**子集过滤之前**构建——
     # 路由表（App.tsx）与 import 方（父页面）通常不在用户勾选的 5 个文件里，过滤后再算
     # 就只剩变更文件自己，跨文件关系永远为空。
@@ -488,6 +502,7 @@ def stage_extract(
         extract_pages=opts.extract_pages,
         business_extract_mode=cfg.business_extract_mode,
         business_include_dirs=cfg.business_include_dirs,
+        cancel_probe=opts.cancel_probe,
     )
     fps = extracted.functional_points
     # F5：同源去重（真实后端 vs mock server 这类「同一路由声明两遍」）。
@@ -1730,7 +1745,7 @@ def stage_execute(
     started = _now_iso()
     exec_options = _build_exec_options(opts, runtime_options, result.project_id)
     try:
-        summary = executor.execute_all(result.cases, exec_options)
+        summary = executor.execute_all(result.cases, exec_options, cancel_probe=opts.cancel_probe)
     except EngineError as exc:
         # 批次留痕：执行没跑起来也要可见（state=failed），否则「开关开了却什么都没发生」
         result.execution = _failed_execution(
@@ -1900,7 +1915,7 @@ def run_execution(
     started = _now_iso()
     _emit(progress, "execute", cases=len(cases))
     try:
-        summary = executor.execute_all(cases, exec_options)
+        summary = executor.execute_all(cases, exec_options, cancel_probe=opts.cancel_probe)
     except EngineError as exc:
         # 基础设施失败也要留痕（state=failed），否则「开了却什么都没发生」
         summary = _failed_execution(batch_id, len(cases), started, exc.message)
@@ -1983,6 +1998,7 @@ def stage_cases(
         drop_supplement=s.drop_supplement_cases,
         runtime_index=runtime_index,
         auth_profile=auth_profile,  # F8：安全用例期望值来自代码事实
+        cancel_probe=opts.cancel_probe,
     )
     result.counts["cases_with_runtime_detail"] = sum(
         1 for c in cases if c.steps and c.steps[0].get("runtime")

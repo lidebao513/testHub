@@ -755,7 +755,7 @@ def _extract_components(sf: SourceFile) -> list[FunctionalPoint]:
 
 
 # ---------------------------------------------------------------- 对外入口
-def extract_functional_points(  # noqa: C901, PLR0913
+def extract_functional_points(  # noqa: C901, PLR0912, PLR0913
     files: dict[str, SourceFile],
     *,
     include_business: bool = True,
@@ -763,6 +763,7 @@ def extract_functional_points(  # noqa: C901, PLR0913
     extract_components: bool = True,
     business_extract_mode: str = BUSINESS_EXTRACT_STRICT,
     business_include_dirs: list[str] | None = None,
+    cancel_probe: Any = None,
 ) -> ExtractResult:
     """从已扫描文件集中提取功能点（同文件只解析一次 AST）。
 
@@ -771,7 +772,10 @@ def extract_functional_points(  # noqa: C901, PLR0913
     """
     result = ExtractResult()
     absorb: dict[str, Any] = {}
-    for rel in sorted(files):
+    for idx, rel in enumerate(sorted(files)):
+        # C-4：逐文件 AST 解析，大仓可达数千文件，周期探测取消（每 16 个一次）。
+        if cancel_probe is not None and idx % 16 == 0:
+            cancel_probe()
         sf = files[rel]
         if sf.is_noise:
             continue

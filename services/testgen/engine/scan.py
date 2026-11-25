@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -128,13 +128,15 @@ class Scanner:
         exts: tuple[str, ...] = SOURCE_EXTS,
         exclude_dirs: frozenset[str] = DEFAULT_EXCLUDE_DIRS,
         max_bytes: int = 2_000_000,
+        cancel_probe: Callable[[], None] | None = None,
     ) -> None:
         self.root = Path(root).resolve()
         self.exts = exts
         self.exclude_dirs = exclude_dirs
         self.max_bytes = max_bytes
+        self.cancel_probe = cancel_probe
 
-    def iter_files(self) -> Iterator[SourceFile]:
+    def iter_files(self) -> Iterator[SourceFile]:  # noqa: C901 - 取消探针分支使复杂度 +1
         """按稳定顺序产出文件（排序保证跨运行结果一致）。
 
         **排除规则按「相对仓库根的目录名」判定**，不看绝对路径。
@@ -159,7 +161,10 @@ class Scanner:
                 continue
             paths.append(p)
 
-        for p in sorted(paths, key=lambda x: x.as_posix()):
+        for idx, p in enumerate(sorted(paths, key=lambda x: x.as_posix())):
+            # C-4：逐文件读盘，大仓可达数万文件，周期探测取消（每 16 个一次）。
+            if self.cancel_probe is not None and idx % 16 == 0:
+                self.cancel_probe()
             try:
                 text = p.read_text(encoding="utf-8", errors="ignore")
             except OSError:

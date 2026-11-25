@@ -674,6 +674,7 @@ def _ui_options(opts: ExecutorOptions) -> ui_executor.UiExecOptions:
 def execute_all(
     cases: list[CaseSpec],
     options: ExecutorOptions | None = None,
+    cancel_probe: Any = None,
 ) -> dict[str, Any]:
     """批量执行并汇总：HTTP 复用单会话连接，UI 复用单浏览器页面。
 
@@ -703,7 +704,11 @@ def execute_all(
     budget_exhausted = False
     results: list[ExecutionResult] = []
     try:
-        for case in cases:
+        for case_idx, case in enumerate(cases):
+            # C-4：逐用例执行（每条秒级），周期探测取消（每 16 条一次）；
+            # 抛出的 TaskCancelledError 由 finally 清理会话后向上传播，不被吞掉。
+            if cancel_probe is not None and case_idx % 16 == 0:
+                cancel_probe()
             if budget > 0 and (time.monotonic() - started) >= budget:
                 budget_exhausted = True
                 results.append(

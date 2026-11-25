@@ -500,6 +500,7 @@ def generate_cases(  # noqa: PLR0913 - 生成选项本就多，显式关键字�
     drop_supplement: bool = False,
     runtime_index: Mapping[str, RuntimePageInfo] | None = None,
     auth_profile: Any = None,
+    cancel_probe: Any = None,
 ) -> list[CaseSpec]:
     """批量生成：测试点 → 用例，1:1 对应（契约不变）。
 
@@ -510,7 +511,10 @@ def generate_cases(  # noqa: PLR0913 - 生成选项本就多，显式关键字�
     """
     fp_row_map = fp_row_map or {}
     out: list[CaseSpec] = []
-    for tp in tps:
+    for idx, tp in enumerate(tps):
+        # C-4：逐 TP 生成可能数百~数千条，周期探测取消（每 16 条一次）。
+        if cancel_probe is not None and idx % 16 == 0:
+            cancel_probe()
         spec = build_case(
             tp,
             fp_row_map.get(str(_get(tp, "fp_contract_id"))),
