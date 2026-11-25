@@ -128,6 +128,21 @@ def _split_list(raw: str | None, default: list[str]) -> list[str]:
     return [p.strip() for p in raw.split(",") if p.strip()]
 
 
+def resolve_cors_origins(app_env: str, whitelist: list[str]) -> tuple[list[str], bool]:
+    """CORS 解析纯函数（B-2）：返回 (allow_origins, allow_credentials)。
+
+    - prod：仅用显式白名单，未配置→空列表（不允许任何跨域，fail-closed）；
+    - dev/test：未配白名单→`["*"]` 保留本机演示（旧行为），配了则用白名单；
+    - credentials 只在「有白名单且不含通配」时开启，杜绝
+      `allow_origins=["*"] + allow_credentials=True` 的任意站点带凭证隐患。
+    """
+    origins = list(whitelist)
+    if not origins and app_env in ("dev", "test"):
+        return ["*"], False
+    allow_credentials = bool(origins and "*" not in origins)
+    return origins, allow_credentials
+
+
 @dataclass
 class Settings:
     """运行时配置快照（启动时构造一次）。"""
@@ -290,6 +305,9 @@ class Settings:
     # H8 修复：fail-closed 逃生口。当且仅当未配置 AUTH_TOKEN 且显式 AUTH_DISABLED=1 时
     # 才放行未鉴权请求；否则「未配令牌也未显式关闭」一律拒绝（默认安全）。
     auth_disabled: bool = False
+    # B-2 修复：CORS 来源白名单（逗号分隔）。prod 未配置→不允许任何跨域；
+    # dev/test 未配置→保留通配供本机控制台演示。与主平台 backend/settings.py 同口径。
+    cors_allowed_origins: list[str] = field(default_factory=list)
 
     def public_dict(self) -> dict[str, object]:
         """可安全输出的配置摘要（**不含任何密钥/密码**）。"""
@@ -312,6 +330,7 @@ class Settings:
             "llm_model_chain": self.llm_model_chain,
             "llm_key_configured": bool(self.llm_api_key),
             "auth_enabled": bool(self.auth_token),
+            "cors_allowed_origins": list(self.cors_allowed_origins),
             "auth_disabled": self.auth_disabled,
             "business_extract_mode": self.business_extract_mode,
             "business_include_dirs": self.business_include_dirs,
@@ -554,6 +573,7 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         expert_model_chain=expert_model_chain,
         auth_token=g("AUTH_TOKEN") or "",
         auth_disabled=_as_bool(g("AUTH_DISABLED"), False, "AUTH_DISABLED"),
+        cors_allowed_origins=_split_list(g("CORS_ALLOWED_ORIGINS"), []),
         business_extract_mode=_as_choice(
             g("BUSINESS_EXTRACT_MODE"),
             BUSINESS_EXTRACT_STRICT,
