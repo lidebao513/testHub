@@ -1904,7 +1904,9 @@ function _scanRepoPayload(){
 async function scanCode(){
   const payload = _scanRepoPayload();
   if(!payload) return;
-  lastRepoUrl = payload.repo_url || "";  // 供 describe 缓存命中（按 repo_url + path 区分）
+  // B-5：记住本次扫描身份，describe 按同一身份命中缓存；本地目录不再共用 "" 串味。
+  lastRepoUrl = payload.repo_url || "";    // 远程仓：沿用 repo_url 原值，历史缓存继续命中
+  lastLocalPath = payload.local_path || ""; // 本地目录：后端归一为 local:<规范路径>
   const btn = $("btn_scan");
   btn.disabled = true;
   const btnTxt = btn.textContent;
@@ -1948,19 +1950,24 @@ async function scanCode(){
   }
 }
 
-/* 清空文件描述缓存：默认只清当前仓库（lastRepoUrl），未扫过则清全部。 */
+/* 清空文件描述缓存（B-5）：按当前扫描身份精确清，避免「clear("")」误删其他仓/本地项目
+   以及地址优先入口 runtime: 模块的缓存；从未扫过时仍兼容旧行为（全空 = 清全部）。 */
 async function clearDescCache(){
   const btn = $("btn_clear_desc");
   btn.disabled = true;
   try{
-    const scope = lastRepoUrl || "";
-    const r = await api("/api/v1/describe/cache/clear", {method:"POST", body:JSON.stringify({repo_url: scope})});
+    // 与 describe 写入同源：远程按 repo_url、本地按 local_path；两者都空才是全清。
+    const body = lastRepoUrl ? {repo_url: lastRepoUrl}
+      : (lastLocalPath ? {local_path: lastLocalPath} : {});
+    const scopeLabel = lastRepoUrl ? "（当前仓库）"
+      : (lastLocalPath ? "（当前本地目录）" : "（全部）");
+    const r = await api("/api/v1/describe/cache/clear", {method:"POST", body:JSON.stringify(body)});
     if(r && r.ok){
       scanDescMap = {}; scanCachedMap = {};
       renderScanItems();
-      log(`🧹 已清空描述缓存 ${scope ? "（当前仓库）" : "（全部）"}：${r.deleted} 条`);
+      log(`🧹 已清空描述缓存 ${scopeLabel}：${r.deleted} 条`);
       // 清缓存后同样不自动重跑：那等于立刻把整批文件重新烧一遍模型额度
-      if(scope && autoDescribeEnabled()) enrichScanDescriptions();  // 清完立即按当前扫描结果重新生成
+      if((lastRepoUrl || lastLocalPath) && autoDescribeEnabled()) enrichScanDescriptions();
       else updateDescHint();
     }else{
       log("⚠️ 清空描述缓存失败：" + ((r && r.error) || "未知"));
@@ -1992,7 +1999,8 @@ let scanDescMap = {};
 let scanCachedMap = {};   // path → true(历史缓存) / false(本次新生成或缓存未命中)
 let lastScanSummary = {};
 let lastScanCount = 0;
-let lastRepoUrl = "";     // 当前扫描的仓库地址，供 describe 缓存命中
+let lastRepoUrl = "";     // 当前扫描的仓库地址（远程），供 describe 缓存命中
+let lastLocalPath = "";   // 当前扫描的本地目录（B-5），供 describe 缓存按 local: 命名空间命中
 async function enrichScanDescriptions(){
   if(!scanItems.length){ log("⚠️ 还没有扫描结果，先点 B 区「🔍 扫描」再生成中文描述"); return; }
   // 增量模式只给「变更文件」生成描述（新增/修改，上限 60 个）；全量模式给前 120 个。
@@ -2020,11 +2028,16 @@ async function enrichScanDescriptions(){
       functions: (it.functions||[]).slice(0, 20),
       classes: (it.classes||[]).slice(0, 12),
     }));
-    // 多仓模式（项目注入了仓库清单）：lastRepoUrl 是单值，无法区分同名文件属于哪个仓，
-    // 传空 repo_url 禁用缓存（全部走 LLM），避免跨仓描述串味；单仓模式照旧用缓存。
-    const descRepoUrl = (Array.isArray(window.MULTI_REPO_SPECS) && window.MULTI_REPO_SPECS.length)
-      ? "" : lastRepoUrl;
-    const r = await api("/api/v1/describe", {method:"POST", body:JSON.stringify({items, repo_url: descRepoUrl})});
+    // B-5：扫描身份显式传给后端，由 core.describe_namespace 统一算命名空间。
+    // - 多仓：扫描结果不带 repo 归属，lastRepoUrl 单值无法区分同名文件属于哪个仓，
+    //   故意不带身份 → 后端返回 None 真禁用缓存（不读不写），不制造跨仓串味；
+    // - 单仓远程：沿用 repo_url 原值，历史缓存继续命中；
+    // - 单仓本地：传 local_path，后端归一为 local:<规范路径>，本地项目不再共用 "" 串味。
+    const multiMode = Array.isArray(window.MULTI_REPO_SPECS) && window.MULTI_REPO_SPECS.length;
+    const descBody = multiMode
+      ? {items}
+      : {items, repo_url: lastRepoUrl, local_path: lastLocalPath};
+    const r = await api("/api/v1/describe", {method:"POST", body:JSON.stringify(descBody)});
     if(r && r.ok && r.descriptions && Object.keys(r.descriptions).length){
       scanDescMap = Object.assign({}, scanDescMap, r.descriptions);
       if(r.cached) Object.assign(scanCachedMap, r.cached);  // 记录每条是「历史缓存」还是「本次新生成」
