@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 
 from core import store
 from core.auto_input import parse_auto_input
-from core.config import get_settings
+from core.config import get_settings, resolve_cors_origins
 from core.contracts import CONTRACT_VERSION
 from core.db import connect, init_db
 from core.enums import ALL_TP_TYPES, MODE_FULL, PullStatus
@@ -140,11 +140,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 本地控制台同源便利：允许跨域（仅本机/局域网演示用，生产应收窄来源）。
+# B-2 修复：CORS 来源收窄（解析逻辑见 core.config.resolve_cors_origins，与主平台同口径）。
+# - prod：必须用 CORS_ALLOWED_ORIGINS 显式配白名单，未配置→不允许任何跨域（fail-closed）；
+# - dev/test：未配白名单时保留通配，供本机/局域网控制台演示（旧行为不变）。
+# sidecar 用 X-Auth-Token 鉴权而非 Cookie，credentials 仅在有明确白名单时开启。
+_cors_origins, _cors_credentials = resolve_cors_origins(
+    settings.app_env, settings.cors_allowed_origins
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
