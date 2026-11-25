@@ -1887,6 +1887,30 @@ function _effectiveRefs(){
   return { ref: pick("scan_ref", "scan_ref_commit"), base_ref: pick("scan_base_ref", "scan_base_ref_commit") };
 }
 
+/* 多仓归属匹配（P1）：仅用于从扫描输入框找到对应 repo_key；namespace 一律由后端
+   describe_namespace 计算并随 scan 回传，前端不自行拼 multi: 字符串。 */
+function _normRepoIdentity(v){
+  let s = String(v || "").trim();
+  if(!s) return "";
+  s = s.replace(/^git@([^:]+):/, "$1/");      // git@host:org/repo.git → host/org/repo.git
+  s = s.replace(/^https?:\/\//, "");          // 去协议
+  s = s.replace(/^[^@\/]+@/, "");             // 去 user@ 凭证
+  s = s.replace(/\.git$/, "").replace(/\/+$/, "");
+  return s.replace(/\\/g, "/").toLowerCase(); // 本地路径统一斜杠并忽略大小写
+}
+function _matchMultiRepoSpec(raw, isRemote){
+  const specs = window.MULTI_REPO_SPECS || [];
+  if(!Array.isArray(specs) || !specs.length) return null;
+  const target = _normRepoIdentity(raw);
+  if(!target) return null;
+  for(const s of specs){
+    const candidates = isRemote ? [s.repo_url] : [s.local_path, s.repo_url];
+    for(const c of candidates){
+      if(c && _normRepoIdentity(c) === target) return s;
+    }
+  }
+  return null;
+}
 function _scanRepoPayload(){
   const raw = $("repo").value.trim();
   const refs = _effectiveRefs();
@@ -1895,10 +1919,19 @@ function _scanRepoPayload(){
   if(!raw){ alert("请先在「代码目录」填入本地目录或仓库地址"); return null; }
   const kind = $("code_src_type").value;
   const isRemote = (kind==="codeup") || raw.startsWith("git@") || raw.endsWith(".git") || /^https?:\/\//.test(raw);
-  if(isRemote){
-    return { repo_url: raw, local_path: "", code_source: cs, ...refs };
+  // 多仓模式：命中 spec 才带 repo_key/project_id，后端据此算 namespace 并随 scan 回传；
+  // 未命中保持原单仓字段，不强行造 multi:。
+  const spec = _matchMultiRepoSpec(raw, isRemote);
+  let multi = {};
+  if(spec && spec.repo_key){
+    const pidEl = $("multi_pid");
+    const pidRaw = pidEl ? pidEl.value.trim() : "";
+    multi = { repo_key: spec.repo_key, project_id: /^\d+$/.test(pidRaw) ? parseInt(pidRaw, 10) : null };
   }
-  return { local_path: raw, repo_url: "", code_source: cs, ...refs };
+  if(isRemote){
+    return { repo_url: raw, local_path: "", code_source: cs, ...refs, ...multi };
+  }
+  return { local_path: raw, repo_url: "", code_source: cs, ...refs, ...multi };
 }
 
 async function scanCode(){
@@ -1907,6 +1940,7 @@ async function scanCode(){
   // B-5：记住本次扫描身份，describe 按同一身份命中缓存；本地目录不再共用 "" 串味。
   lastRepoUrl = payload.repo_url || "";    // 远程仓：沿用 repo_url 原值，历史缓存继续命中
   lastLocalPath = payload.local_path || ""; // 本地目录：后端归一为 local:<规范路径>
+  lastScanNamespace = "";                  // 身份已变更：先清空，扫描成功后再用后端回传值写入
   const btn = $("btn_scan");
   btn.disabled = true;
   const btnTxt = btn.textContent;
@@ -1920,6 +1954,7 @@ async function scanCode(){
       $("scan_list").innerHTML = '<span class="hint">扫描失败：'+(r.error||"")+'</span>';
       return;
     }
+    lastScanNamespace = r.namespace || ""; // P1：后端统一计算的命名空间，前端只透传
     scanItems = (r.items||[]).filter(it => !it.path.endsWith("/")); // 只列文件（目录用分组体现）
     scanDescMap = {};  // 新扫描重置中文描述缓存
     scanCachedMap = {};  // 重置缓存命中标记
@@ -1956,18 +1991,21 @@ async function clearDescCache(){
   const btn = $("btn_clear_desc");
   btn.disabled = true;
   try{
-    // 与 describe 写入同源：远程按 repo_url、本地按 local_path；两者都空才是全清。
-    const body = lastRepoUrl ? {repo_url: lastRepoUrl}
-      : (lastLocalPath ? {local_path: lastLocalPath} : {});
-    const scopeLabel = lastRepoUrl ? "（当前仓库）"
-      : (lastLocalPath ? "（当前本地目录）" : "（全部）");
+    // 与 describe 写入同源：优先用 scan 回传的 namespace 精确清（单仓/多仓逐条一致）；
+    // 无 namespace 时回退 repo_url / local_path；三者都空才是全清。
+    const body = lastScanNamespace ? {namespace: lastScanNamespace}
+      : (lastRepoUrl ? {repo_url: lastRepoUrl}
+      : (lastLocalPath ? {local_path: lastLocalPath} : {}));
+    const scopeLabel = lastScanNamespace ? "（当前扫描）"
+      : (lastRepoUrl ? "（当前仓库）"
+      : (lastLocalPath ? "（当前本地目录）" : "（全部）"));
     const r = await api("/api/v1/describe/cache/clear", {method:"POST", body:JSON.stringify(body)});
     if(r && r.ok){
       scanDescMap = {}; scanCachedMap = {};
       renderScanItems();
       log(`🧹 已清空描述缓存 ${scopeLabel}：${r.deleted} 条`);
       // 清缓存后同样不自动重跑：那等于立刻把整批文件重新烧一遍模型额度
-      if((lastRepoUrl || lastLocalPath) && autoDescribeEnabled()) enrichScanDescriptions();
+      if((lastScanNamespace || lastRepoUrl || lastLocalPath) && autoDescribeEnabled()) enrichScanDescriptions();
       else updateDescHint();
     }else{
       log("⚠️ 清空描述缓存失败：" + ((r && r.error) || "未知"));
@@ -2001,6 +2039,7 @@ let lastScanSummary = {};
 let lastScanCount = 0;
 let lastRepoUrl = "";     // 当前扫描的仓库地址（远程），供 describe 缓存命中
 let lastLocalPath = "";   // 当前扫描的本地目录（B-5），供 describe 缓存按 local: 命名空间命中
+let lastScanNamespace = ""; // P1：scan 回传的后端命名空间（单仓/多仓同源），前端只透传
 async function enrichScanDescriptions(){
   if(!scanItems.length){ log("⚠️ 还没有扫描结果，先点 B 区「🔍 扫描」再生成中文描述"); return; }
   // 增量模式只给「变更文件」生成描述（新增/修改，上限 60 个）；全量模式给前 120 个。
@@ -2027,16 +2066,13 @@ async function enrichScanDescriptions(){
       kind: "file",
       functions: (it.functions||[]).slice(0, 20),
       classes: (it.classes||[]).slice(0, 12),
+      // P1：scan 已按仓回传 namespace，逐条透传；后端按条目分组读写，缓存严格隔离。
+      namespace: it.namespace || "",
     }));
-    // B-5：扫描身份显式传给后端，由 core.describe_namespace 统一算命名空间。
-    // - 多仓：扫描结果不带 repo 归属，lastRepoUrl 单值无法区分同名文件属于哪个仓，
-    //   故意不带身份 → 后端返回 None 真禁用缓存（不读不写），不制造跨仓串味；
-    // - 单仓远程：沿用 repo_url 原值，历史缓存继续命中；
-    // - 单仓本地：传 local_path，后端归一为 local:<规范路径>，本地项目不再共用 "" 串味。
-    const multiMode = Array.isArray(window.MULTI_REPO_SPECS) && window.MULTI_REPO_SPECS.length;
-    const descBody = multiMode
-      ? {items}
-      : {items, repo_url: lastRepoUrl, local_path: lastLocalPath};
+    // 单仓沿用 repo_url / local_path 身份；请求级 namespace 做双保险。
+    // 多仓条目自带 namespace 优先，逐条隔离，不再靠「不带身份」禁用缓存。
+    const descBody = {items, repo_url: lastRepoUrl, local_path: lastLocalPath};
+    if(lastScanNamespace) descBody.namespace = lastScanNamespace;
     const r = await api("/api/v1/describe", {method:"POST", body:JSON.stringify(descBody)});
     if(r && r.ok && r.descriptions && Object.keys(r.descriptions).length){
       scanDescMap = Object.assign({}, scanDescMap, r.descriptions);

@@ -22,27 +22,46 @@ def _html() -> str:
 def test_scan_records_local_path_identity() -> None:
     html = _html()
     assert 'let lastLocalPath = ""' in html
+    assert 'let lastScanNamespace = ""' in html
     assert 'lastLocalPath = payload.local_path || ""' in html
     assert 'lastRepoUrl = payload.repo_url || ""' in html
+    assert 'lastScanNamespace = "";' in html  # 身份变更先清空
+    assert 'lastScanNamespace = r.namespace || ""' in html  # 成功后再写回
 
 
 def test_describe_request_carries_scan_identity() -> None:
     html = _html()
     assert "{items, repo_url: lastRepoUrl, local_path: lastLocalPath}" in html
     assert 'api("/api/v1/describe"' in html
+    assert 'namespace: it.namespace || ""' in html  # P1：逐条透传后端算好的 namespace
+    assert "descBody.namespace = lastScanNamespace" in html  # 请求级双保险
     # 旧写法（只传 repo_url、本地目录丢身份）不得回来
     assert "{items, repo_url: descRepoUrl}" not in html
 
 
-def test_multi_repo_mode_sends_no_identity() -> None:
-    """多仓扫描结果不带 repo 归属，故意不带身份让后端 None 禁用缓存。"""
+def test_multi_repo_mode_passes_item_namespace() -> None:
+    """P1：多仓 items 逐条带后端回传 namespace，不再靠「不带身份」禁用缓存。"""
     html = _html()
-    assert "const multiMode =" in html
-    assert "? {items}" in html
+    assert 'namespace: it.namespace || ""' in html
+    assert "const multiMode =" not in html
+    assert "? {items}" not in html
+
+
+def test_scan_payload_attaches_repo_key_for_multi_spec() -> None:
+    """P1：多仓命中 spec 才带 repo_key/project_id；前端只匹配，不拼 namespace。"""
+    html = _html()
+    assert "function _matchMultiRepoSpec" in html
+    assert "repo_key: spec.repo_key" in html
+    assert "project_id: /^\\d+$/.test(pidRaw)" in html
+    assert (
+        '"multi:"'
+        not in html.split("function _matchMultiRepoSpec")[1].split("function _scanRepoPayload")[0]
+    )
 
 
 def test_clear_cache_uses_precise_scope() -> None:
     html = _html()
+    assert "{namespace: lastScanNamespace}" in html  # P1：优先按 scan 回传 namespace 精确清
     assert "{repo_url: lastRepoUrl}" in html
     assert "{local_path: lastLocalPath}" in html
     assert 'api("/api/v1/describe/cache/clear"' in html
