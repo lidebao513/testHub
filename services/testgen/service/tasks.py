@@ -142,6 +142,26 @@ class GenerationTask:
             "updated_at": self.updated_at,
         }
 
+    def to_summary_dict(self) -> dict[str, Any]:
+        """列表用轻量字段（Batch 4 D-1）：不含 request / result / error 大字段。
+
+        `result` 只在任务详情端点 `GET /api/v1/tasks/{id}` 返回——列表页/运营后台
+        批量轮询时不再把每个任务的全量生成结果扛回客户端。字段集是 `to_dict()` 的子集，
+        前端轮询详情用的字段（task_id/state/progress/stage/project_id）全部保留。
+        """
+        return {
+            "task_id": self.task_id,
+            "project_id": self.project_id,
+            "kind": self.kind,
+            "state": self.state,
+            "progress": round(self.progress, 3),
+            "stage": self.stage,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "updated_at": self.updated_at,
+        }
+
 
 class TaskStore:
     """`gen_tasks` 表读写；每操作独立连接，线程安全。"""

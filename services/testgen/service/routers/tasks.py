@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -50,10 +50,14 @@ class ParseInputRequest(BaseModel):
 
 
 @router.get("/api/v1/tasks")
-def list_tasks(limit: int = 20) -> dict[str, Any]:
-    """任务清单（最近优先），便于运营后台 / 流水线巡检。"""
+def list_tasks(limit: int = Query(20, ge=1, le=200)) -> dict[str, Any]:
+    """任务清单（最近优先），便于运营后台 / 流水线巡检。
+
+    Batch 4 D-1：只返轻量字段；`result` / `request` 仅详情端点 `GET /api/v1/tasks/{id}`
+    返回，运营大列表轮询不再扛每个任务的全量产物。
+    """
     tasks = A.task_store.list_recent(limit=limit)
-    return {"tasks": [t.to_dict() for t in tasks]}
+    return {"tasks": [t.to_summary_dict() for t in tasks]}
 
 
 @router.get("/api/v1/tasks/{task_id}")
@@ -73,16 +77,43 @@ def cancel_task(task_id: str) -> dict[str, Any]:
 
 
 @router.get("/api/v1/tasks/{task_id}/cases")
-def task_cases(task_id: str) -> dict[str, Any]:
-    """取某任务对应项目已生成的用例（前端详情面板用）。"""
+def task_cases(
+    task_id: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=1000),
+    include_obsolete: bool = False,
+) -> dict[str, Any]:
+    """取某任务对应项目已生成的用例（前端详情面板用）。
+
+    Batch 4 C-1：SQL 层分页 + 总数，默认排除 obsolete（旧版无分页且含 obsolete，
+    大仓一次拉全量会卡住）。前端当前未消费本端点，故为增量式契约增强。
+    """
     task = A.task_store.get(task_id)
     if task is None:
         raise NotFoundError(f"任务不存在: {task_id}")
     pid = task.project_id
     if not pid:
-        return {"ok": True, "task_id": task_id, "project_id": None, "cases": []}
-    cases = A.store.list_cases(pid, include_obsolete=True)
-    return {"ok": True, "task_id": task_id, "project_id": pid, "cases": cases}
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "project_id": None,
+            "total": 0,
+            "offset": offset,
+            "limit": limit,
+            "cases": [],
+        }
+    total, cases = A.store.list_cases_page(
+        pid, offset=offset, limit=limit, include_obsolete=include_obsolete
+    )
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "project_id": pid,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "cases": cases,
+    }
 
 
 @router.post("/api/v1/verify/webhook")
@@ -141,7 +172,7 @@ def metrics() -> dict[str, Any]:
         "by_state": counts,
         "queue_depth": counts.get(TaskState.PENDING.value, 0)
         + counts.get(TaskState.RUNNING.value, 0),
-        "recent": [t.to_dict() for t in recent],
+        "recent": [t.to_summary_dict() for t in recent],
     }
 
 

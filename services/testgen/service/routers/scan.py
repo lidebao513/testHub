@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 from typing import Any
 
 from fastapi import APIRouter
@@ -108,6 +109,10 @@ class DescribeRequest(BaseModel):
     project_id: int | None = None
     repo_url: str = ""
     local_path: str = ""
+    async_mode: bool = Field(
+        False,
+        description="true=提交后台任务返回 202+poll_url；默认同步返回，老调用方零影响",
+    )
 
 
 class DescribeCacheClearRequest(BaseModel):
@@ -360,8 +365,23 @@ def _describe_item_namespace(it: Any, default: str | None) -> str | None:
 
 
 @router.post("/api/v1/describe")
-def describe_features(req: DescribeRequest) -> dict[str, Any]:
-    """把扫描出的文件节点批量翻译成中文功能描述（带命名空间隔离的缓存）。"""
+def describe_features(req: DescribeRequest) -> Any:
+    """把扫描出的文件节点批量翻译成中文功能描述（带命名空间隔离的缓存）。
+
+    Batch 4 A-2：`async_mode=true` 时提交后台任务（202 + poll_url），避免大仓 LLM
+    调用长时间占用 HTTP 连接；默认同步分支与老契约完全一致。
+    """
+    if req.async_mode:
+        return A.submit_aux_task(
+            "describe",
+            json.dumps(req.model_dump(), ensure_ascii=False),
+            partial(describe_features_sync, req),
+        )
+    return describe_features_sync(req)
+
+
+def describe_features_sync(req: DescribeRequest) -> dict[str, Any]:
+    """describe 的同步实现（供默认分支与后台作业共用，返回值即轮询 result）。"""
     items = req.items or []
     if not items:
         return {"ok": True, "llm": False, "descriptions": {}, "cached": {}, "error": "empty"}
