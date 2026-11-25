@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from core import store
 from core.config import get_settings
+from core.describe_namespace import describe_namespace
 from core.errors import ValidationError
 from core.log import get_logger, log_extra
 from engine.codeup_client import CodeupError
@@ -79,30 +80,45 @@ class RefsRequest(BaseModel):
 
 
 class DescribeItem(BaseModel):
-    """单个待描述项：文件（也可为函数/类）。"""
+    """单个待描述项：文件（也可为函数/类）。
+
+    ``namespace`` 可逐条覆盖请求级命名空间 —— 多仓同批提交时按仓隔离缓存。
+    """
 
     path: str = ""
     name: str = ""
     kind: str = "file"
     functions: list[str] = Field(default_factory=list)
     classes: list[str] = Field(default_factory=list)
+    namespace: str = Field("", description="条目自带命名空间（多仓隔离，优先于请求级）")
 
 
 class DescribeRequest(BaseModel):
     """把扫描出的文件节点批量翻译成中文功能描述。
 
-    ``repo_url``：用于描述缓存命中（同名文件按 (repo_url, file_path) 区分，避免串味）；
-    为空则不做缓存，全部走 LLM（兼容旧调用）。
+    缓存命名空间由 ``core.describe_namespace`` 统一计算：显式 namespace > runtime_url
+    > (repo_key, project_id) > repo_url > local_path；全部为空时不读也不写缓存。
+    ``repo_url`` 保留兼容旧调用，且沿用原值以命中历史缓存。
     """
 
     items: list[DescribeItem] = Field(default_factory=list)
+    namespace: str = ""
+    runtime_url: str = ""
+    repo_key: str = ""
+    project_id: int | None = None
     repo_url: str = ""
+    local_path: str = ""
 
 
 class DescribeCacheClearRequest(BaseModel):
-    """清空文件描述缓存：repo_url 为空 = 清空全部；否则只清该仓库。"""
+    """清空描述缓存：带身份字段时只清该命名空间；全空时兼容旧行为清全部。"""
 
+    namespace: str = ""
+    runtime_url: str = ""
+    repo_key: str = ""
+    project_id: int | None = None
     repo_url: str = ""
+    local_path: str = ""
 
 
 class ScanRequest(BaseModel):
@@ -169,13 +185,17 @@ def _extract_json_block(content: str) -> Any:
 
 
 def _describe_cache_lookup(
-    repo_url: str, items: list[Any]
+    namespace: str | None, items: list[Any]
 ) -> tuple[dict[str, str], dict[str, bool], list[Any]]:
-    """缓存命中判断：返回 (descriptions, cached_map, need)。"""
+    """缓存命中判断：返回 (descriptions, cached_map, need)；None = 禁用缓存。"""
     descriptions: dict[str, str] = {}
     cached_map: dict[str, bool] = {}
     sigs = {_describe_item_key(it): _describe_symbols_sig(it) for it in items}
-    cached_rows = store.get_file_descriptions(repo_url, list(sigs.keys()))
+    if namespace is None:
+        for it in items:
+            cached_map[_describe_item_key(it)] = False
+        return descriptions, cached_map, list(items)
+    cached_rows = store.get_file_descriptions(namespace, list(sigs.keys()))
     need: list[Any] = []
     for it in items:
         key = _describe_item_key(it)
@@ -218,15 +238,17 @@ def _describe_build_prompt(need: list[Any]) -> str:
     )
 
 
-def _describe_persist(repo_url: str, need: list[Any], new_desc: dict[str, str]) -> None:
-    """把 LLM 新生成的描述写回缓存（串行写库，避免 SQLite 抢锁；失败降级为不缓存）。"""
+def _describe_persist(namespace: str | None, need: list[Any], new_desc: dict[str, str]) -> None:
+    """把 LLM 新描述写回缓存（串行写库；namespace=None 时不写，失败降级为不缓存）。"""
+    if namespace is None:
+        return
     try:
         with A._DESCRIBE_DB_LOCK:
             for it in need:
                 key = _describe_item_key(it)
                 if key in new_desc:
                     store.upsert_file_description(
-                        repo_url,
+                        namespace,
                         key,
                         _describe_symbols_sig(it),
                         new_desc[key],
@@ -276,7 +298,7 @@ def _describe_merge(
     return unresolved
 
 
-def _describe_run_chunks(repo_url: str, chunks: list[list[Any]]) -> dict[str, str]:
+def _describe_run_chunks(namespace: str | None, chunks: list[list[Any]]) -> dict[str, str]:
     """并发跑各分组 LLM（M18），带总预算兜底；返回已拿到的描述。"""
     if not chunks:
         return {}
@@ -284,7 +306,7 @@ def _describe_run_chunks(repo_url: str, chunks: list[list[Any]]) -> dict[str, st
     pool = ThreadPoolExecutor(max_workers=min(_DESCRIBE_MAX_WORKERS, len(chunks)))
     merged: dict[str, str] = {}
     try:
-        futures = {pool.submit(_describe_one_chunk, repo_url, c): c for c in chunks}
+        futures = {pool.submit(_describe_one_chunk, namespace, c): c for c in chunks}
         try:
             for fut in as_completed(futures, timeout=budget):
                 merged.update(fut.result() or {})
@@ -299,7 +321,7 @@ def _describe_run_chunks(repo_url: str, chunks: list[list[Any]]) -> dict[str, st
     return merged
 
 
-def _describe_one_chunk(repo_url: str, chunk: list[Any]) -> dict[str, str]:
+def _describe_one_chunk(namespace: str | None, chunk: list[Any]) -> dict[str, str]:
     """单组（≤5 条）调一次 LLM 并写缓存；失败返回空字典（该组回退展示原名）。"""
     prompt = _describe_build_prompt(chunk)
     try:
@@ -318,20 +340,49 @@ def _describe_one_chunk(repo_url: str, chunk: list[Any]) -> dict[str, str]:
         log.warning("describe LLM 失败，该组回退原名", extra=log_extra(err=type(exc).__name__))
         return {}
     if chunk_desc:
-        _describe_persist(repo_url, chunk, chunk_desc)
+        _describe_persist(namespace, chunk, chunk_desc)
     return chunk_desc
+
+
+def _describe_item_namespace(it: Any, default: str | None) -> str | None:
+    """条目自带 namespace 优先，否则沿用请求级命名空间。"""
+    own = it.namespace if isinstance(it, DescribeItem) else (it.get("namespace") or "")
+    own = (own or "").strip()
+    return describe_namespace(namespace=own) if own else default
 
 
 @router.post("/api/v1/describe")
 def describe_features(req: DescribeRequest) -> dict[str, Any]:
-    """把扫描出的文件节点批量翻译成中文功能描述（带缓存命中，避免重复烧 LLM）。"""
+    """把扫描出的文件节点批量翻译成中文功能描述（带命名空间隔离的缓存）。"""
     items = req.items or []
     if not items:
         return {"ok": True, "llm": False, "descriptions": {}, "cached": {}, "error": "empty"}
     llm_ready = bool(A.settings.llm_api_key and A.settings.llm_base_url and A.settings.llm_model)
-    repo_url = (req.repo_url or "").strip()
-    descriptions, cached_map, need = _describe_cache_lookup(repo_url, items)
-    if not need:
+    default_ns = describe_namespace(
+        namespace=req.namespace,
+        runtime_url=req.runtime_url,
+        repo_key=req.repo_key,
+        project_id=req.project_id,
+        repo_url=req.repo_url,
+        local_path=req.local_path,
+    )
+    # 同批可含多仓条目：按命名空间分组读写，缓存严格隔离。
+    # 响应仍是 {path: 描述} 的旧契约，跨仓同名 path 时以后写条目为准（前端按仓分别提交）。
+    groups: dict[str | None, list[Any]] = {}
+    for it in items:
+        groups.setdefault(_describe_item_namespace(it, default_ns), []).append(it)
+
+    descriptions: dict[str, str] = {}
+    cached_map: dict[str, bool] = {}
+    need_groups: dict[str | None, list[Any]] = {}
+    for ns, group in groups.items():
+        group_desc, group_cached, group_need = _describe_cache_lookup(ns, group)
+        descriptions.update(group_desc)
+        cached_map.update(group_cached)
+        if group_need:
+            need_groups[ns] = group_need
+
+    if not need_groups:
         return {
             "ok": True,
             "llm": llm_ready,
@@ -348,12 +399,16 @@ def describe_features(req: DescribeRequest) -> dict[str, Any]:
             "descriptions": descriptions,
             "cached": cached_map,
             "cache_hits": sum(1 for v in cached_map.values() if v),
-            "unresolved": len(need),
+            "unresolved": sum(len(n) for n in need_groups.values()),
             "error": "未配置 LLM（llm_api_key / llm_base_url / llm_model 不全）——未命中缓存的文件将回退展示类/函数名",
         }
-    chunks = [need[i : i + _DESCRIBE_CHUNK_SIZE] for i in range(0, len(need), _DESCRIBE_CHUNK_SIZE)]
-    new_desc = _describe_run_chunks(repo_url, chunks)
-    unresolved = _describe_merge(need, new_desc, descriptions, cached_map)
+    unresolved = 0
+    for ns, need in need_groups.items():
+        chunks = [
+            need[i : i + _DESCRIBE_CHUNK_SIZE] for i in range(0, len(need), _DESCRIBE_CHUNK_SIZE)
+        ]
+        created = _describe_run_chunks(ns, chunks)
+        unresolved += _describe_merge(need, created, descriptions, cached_map)
     return {
         "ok": True,
         "llm": True,
@@ -366,9 +421,21 @@ def describe_features(req: DescribeRequest) -> dict[str, Any]:
 
 @router.post("/api/v1/describe/cache/clear")
 def clear_describe_cache(req: DescribeCacheClearRequest) -> dict[str, Any]:
-    """清空文件描述缓存（换模型 / 强制刷新时用）。"""
-    deleted = store.clear_file_descriptions((req.repo_url or "").strip())
-    return {"ok": True, "deleted": deleted, "scope": (req.repo_url or "").strip() or "all"}
+    """清空描述缓存：带身份字段只清该命名空间；全空保留旧行为清全部。"""
+    ns = describe_namespace(
+        namespace=req.namespace,
+        runtime_url=req.runtime_url,
+        repo_key=req.repo_key,
+        project_id=req.project_id,
+        repo_url=req.repo_url,
+        local_path=req.local_path,
+    )
+    if ns is None:
+        log.warning("describe 缓存清理未带身份字段，按兼容语义清空全部（含运行时模块缓存）")
+        deleted = store.clear_file_descriptions()
+        return {"ok": True, "deleted": deleted, "scope": "all"}
+    deleted = store.clear_file_descriptions(ns)
+    return {"ok": True, "deleted": deleted, "scope": ns}
 
 
 # ---------------------------------------------------------------------------

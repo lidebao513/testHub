@@ -380,7 +380,15 @@ class TestgenDescribeView(APIView):
         body = request.data or {}
         items = body.get("items") or []
         try:
-            data = describe(items=items)
+            data = describe(
+                items=items,
+                namespace=body.get("namespace", ""),
+                runtime_url=body.get("runtime_url", ""),
+                repo_key=body.get("repo_key", ""),
+                project_id=body.get("project_id"),
+                repo_url=body.get("repo_url", ""),
+                local_path=body.get("local_path", ""),
+            )
         except Exception as exc:  # noqa: BLE001
             return _sidecar_error_response(exc)
         return Response({"ok": True, **data})

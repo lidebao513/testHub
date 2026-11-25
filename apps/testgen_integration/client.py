@@ -254,9 +254,30 @@ def list_commits(
     return resp.json()
 
 
-def describe(*, items: list[dict[str, Any]]) -> dict[str, Any]:
-    """把扫描出的函数/类节点批量翻译成中文功能描述。"""
-    payload = {"items": items or []}
+def describe(
+    *,
+    items: list[dict[str, Any]],
+    namespace: str = "",
+    runtime_url: str = "",
+    repo_key: str = "",
+    project_id: int | None = None,
+    repo_url: str = "",
+    local_path: str = "",
+) -> dict[str, Any]:
+    """把扫描出的函数/类节点批量翻译成中文功能描述。
+
+    身份字段透传给 sidecar 计算缓存命名空间；旧调用（只带 items）请求体不变。
+    """
+    payload: dict[str, Any] = {"items": items or []}
+    identity = {
+        "namespace": namespace,
+        "runtime_url": runtime_url,
+        "repo_key": repo_key,
+        "project_id": project_id,
+        "repo_url": repo_url,
+        "local_path": local_path,
+    }
+    payload.update({k: v for k, v in identity.items() if v not in (None, "")})
     resp = _session.post(
         f"{base_url()}/api/v1/describe",
         json=payload,

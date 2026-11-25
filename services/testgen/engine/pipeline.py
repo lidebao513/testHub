@@ -42,6 +42,7 @@ from core import store
 from core.config import get_settings
 from core.contracts import CaseSpec, FunctionalPoint, TestPoint, fp_id_of
 from core.db import init_db
+from core.describe_namespace import describe_namespace
 from core.enums import DEFAULT_SCOPE, FType, RunBatchState, Tag, TPType, VerifyLayer
 from core.errors import EngineError, WorkspaceEscapeBlocked
 from core.log import get_logger, log_extra
@@ -1030,20 +1031,40 @@ def stage_test_points(
 # ============================================================================
 # 阶段 5：语义增强
 # ============================================================================
-def load_file_context(repo_url: str, fps: list[FunctionalPoint]) -> dict[str, str]:
+def load_file_context(  # noqa: PLR0913 - 身份来源需与 /describe 同源，契约所致
+    repo_url: str,
+    fps: list[FunctionalPoint],
+    *,
+    namespace: str = "",
+    local_path: str = "",
+    runtime_url: str = "",
+    project_id: int | None = None,
+    repo_key: str = "",
+) -> dict[str, str]:
     """第二步 C：从 describe 缓存取本次功能点所在文件的中文业务背景。
 
-    只查本次 `fps` 涉及的 file_path（范围限定，不扫全库缓存），按 (repo_url, path) 命中；
-    describe 未跑过 / 缓存缺失 / 查询异常时返回空字典，调用方零影响降级。
+    命名空间必须与写入侧 ``/describe`` 同源（共享 ``describe_namespace``），否则本地
+    目录 / 多仓的缓存分叉会导致背景静默读不到。仅查本次 `fps` 涉及的 file_path；
+    无身份信息（namespace 为 None）/ 缓存缺失 / 查询异常均返回空字典，零影响降级。
     describe 是**文件级**描述，作为提示词背景注入，不覆盖函数级 semantic 标题。
     """
+    ns = describe_namespace(
+        namespace=namespace,
+        runtime_url=runtime_url,
+        repo_key=repo_key,
+        project_id=project_id,
+        repo_url=repo_url,
+        local_path=local_path,
+    )
+    if ns is None:
+        return {}
     paths = sorted({fp.file_path for fp in fps if fp.file_path})
     if not paths:
         return {}
     try:
-        cached = store.get_file_descriptions(repo_url, paths)
+        cached = store.get_file_descriptions(ns, paths)
     except Exception:  # noqa: BLE001 - 缓存查询失败不影响生成主链路
-        log.warning("describe 背景加载失败，本次不注入", extra=log_extra(repo=repo_url))
+        log.warning("describe 背景加载失败，本次不注入", extra=log_extra(repo=ns))
         return {}
     return {path: str(row["description"]) for path, row in cached.items() if row.get("description")}
 
@@ -1057,7 +1078,14 @@ def stage_enrich(
     fps = result.functional_points
     # 第二步 C：LLM 启用时把 describe 文件背景注入提示词；关闭/无缓存时零影响。
     if opts.llm.enabled:
-        opts.llm.file_context = load_file_context(opts.repo_url, fps)
+        opts.llm.file_context = load_file_context(
+            opts.repo_url,
+            fps,
+            local_path=opts.local_path,
+            runtime_url=opts.target_req.base_url,
+            project_id=opts.project_id,
+            repo_key=opts.repo_key,
+        )
     _emit(progress, "semantic_enrich", enabled=opts.llm.enabled)
     enriched = semantic_enrich.enrich(tps, fps, opts.llm)
     result.test_points = enriched.test_points
