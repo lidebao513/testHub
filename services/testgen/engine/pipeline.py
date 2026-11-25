@@ -2170,38 +2170,73 @@ def stage_resolve_sources(
 
 
 # ============================================================================
-# P1-1：registry 组链驱动（去硬编码）
+# A-4：stage 单表事实源（顺序 + 类别 + 实现，唯一定义）
 # ============================================================================
-# 所有 stage_* 编排包装函数统一为 (opts, result, progress) 签名，并在模块加载时回注
-# REGISTRY：适配层 6 项由 planned 占位填充为真实实现；能力层 11 项 fn 由「原始纯函数」
-# 覆盖为「编排包装」。run_pipeline 因此退化为单一事实源驱动的纯顺序链。
-_P1_STAGE_WIRING: tuple[tuple[str, StageKind, Callable[..., Any]], ...] = (
-    ("pull", StageKind.ADAPTATION, stage_pull),
-    ("resolve_sources", StageKind.ADAPTATION, stage_resolve_sources),
-    ("register", StageKind.ADAPTATION, stage_register),
-    ("scan", StageKind.ADAPTATION, stage_scan),
-    ("auth_scan", StageKind.CAPABILITY, stage_auth_scan),
-    ("extract", StageKind.CAPABILITY, stage_extract),
-    ("runtime_ui", StageKind.CAPABILITY, stage_runtime_ui),
-    ("tag", StageKind.CAPABILITY, stage_tag),
-    ("tp_expand", StageKind.CAPABILITY, stage_test_points),
-    ("semantic_enrich", StageKind.CAPABILITY, stage_enrich),
-    ("expert_review", StageKind.CAPABILITY, stage_expert_review),
-    ("prd_ingest", StageKind.CAPABILITY, stage_prd_ingest),
-    ("case_gen", StageKind.CAPABILITY, stage_cases),
-    ("llm_design", StageKind.CAPABILITY, stage_llm_design),
+# 所有 stage_* 编排包装函数统一为 (opts, result, progress) 签名。
+# 顺序、类别、实现函数只在此表定义一次；REGISTRY 保留为契约镜像（19 项，
+# comparator 不进流水线），run_pipeline 直接按本表调用。
+
+
+@dataclass(frozen=True)
+class StageSpec:
+    """流水线阶段描述符：名称 / 类别 / 实现函数（顺序由表的声明顺序给出）。"""
+
+    name: str
+    kind: StageKind
+    fn: Callable[..., Any]
+
+
+PIPELINE_STAGES: tuple[StageSpec, ...] = (
+    StageSpec("pull", StageKind.ADAPTATION, stage_pull),
+    StageSpec("resolve_sources", StageKind.ADAPTATION, stage_resolve_sources),
+    StageSpec("register", StageKind.ADAPTATION, stage_register),
+    StageSpec("scan", StageKind.ADAPTATION, stage_scan),
+    StageSpec("auth_scan", StageKind.CAPABILITY, stage_auth_scan),
+    StageSpec("extract", StageKind.CAPABILITY, stage_extract),
+    StageSpec("runtime_ui", StageKind.CAPABILITY, stage_runtime_ui),
+    StageSpec("tag", StageKind.CAPABILITY, stage_tag),
+    StageSpec("tp_expand", StageKind.CAPABILITY, stage_test_points),
+    StageSpec("semantic_enrich", StageKind.CAPABILITY, stage_enrich),
+    StageSpec("expert_review", StageKind.CAPABILITY, stage_expert_review),
+    StageSpec("prd_ingest", StageKind.CAPABILITY, stage_prd_ingest),
+    StageSpec("case_gen", StageKind.CAPABILITY, stage_cases),
+    StageSpec("llm_design", StageKind.CAPABILITY, stage_llm_design),
     # T5：门禁与 KPI 必须在「测试点集合已定稿」之后（llm_design 会补虚拟测试点、
     # case_gen 会去重），且在 persist 之前（报告要读 quality 快照）
-    ("quality", StageKind.CAPABILITY, stage_quality),
-    ("execute", StageKind.ADAPTATION, stage_execute),
-    ("partition_channels", StageKind.ADAPTATION, stage_partition_channels),
-    ("persist", StageKind.ADAPTATION, stage_persist),
+    StageSpec("quality", StageKind.CAPABILITY, stage_quality),
+    StageSpec("execute", StageKind.ADAPTATION, stage_execute),
+    StageSpec("partition_channels", StageKind.ADAPTATION, stage_partition_channels),
+    StageSpec("persist", StageKind.ADAPTATION, stage_persist),
 )
 
 
+def _validate_pipeline_stages() -> None:
+    """导入期 fail-fast：把「静默错序 / 漏注册」变成导入失败。"""
+    names = [spec.name for spec in PIPELINE_STAGES]
+    if len(set(names)) != len(names):
+        raise RuntimeError("PIPELINE_STAGES 存在重复阶段名")
+    if any(not callable(spec.fn) for spec in PIPELINE_STAGES):
+        raise RuntimeError("PIPELINE_STAGES 存在不可调用的阶段实现")
+    # T5 相对顺序硬约束：质量快照必须在用例定稿后、落库前。
+    for earlier, later in (
+        ("case_gen", "quality"),
+        ("llm_design", "quality"),
+        ("quality", "persist"),
+    ):
+        if names.index(earlier) >= names.index(later):
+            raise RuntimeError(f"阶段顺序错误：{earlier} 必须在 {later} 之前")
+    registered = REGISTRY.list_stages()
+    if len(registered) != 19 or any(stage.planned for stage in registered):
+        raise RuntimeError("REGISTRY 契约漂移：应恰有 19 个已实现阶段（含 comparator）")
+    known = {stage.name for stage in registered}
+    if any(name not in known for name in names):
+        raise RuntimeError("PIPELINE_STAGES 含未注册到 REGISTRY 的阶段")
+
+
 def _wire_stages_to_registry() -> None:
-    """把本模块 stage_* 编排包装回注 REGISTRY（P1-1 去硬编码的前置条件）。"""
-    for _name, _kind, _fn in _P1_STAGE_WIRING:
+    """把单表中的 stage_* 编排包装回注 REGISTRY（契约镜像保持 19 项）。"""
+    for _spec in PIPELINE_STAGES:
+        _name, _kind, _fn = _spec.name, _spec.kind, _spec.fn
         if REGISTRY.contains(_name):
             _st = REGISTRY.get(_name)
             _st.fn = _fn
@@ -2212,30 +2247,12 @@ def _wire_stages_to_registry() -> None:
 
 
 _wire_stages_to_registry()
+_validate_pipeline_stages()
 
-# 流水线顺序（保持原编排语义）：
+# 流水线顺序：由单表派生，不再独立定义。
 # resolve_sources 在 pull 后；runtime_ui 在 extract 后、tag 前（M3.4 并入须在打标前）；
 # execute 在 cases 后、persist 前；partition_channels 在 persist 前。
-PIPELINE_STAGE_ORDER: tuple[str, ...] = (
-    "pull",
-    "resolve_sources",
-    "register",
-    "scan",
-    "auth_scan",
-    "extract",
-    "runtime_ui",
-    "tag",
-    "tp_expand",
-    "semantic_enrich",
-    "expert_review",
-    "prd_ingest",
-    "case_gen",
-    "llm_design",
-    "quality",
-    "execute",
-    "partition_channels",
-    "persist",
-)
+PIPELINE_STAGE_ORDER: tuple[str, ...] = tuple(spec.name for spec in PIPELINE_STAGES)
 
 
 def run_pipeline(
@@ -2245,14 +2262,14 @@ def run_pipeline(
 ) -> PipelineResult:
     """执行完整流水线（代码通道 / 地址通道 / 两者并用）。
 
-    阶段顺序（经 REGISTRY 组链驱动，P1-1 去硬编码）：
+    阶段顺序（由 PIPELINE_STAGES 单表驱动，A-4 去双表）：
       取码 → 来源解析 → 项目注册 → 扫描 → 鉴权扫描 → 功能点提取 → （运行时 UI 发现）
       → 差异打标 → 测试点展开 → 语义增强 → （专家审查）→ （PRD）→ 用例生成
       → （LLM 设计）→ （用例执行）→ 通道拆分 → 落库
     """
     result = PipelineResult(mode=opts.mode)
-    for _name in PIPELINE_STAGE_ORDER:
-        REGISTRY.get_fn(_name)(opts, result, progress)
+    for _spec in PIPELINE_STAGES:
+        _spec.fn(opts, result, progress)
     # 需求1：把各通道独立记录落盘（仅非空通道写文件）；e2e 等场景可置 False 后用自定义 base 重写出
     if opts.write_channel_records and result.project_id:
         channel_writer.write_channel_records(result.project_id, result, get_settings().output_dir)

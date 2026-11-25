@@ -4,12 +4,13 @@
 
 - 为 11 项**能力层**阶段定义 ``StageInput`` / ``StageOutput`` 契约（只读描述 +
   薄适配器），并将每项映射到既有的「无副作用纯函数」实现；
-- 提供 ``StageRegistry``，为后续的 P1 适配层「按 registry 组链」提供单一事实源；
-- 为 6 项**适配层**阶段预留 ``planned=True`` 占位（P1-1 填充实现）。
+- 提供 ``StageRegistry`` 作为 19 项阶段的**契约镜像**（查询/守护用）；流水线顺序
+  与实现的唯一事实源在 ``pipeline.PIPELINE_STAGES``（A-4 去双表）；
+- 登记 6 项**适配层**阶段（真实实现由 ``pipeline`` 在导入期回注）。
 
 设计铁律（不破坏既有调用）：
-- 本模块只描述契约与登记映射，**不改写**任何既有函数签名，也不改写
-  ``pipeline.run_pipeline`` 的硬编码编排（那一步留给 P1-1）。
+- 本模块只描述契约与登记映射，**不改写**任何既有函数签名；执行顺序不改由本模块
+  决定，``pipeline.run_pipeline`` 直接按 ``PIPELINE_STAGES`` 单表调用。
 - 仅依赖 ``core``（契约/枚举）与 ``engine`` 内部模块，绝不 import ``service`` / ``cli``。
 - ``expert_review`` 的真函数 ``PageExpert.review_page`` 为类方法，使用懒加载适配器薄封装，
   避免导入期拉入 playwright 等重依赖。
