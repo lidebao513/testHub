@@ -96,4 +96,6 @@ def test_frontend_buildbody_has_repos_support():
     assert "window.MULTI_REPO_SPECS" in html
     assert "function setMultiRepos" in html
     assert "b.repos" in html
-    assert "descRepoUrl = (Array.isArray(window.MULTI_REPO_SPECS)" in html
+    # B-5：多仓识别仍在，但改为多仓 describe 不带缓存身份（避免跨仓串味）；
+    # 旧写法 descRepoUrl 已移除，此断言守住「多仓仍被识别」而不锁死变量名。
+    assert "const multiMode = Array.isArray(window.MULTI_REPO_SPECS)" in html
