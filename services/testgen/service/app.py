@@ -1091,13 +1091,20 @@ def list_repo_commits(req: Any) -> dict[str, Any]:
 
 
 class ScanRequest(BaseModel):
-    """快速扫描（只读）：列模块树 + 标注变更状态，供前端勾选范围。"""
+    """快速扫描（只读）：列模块树 + 标注变更状态，供前端勾选范围。
+
+    字段集合必须与 `service.routers.scan.ScanRequest` 一致（P1 多仓归属）：
+    门面符号被 `test_scan_git_repo.py` 直接构造，漂移会导致门面对象缺字段。
+    """
 
     repo_url: str = Field("", description="仓库地址（git 模式）")
     code_source: dict[str, Any] = Field(default_factory=dict, description="只读凭证")
     ref: str = Field("", description="目标 ref（分支/标签/commit）")
     base_ref: str = Field("", description="基线 ref（对比出 新增/修改）")
     local_path: str = Field("", description="本地目录（local 模式）")
+    repo_key: str = Field("", description="多仓归属键（repo_bindings.repo_key）")
+    project_id: int | None = Field(None, description="项目 id，与 repo_key 组成 multi:<pid>:<key>")
+    namespace: str = Field("", description="显式命名空间覆盖（最高优先级，一般不由前端传）")
 
 
 def _dispatch_scan(req: Any) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
