@@ -96,6 +96,7 @@ def test_frontend_buildbody_has_repos_support():
     assert "window.MULTI_REPO_SPECS" in html
     assert "function setMultiRepos" in html
     assert "b.repos" in html
-    # B-5：多仓识别仍在，但改为多仓 describe 不带缓存身份（避免跨仓串味）；
-    # 旧写法 descRepoUrl 已移除，此断言守住「多仓仍被识别」而不锁死变量名。
-    assert "const multiMode = Array.isArray(window.MULTI_REPO_SPECS)" in html
+    # P1：多仓识别仍在；describe 不再靠「不带身份」禁用缓存，而是逐条透传后端
+    # 随 scan 回传的 namespace。此断言守住多仓识别，不锁死已移除的 multiMode 写法。
+    assert "function _matchMultiRepoSpec" in html
+    assert 'namespace: it.namespace || ""' in html
