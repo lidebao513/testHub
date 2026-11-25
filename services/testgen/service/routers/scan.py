@@ -122,13 +122,21 @@ class DescribeCacheClearRequest(BaseModel):
 
 
 class ScanRequest(BaseModel):
-    """快速扫描（只读）：列模块树 + 标注变更状态，供前端勾选范围。"""
+    """快速扫描（只读）：列模块树 + 标注变更状态，供前端勾选范围。
+
+    `repo_key` / `project_id` / `namespace` 是 B-5 多仓归属（P1）：
+    后端用它们算出 describe 缓存命名空间并随返回项回传，前端只透传不自己拼。
+    旧调用不传这三个字段时行为完全不变。
+    """
 
     repo_url: str = Field("", description="仓库地址（git 模式）")
     code_source: dict[str, Any] = Field(default_factory=dict, description="只读凭证")
     ref: str = Field("", description="目标 ref（分支/标签/commit）")
     base_ref: str = Field("", description="基线 ref（对比出 新增/修改）")
     local_path: str = Field("", description="本地目录（local 模式）")
+    repo_key: str = Field("", description="多仓归属键（repo_bindings.repo_key）")
+    project_id: int | None = Field(None, description="项目 id，与 repo_key 组成 multi:<pid>:<key>")
+    namespace: str = Field("", description="显式命名空间覆盖（最高优先级，一般不由前端传）")
 
 
 class RepoRefsRequest(BaseModel):
@@ -442,6 +450,31 @@ def clear_describe_cache(req: DescribeCacheClearRequest) -> dict[str, Any]:
 # 分支 / 提交 / 快速扫描 / 多仓 refs / 安全裁判
 # 被 patch 的 list_repo_branches / list_repo_commits / _dispatch_scan 走门面 A
 # ---------------------------------------------------------------------------
+def _attach_repo_ownership(
+    items: list[dict[str, Any]],
+    *,
+    namespace: str | None,
+    repo_key: str = "",
+    project_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """给 scan items 附加仓库归属（P1），返回浅拷贝，不改动扫描引擎原对象。
+
+    `namespace` 由 `describe_namespace()` 统一计算；`None` 时**不写该键**——JSON
+    null 会被前端读成有效值，且空命名空间在清缓存接口带有「清全部」语义。
+    """
+    attached: list[dict[str, Any]] = []
+    for item in items:
+        row = dict(item)
+        if namespace is not None:
+            row["namespace"] = namespace
+        if repo_key:
+            row["repo_key"] = repo_key
+        if project_id is not None:
+            row["project_id"] = project_id
+        attached.append(row)
+    return attached
+
+
 @router.post("/api/v1/branches")
 def list_repo_branches_route(req: RefsRequest) -> dict[str, Any]:
     return A.list_repo_branches(req)
@@ -502,9 +535,22 @@ def list_repo_refs(req: RepoRefsRequest) -> dict[str, Any]:
                     code_source=req.code_source,
                     ref=req.ref or b["ref"] or "",
                     base_ref=req.base_ref,
+                    repo_key=key,
+                    project_id=req.project_id,
+                    namespace="",  # mypy 无 pydantic 插件：Field 默认值视为必填，显式传空
                 )
                 items, source, meta = A._dispatch_scan(scan_req)
-                entry.update(items=items, source=source, meta=meta)
+                # P1：逐条带 multi:<pid>:<repo_key>，与外层 repos[key] 严格一致。
+                item_ns = describe_namespace(
+                    repo_key=key,
+                    project_id=req.project_id,
+                    repo_url=b["repo_url"] or "",
+                    local_path=b["local_path"] or "",
+                )
+                attached = _attach_repo_ownership(
+                    items, namespace=item_ns, repo_key=key, project_id=req.project_id
+                )
+                entry.update(items=attached, source=source, meta=meta, namespace=item_ns)
         except (CodeupError, ValidationError) as exc:
             entry["error"] = str(exc)[:200]
         except Exception as exc:  # noqa: BLE001 - 单仓失败不阻断其他仓
@@ -518,7 +564,11 @@ def list_repo_refs(req: RepoRefsRequest) -> dict[str, Any]:
 
 @router.post("/api/v1/scan")
 def scan_code(req: ScanRequest) -> dict[str, Any]:
-    """快速扫描（只读）：列模块树 + 标注变更状态，供前端勾选范围。不克隆/不生成。"""
+    """快速扫描（只读）：列模块树 + 标注变更状态，供前端勾选范围。不克隆/不生成。
+
+    P1：返回值与每个 item 都带后端统一计算的 `namespace`，前端 describe 只透传，
+    不再因多仓无归属而禁用缓存。
+    """
     try:
         items, source, meta = A._dispatch_scan(req)
     except (CodeupError, ValidationError):
@@ -531,6 +581,19 @@ def scan_code(req: ScanRequest) -> dict[str, Any]:
             "items": [],
             "error": str(exc)[:200],
         }
+    namespace = describe_namespace(
+        namespace=req.namespace,
+        repo_key=req.repo_key,
+        project_id=req.project_id,
+        repo_url=req.repo_url,
+        local_path=req.local_path,
+    )
+    items = _attach_repo_ownership(
+        items,
+        namespace=namespace,
+        repo_key=req.repo_key,
+        project_id=req.project_id,
+    )
     summary = {"added": 0, "modified": 0, "unchanged": 0}
     for it in items:
         st = it.get("change_status") or CHANGE_UNCHANGED
@@ -544,6 +607,9 @@ def scan_code(req: ScanRequest) -> dict[str, Any]:
         "ok": True,
         "source": source,
         "items": items,
+        "namespace": namespace,
+        "repo_key": req.repo_key,
+        "project_id": req.project_id,
         "summary": summary,
         "count": len(items),
         "total": int(meta.get("total_matched", len(items))),
