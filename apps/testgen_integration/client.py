@@ -301,14 +301,44 @@ def cancel_task(task_id: str) -> dict[str, Any]:
 
 
 def task_cases(task_id: str) -> dict[str, Any]:
-    """取某任务对应项目已生成的用例（前端详情面板用）。"""
-    resp = _session.get(
-        f"{base_url()}/api/v1/tasks/{task_id}/cases",
-        headers=_headers(),
-        timeout=timeout(),
-    )
-    resp.raise_for_status()
-    return resp.json()
+    """取某任务对应项目已生成的用例（自动分页拉全量）。
+
+    Batch 4 回归修复：sidecar 的 ``/api/v1/tasks/{id}/cases`` 默认 ``limit=200``
+    （且上限 1000），但主平台地址通道回流与详情面板的历史语义是「一次拿全部用例」。
+    直接在客户端按 ``total`` 循环拉全量并合并，调用方（含现有 mock patch 路径）
+    无需改动，避免大仓用例静默只回流第一页。
+
+    兼容老版 sidecar：响应若无 ``total`` 字段（尚未分页），第一页即全量，立即返回。
+    """
+    page_size = 1000  # sidecar Query(limit, le=1000)
+    offset = 0
+    merged: dict[str, Any] | None = None
+    while True:
+        resp = _session.get(
+            f"{base_url()}/api/v1/tasks/{task_id}/cases",
+            params={
+                "offset": offset,
+                "limit": page_size,
+                "include_obsolete": "true",
+            },
+            headers=_headers(),
+            timeout=timeout(),
+        )
+        resp.raise_for_status()
+        page = resp.json()
+        if merged is None:
+            merged = dict(page)
+            merged["cases"] = []
+        rows = page.get("cases") or []
+        merged["cases"].extend(rows)
+        total = page.get("total")
+        if not isinstance(total, int):
+            break  # 老版 sidecar 未分页：第一页即全量
+        offset += len(rows)
+        if not rows or offset >= total:
+            break
+    assert merged is not None  # 循环至少执行一次
+    return merged
 
 
 def scan(
