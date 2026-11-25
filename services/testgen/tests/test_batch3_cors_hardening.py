@@ -52,6 +52,20 @@ def test_load_settings_cors_defaults_empty():
     assert s.cors_allowed_origins == []
 
 
+def test_prod_whitelist_end_to_end_from_env():
+    """prod + 白名单：从环境变量解析到最终 CORS 决策的完整链路（真机 prod 的离线等价）。"""
+    s = load_settings(
+        env={
+            "APP_ENV": "prod",
+            "AUTH_DISABLED": "1",
+            "CORS_ALLOWED_ORIGINS": "https://app.example.com",
+        }
+    )
+    origins, credentials = resolve_cors_origins(s.app_env, s.cors_allowed_origins)
+    assert origins == ["https://app.example.com"]
+    assert credentials is True
+
+
 def test_dev_env_allows_origin_but_no_credentials(client):
     """dev 环境（测试默认）：通配来源放行，但不回带 Access-Control-Allow-Credentials。"""
     resp = client.get("/health", headers={"Origin": "https://any.example.com"})
