@@ -140,16 +140,22 @@ def analyze_sync(req: AnalyzeRequest) -> dict[str, Any]:
     counts: dict[str, int] = {}
     for fp in fps:
         counts[fp.ftype] = counts.get(fp.ftype, 0) + 1
+    # C-3：functional_points 仍只回前 500 条（控制响应体积），但显式带出全量数与
+    # 截断标记，避免调用方把「截断结果」误当成「全部功能点」。
+    total = len(fps)
+    limit = 500
     return {
         "files": len(files),
         "counts": counts,
+        "total": total,
+        "truncated": total > limit,
         "fp_semantic_merge": {
             "rule_version": fp_merge.MERGE_RULE_VERSION,
             "deduped": int(merge_stats.get("deduped", 0)),
             "examples": list(merge_stats.get("examples") or []),
         },
         "errors": extracted.errors[:20],
-        "functional_points": [fp.to_dict() for fp in fps[:500]],
+        "functional_points": [fp.to_dict() for fp in fps[:limit]],
     }
 
 

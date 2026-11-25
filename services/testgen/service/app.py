@@ -409,9 +409,17 @@ def _run_execution_job(
     """后台作业：对已有项目执行验证（不重新生成），进度写回任务表。"""
     best = {"frac": 0.0}
 
-    def _progress(stage: str, info: dict[str, Any]) -> None:
+    # C-4：把取消检查下沉到引擎的阶段内长循环（进度回调只在阶段边界触发，
+    # 大仓扫描/逐文件执行期间无法及时取消）。probe 命中即抛，由 executor.submit
+    # 捕获置 cancelled 终态；未取消时零影响。
+    def _cancel_probe() -> None:
         if task_store.is_cancelled(task_id):
             raise TaskCancelledError(task_id)
+
+    opts.cancel_probe = _cancel_probe
+
+    def _progress(stage: str, info: dict[str, Any]) -> None:
+        _cancel_probe()
         frac = _stage_progress(stage, info, best["frac"])
         best["frac"] = frac
         task_store.update(task_id, progress=round(frac, 3), stage=_stage_with_detail(stage, info))
@@ -790,9 +798,15 @@ def _run_generation_job(
         opts.persist = True
     best = {"frac": 0.0}
 
-    def _progress(stage: str, info: dict[str, Any]) -> None:
+    # C-4：取消探针下沉到引擎阶段内长循环（见 _run_execution_job 注释）。
+    def _cancel_probe() -> None:
         if task_store.is_cancelled(task_id):
             raise TaskCancelledError(task_id)
+
+    opts.cancel_probe = _cancel_probe
+
+    def _progress(stage: str, info: dict[str, Any]) -> None:
+        _cancel_probe()
         frac = _stage_progress(stage, info, best["frac"])
         best["frac"] = frac
         task_store.update(task_id, progress=round(frac, 3), stage=_stage_with_detail(stage, info))
