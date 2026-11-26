@@ -2546,9 +2546,11 @@ class BaseBrowserAgent:
         """构造 BrowserProfile。
 
         #180：默认每任务独立临时 user_data_dir + 动态调试端口（storage_state=None，
-        行为零变化）。PW-3a：仅当命名会话显式生效时注入已保存的 storage_state，
-        仍保留独立 user_data_dir —— browser-use 会以 state 覆盖该临时 profile 的
-        cookie/storage，实现"隔离目录 + 复用登录态"，两个 alias 互不串味。
+        行为零变化）。PW-3a：仅当命名会话显式生效时注入登录态，仍保留独立
+        user_data_dir —— 两个 alias 互不串味。
+        3b-0：传入的 storage_state 是"本次执行专用 state 文件路径"（str）而非 dict。
+        browser-use 的 StorageStateWatchdog 仅对路径加载/写回；传 dict 两端都会被
+        静默跳过（0.10.1 源码实测），曾导致 PW-3a 登录态复用/回写全部失效。
         """
         # Default implementation, can be overridden
         chrome_path = None
@@ -2999,21 +3001,27 @@ class BaseBrowserAgent:
             pass
 
         # PW-3a：命名会话默认关闭；仅开关+目录+合法 alias 三者齐备时载入登录态。
+        # 3b-0：browser-use watchdog 仅在 storage_state 为路径时才加载/写回（传 dict
+        # 会被静默跳过），故物化一个本次执行专用的 runtime state 文件交给 profile。
         # 任何异常都降级为全新会话（不阻断执行），fail-open 与 #180 隔离语义一致。
         _session_registry = None
-        _session_state = None
+        _runtime_state_path = None
         if session_registry.is_named_session_active(session_alias):
             try:
                 _session_registry = session_registry.SessionRegistry(
                     session_registry.configured_state_dir()
                 )
-                _session_state = _session_registry.load(session_alias)
+                _runtime_state_path = _session_registry.prepare_runtime_state(
+                    session_alias, _session_registry.load(session_alias)
+                )
             except Exception as e:
                 logger.warning("命名会话载入失败，降级为独立会话: %s", type(e).__name__)
                 _session_registry = None
-                _session_state = None
+                _runtime_state_path = None
 
-        browser_profile = self._create_browser_profile(_session_state)
+        browser_profile = self._create_browser_profile(
+            str(_runtime_state_path) if _runtime_state_path else None
+        )
 
         agent = Agent(
             task=final_task,
@@ -3346,23 +3354,27 @@ class BaseBrowserAgent:
             except Exception as e:
                 logger.warning(f'断言评估跳过（不影响执行结果）: {e}')
 
-        # PW-3a：登录态回写。仅在显式 persist + 命名会话生效 + 未被用户停止时执行。
-        # 非阻断：导出/落盘异常一律降级为日志（只记异常类型，Cookie 永不进日志/库）。
-        if _session_registry is not None and persist_session_state:
-            _stopped = False
+        # 3b-0：登录态回写。browser-use 在 agent.run() 的 finally 里已 kill() browser
+        # session（CDP 断开），故不能在返回后再调 export_storage_state()——会静默失败。
+        # 正解：watchdog 在 kill() 阶段（CDP 仍连）已把 state 写回 runtime 路径，这里
+        # 读回并按显式 persist + 未被用户停止归档到正式 registry。全程非阻断。
+        if _session_registry is not None and _runtime_state_path is not None:
             try:
                 _stopped = bool(should_stop()) if should_stop else False
             except Exception:
                 _stopped = False
-            if not _stopped:
+            if persist_session_state and not _stopped:
                 try:
-                    _bs = getattr(agent, 'browser_session', None)
-                    if _bs is not None and hasattr(_bs, 'export_storage_state'):
-                        _state = await _bs.export_storage_state()
-                        if isinstance(_state, dict):
-                            _session_registry.save(session_alias, _state)
+                    _state = _session_registry.read_runtime_state(_runtime_state_path)
+                    if _state is not None:
+                        _session_registry.save(session_alias, _state)
                 except Exception as e:
-                    logger.warning("命名会话登录态回写跳过（不影响执行结果）: %s", type(e).__name__)
+                    logger.warning("命名会话登录态归档跳过（不影响执行结果）: %s", type(e).__name__)
+            # 无论是否归档，都必须清理本次 runtime state（含 Cookie，等同凭据）。
+            try:
+                _session_registry.cleanup_runtime_state(_runtime_state_path)
+            except Exception as e:
+                logger.warning("命名会话运行时状态清理跳过（不影响执行结果）: %s", type(e).__name__)
 
         return history
 

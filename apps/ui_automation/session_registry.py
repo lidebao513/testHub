@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import stat
+import uuid
 from pathlib import Path
 
 logger = logging.getLogger("django")
@@ -82,14 +83,13 @@ class SessionRegistry:
             raise SessionRegistryError("会话状态路径越界")
         return path
 
-    def save(self, alias: object, storage_state: dict) -> Path:
-        """原子写入 storage_state，返回落盘路径。只记 alias，不记内容。"""
-        path = self._path_for(alias)
-        if not isinstance(storage_state, dict) or not all(
-            k in storage_state for k in _REQUIRED_KEYS
-        ):
-            raise SessionRegistryError("storage_state 结构不合法（需含 cookies / origins）")
+    @staticmethod
+    def _valid_state(data: object) -> bool:
+        return isinstance(data, dict) and all(k in data for k in _REQUIRED_KEYS)
 
+    @staticmethod
+    def _atomic_write(path: Path, storage_state: dict) -> None:
+        """原子写入 + 0600（Windows 尽力而为）。只写文件，不打日志。"""
         payload = json.dumps(storage_state, ensure_ascii=False, separators=(",", ":"))
         tmp = path.with_name(f".{path.name}.tmp")
         try:
@@ -102,6 +102,26 @@ class SessionRegistry:
         finally:
             if tmp.exists():
                 tmp.unlink(missing_ok=True)
+
+    @classmethod
+    def _read_validated(cls, path: Path) -> dict | None:
+        """读取并校验 state；缺失/损坏/结构不合法均返回 None。"""
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not cls._valid_state(data):
+                raise ValueError("结构不合法")
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        return data
+
+    def save(self, alias: object, storage_state: dict) -> Path:
+        """原子写入 storage_state，返回落盘路径。只记 alias，不记内容。"""
+        path = self._path_for(alias)
+        if not self._valid_state(storage_state):
+            raise SessionRegistryError("storage_state 结构不合法（需含 cookies / origins）")
+        self._atomic_write(path, storage_state)
         logger.info("命名会话状态已保存 alias=%s exists=True", alias)
         return path
 
@@ -110,16 +130,57 @@ class SessionRegistry:
         path = self._path_for(alias)
         exists = path.is_file()
         logger.info("命名会话状态读取 alias=%s exists=%s", alias, exists)
-        if not exists:
-            return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or not all(k in data for k in _REQUIRED_KEYS):
-                raise ValueError("结构不合法")
-        except (OSError, ValueError, json.JSONDecodeError):
+        data = self._read_validated(path)
+        if exists and data is None:
             logger.warning("命名会话状态损坏，降级为全新会话 alias=%s", alias)
-            return None
         return data
+
+    # ---------------------------------------------------------------- 3b-0 --
+    # browser-use 0.10.1 的 StorageStateWatchdog 只在 storage_state 为 str/Path 时
+    # 才会加载（on_BrowserConnectedEvent → LoadStorageStateEvent）和写回（kill 时
+    # SaveStorageStateEvent）；传 dict 两端都会被跳过（watchdog 源码 177-181/239-241）。
+    # 因此每次执行物化一个"临时 state 文件"交给 profile：watchdog 在 CDP 存活期
+    # 加载 seed 并写回，执行后再按需归档到正式 alias 文件并清理临时文件。
+    _RUNTIME_PREFIX = ".runtime-"
+
+    def runtime_state_path(self, alias: object, nonce: str | None = None) -> Path:
+        """本次执行专用 state 路径（含 alias 与随机 nonce，防并发互写）。"""
+        safe = validate_alias(alias)
+        suffix = nonce or uuid.uuid4().hex[:12]
+        # 文件名仍以 .storage_state.json 结尾，沿用 .gitignore / CI secret 规则。
+        name = f"{self._RUNTIME_PREFIX}{safe}-{suffix}.storage_state.json"
+        path = (self.state_dir / name).resolve()
+        if path.parent != self.state_dir:
+            raise SessionRegistryError("运行时会话状态路径越界")
+        return path
+
+    def prepare_runtime_state(self, alias: object, data: dict | None) -> Path:
+        """把正式 state（或空 state）物化到 runtime 路径，返回该路径。"""
+        path = self.runtime_state_path(alias)
+        payload = data if self._valid_state(data) else {"cookies": [], "origins": []}
+        self._atomic_write(path, payload)
+        logger.info("命名会话运行时状态已准备 alias=%s exists=True", alias)
+        return path
+
+    def read_runtime_state(self, path: str | Path) -> dict | None:
+        """读回 watchdog 写回的 runtime state；缺失/损坏/结构非法均 None。"""
+        return self._read_validated(Path(path))
+
+    def cleanup_runtime_state(self, path: str | Path) -> None:
+        """删 runtime 文件及 watchdog 旁支（.json.bak/.json.tmp），幂等。"""
+        base = Path(path).resolve()
+        if base.parent != self.state_dir:
+            raise SessionRegistryError("运行时会话状态路径越界")
+        for candidate in (
+            base,
+            base.with_suffix(".json.bak"),
+            base.with_suffix(".json.tmp"),
+        ):
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("命名会话运行时状态清理失败 name=%s", candidate.name)
+        logger.info("命名会话运行时状态已清理 exists=False")
 
     def clear(self, alias: object) -> bool:
         """删除指定 alias 的 state；不存在也算成功（幂等）。"""
