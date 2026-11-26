@@ -159,3 +159,75 @@ class TestSwitchDiscipline:
         monkeypatch.setenv("UI_SESSION_ALIAS_ENABLED", "true")
         monkeypatch.delenv("UI_SESSION_STATE_DIR", raising=False)
         assert SR.is_named_session_active("admin") is False
+
+
+# ============================================================================
+# 3b-0：runtime state 文件（browser-use watchdog 只认路径，不认 dict）
+# ============================================================================
+
+
+class TestRuntimeState:
+    def test_prepare_writes_seed_and_returns_path(self, registry, fake_state):
+        """物化正式 state 到 runtime 路径，内容一致，文件名带 alias。"""
+        path = registry.prepare_runtime_state("admin", fake_state)
+        assert path.is_file()
+        assert ".runtime-admin-" in path.name
+        assert path.name.endswith(".storage_state.json")
+        assert registry.read_runtime_state(path) == fake_state
+
+    def test_prepare_invalid_seed_becomes_empty(self, registry):
+        """损坏/None seed → 空 state（全新会话），不抛异常。"""
+        path = registry.prepare_runtime_state("admin", None)
+        assert registry.read_runtime_state(path) == {"cookies": [], "origins": []}
+
+    def test_each_prepare_gets_unique_path(self, registry, fake_state):
+        """每次执行独立路径，防止并发两任务互写同一 runtime 文件。"""
+        p1 = registry.prepare_runtime_state("admin", fake_state)
+        p2 = registry.prepare_runtime_state("admin", fake_state)
+        assert p1 != p2
+        assert p1.is_file() and p2.is_file()
+
+    def test_different_aliases_isolated(self, registry, fake_state):
+        pa = registry.prepare_runtime_state("admin", fake_state)
+        pu = registry.prepare_runtime_state("user", {"cookies": [], "origins": []})
+        assert pa.parent == pu.parent == registry.state_dir
+        assert "admin" in pa.name and "user" in pu.name
+        assert registry.read_runtime_state(pa) == fake_state
+
+    def test_read_corrupted_returns_none(self, registry):
+        path = registry.prepare_runtime_state("admin", None)
+        path.write_text("corrupted", encoding="utf-8")
+        assert registry.read_runtime_state(path) is None
+
+    def test_cleanup_removes_state_and_bak_tmp(self, registry, fake_state):
+        """清理 runtime 文件 + watchdog 旁支（.json.bak/.json.tmp），幂等。"""
+        path = registry.prepare_runtime_state("admin", fake_state)
+        bak = path.with_suffix(".json.bak")
+        tmp = path.with_suffix(".json.tmp")
+        bak.write_text("bak", encoding="utf-8")
+        tmp.write_text("tmp", encoding="utf-8")
+        registry.cleanup_runtime_state(path)
+        assert not path.exists() and not bak.exists() and not tmp.exists()
+        registry.cleanup_runtime_state(path)  # 幂等，不抛
+        assert not path.exists()
+
+    def test_cleanup_rejects_outside_path(self, registry):
+        """拒绝越界路径（防绕过 state_dir 删除任意文件）。"""
+        with pytest.raises(SR.SessionRegistryError):
+            registry.cleanup_runtime_state(registry.state_dir.parent / "outside.json")
+
+    def test_runtime_path_rejects_bad_alias(self, registry):
+        with pytest.raises(SR.SessionRegistryError):
+            registry.runtime_state_path("../etc")
+        with pytest.raises(SR.SessionRegistryError):
+            registry.runtime_state_path("bad/alias")
+
+    def test_runtime_name_covered_by_secret_rules(self, registry, fake_state):
+        """runtime 文件仍以 .storage_state.json 结尾 → 命中 .gitignore/CI 规则。"""
+        path = registry.prepare_runtime_state("admin", fake_state)
+        assert path.name.endswith(".storage_state.json")
+
+    def test_prepare_logs_no_cookie(self, registry, fake_state, caplog):
+        with caplog.at_level(logging.INFO):
+            registry.prepare_runtime_state("admin", fake_state)
+        assert fake_state["cookies"][0]["value"] not in caplog.text

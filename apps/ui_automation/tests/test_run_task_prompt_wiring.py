@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 
@@ -69,9 +71,16 @@ def run_task_env(monkeypatch):
     monkeypatch.setattr(ai_base.BaseBrowserAgent, "_verify_execution_llm", _no_await)
     monkeypatch.setattr(ai_base.BaseBrowserAgent, "_cleanup_zombie_chrome", lambda self: None)
     profile_states: list[object] = []
+    # 3b-0：profile 收到的是 runtime state 路径（str）。在注入时快照其内容，
+    # 因为 run_task 末尾会清理该文件，事后无法再从路径读回。
+    profile_state_contents: list[object] = []
 
     def _fake_profile(self, storage_state=None):
         profile_states.append(storage_state)
+        if isinstance(storage_state, str) and Path(storage_state).is_file():
+            profile_state_contents.append(json.loads(Path(storage_state).read_text(encoding="utf-8")))
+        else:
+            profile_state_contents.append(None)
         return object()
 
     monkeypatch.setattr(ai_base.BaseBrowserAgent, "_create_browser_profile", _fake_profile)
@@ -98,6 +107,9 @@ def run_task_env(monkeypatch):
         )
         assert _FakeAgent.captured, "run_task 没有构造 Agent，说明链路被打断"
         run.last_profile_state = profile_states[-1] if profile_states else None
+        run.last_profile_state_content = (
+            profile_state_contents[-1] if profile_state_contents else None
+        )
         return _FakeAgent.captured[-1]
 
     return run
@@ -203,7 +215,10 @@ def test_named_session_default_passes_no_state(run_task_env, monkeypatch):
 
 
 def test_named_session_loads_state_when_active(run_task_env, monkeypatch, tmp_path):
-    """开关+目录+合法 alias 齐备 → 载入对应 state 注入 profile。"""
+    """3b-0：开关+alias 齐备 → 注入 runtime state 路径，内容等于正式 state。
+
+    browser-use 仅对路径才加载/写回；断言的是路径内容而非 dict 本身。
+    """
     from apps.ui_automation import session_registry as SR
 
     monkeypatch.setenv("UI_SESSION_ALIAS_ENABLED", "true")
@@ -212,7 +227,12 @@ def test_named_session_loads_state_when_active(run_task_env, monkeypatch, tmp_pa
     SR.SessionRegistry(tmp_path).save("admin", fake)
 
     run_task_env(session_alias="admin")
-    assert run_task_env.last_profile_state == fake
+    injected = run_task_env.last_profile_state
+    assert isinstance(injected, str) and ".runtime-admin-" in injected
+    assert Path(injected).name.endswith(".storage_state.json")
+    assert run_task_env.last_profile_state_content == fake
+    # 临时 state 含 Cookie，执行结束必须清理
+    assert not Path(injected).exists()
 
 
 def test_named_session_ignored_when_switch_off(run_task_env, monkeypatch, tmp_path):
@@ -229,10 +249,12 @@ def test_named_session_ignored_when_switch_off(run_task_env, monkeypatch, tmp_pa
 
 
 def test_corrupted_state_degrades_to_fresh_session(run_task_env, monkeypatch, tmp_path):
-    """损坏 state 不阻断执行，profile 收到 None（起全新会话）。"""
+    """损坏 state 不阻断执行，降级为空白 runtime state（起全新会话）。"""
     monkeypatch.setenv("UI_SESSION_ALIAS_ENABLED", "true")
     monkeypatch.setenv("UI_SESSION_STATE_DIR", str(tmp_path))
     (tmp_path / "admin.storage_state.json").write_text("corrupted", encoding="utf-8")
     task = run_task_env(session_alias="admin")
     assert task  # 执行链路跑通
-    assert run_task_env.last_profile_state is None
+    injected = run_task_env.last_profile_state
+    assert isinstance(injected, str) and not Path(injected).exists()  # 已清理
+    assert run_task_env.last_profile_state_content == {"cookies": [], "origins": []}
