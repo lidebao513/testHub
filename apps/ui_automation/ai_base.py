@@ -19,6 +19,7 @@ from langchain_openai import ChatOpenAI
 from urllib.parse import urlparse
 
 from .history_utils import history_steps
+from .skill_loader import BLOCK_START_PREFIX, load_skill, render_skill_block
 
 # 加载环境变量
 load_dotenv()
@@ -2917,6 +2918,14 @@ class BaseBrowserAgent:
         # #177：预探索指令放在规则区之前，确保模型先读到"先看页面再动手"
         if pre_explore_on:
             final_task += build_pre_explore_prompt()
+
+        # PW-1：Skill 纪律块。放在预探索之后、安全边界/规则区之前，
+        # 让模型先建立"观察→执行→核验"纪律再读具体操作规则。
+        # 幂等：同一 task 已含标记时不再重复注入（防止未来重构二次拼接）。
+        if BLOCK_START_PREFIX not in final_task:
+            skill_block = render_skill_block(load_skill())
+            if skill_block:
+                final_task += "\n" + skill_block
 
         # 极限效率版标记指令
         from datetime import datetime

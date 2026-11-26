@@ -19,6 +19,7 @@ from typing import ClassVar
 import pytest
 
 from apps.ui_automation import ai_base
+from apps.ui_automation.skill_loader import BLOCK_START_PREFIX, load_skill, render_skill_block
 
 PLANNED_TASKS = [
     {"id": 1, "description": "打开登录页", "status": "pending"},
@@ -133,3 +134,40 @@ def test_original_description_is_preserved(run_task_env):
     description = "在示例站点完成一次登录"
     task = run_task_env(description=description)
     assert task.startswith(description)
+
+
+# ============================================================================
+# PW-1：Skill 规范块真的进了 Agent.task
+# ============================================================================
+
+
+def test_skill_block_is_in_agent_task(run_task_env):
+    """真实 run_task 链路：规范块必须整段出现在交给 Agent 的 task 里。"""
+    task = run_task_env()
+    doc = load_skill()
+    assert doc is not None
+    assert render_skill_block(doc).strip() in task
+    assert "探页面纪律" in task
+    assert "失败诊断纪律" in task
+
+
+def test_skill_block_appears_exactly_once(run_task_env):
+    """幂等：同一 task 不得出现两次规范块。"""
+    task = run_task_env()
+    assert task.count(BLOCK_START_PREFIX) == 1
+
+
+def test_skill_block_precedes_rules_and_follows_pre_explore(run_task_env):
+    """顺序护栏：预探索 → Skill 纪律 → 安全边界/规则区。"""
+    task = run_task_env()
+    assert task.index("PAGE PRE-EXPLORATION") < task.index(BLOCK_START_PREFIX)
+    assert task.index(BLOCK_START_PREFIX) < task.index("SECURITY BOUNDARY")
+    assert task.index(BLOCK_START_PREFIX) < task.index("CRITICAL PERFORMANCE & SYNC RULES")
+
+
+def test_skill_block_omitted_when_load_fails(run_task_env, monkeypatch):
+    """fail-open：规范加载失败不打断执行，也不在 prompt 里留半截标记。"""
+    monkeypatch.setattr(ai_base, "load_skill", lambda *a, **k: None)
+    task = run_task_env()
+    assert BLOCK_START_PREFIX not in task
+    assert "CRITICAL PERFORMANCE & SYNC RULES" in task
