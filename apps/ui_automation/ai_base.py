@@ -2495,6 +2495,8 @@ class BaseBrowserAgent:
 
         判定标准（fail-closed，宁可不杀也不错杀）：进程命令行带有 --user-data-dir=，
         且该目录已不存在（临时目录被清理 = 启动它的会话早已结束，进程是残留孤儿）。
+        3b-2 alias 固定目录带 -persistent- 标记，不参与孤儿判定；持久目录靠 CDP
+        连接健康检查，不能因为"目录暂时不存在"就误杀长会话浏览器。
         旧逻辑按固定调试端口子串匹配，动态端口时代会误杀其他并发会话正在使用的浏览器。
         """
         try:
@@ -2504,7 +2506,9 @@ class BaseBrowserAgent:
                 arg = str(arg)
                 if arg.startswith('--user-data-dir='):
                     path = arg.split('=', 1)[1].strip().strip('"')
-                    return bool(path) and not os.path.exists(path)
+                    if not path or session_registry.SessionRegistry.is_persistent_profile_path(path):
+                        return False
+                    return not os.path.exists(path)
             return False
         except Exception:
             return False
@@ -2514,7 +2518,8 @@ class BaseBrowserAgent:
 
         #180 会话隔离：调试端口改为动态分配后，不能再按固定端口子串匹配杀进程
         （会误杀其他并发会话的浏览器）。只有 user-data-dir 指向已消失临时目录的
-        进程才判定为孤儿并清理，见 _is_orphaned_chrome_cmdline。
+        进程才判定为孤儿并清理；3b-2 alias 固定目录（带 -persistent-）不参与判定，
+        见 _is_orphaned_chrome_cmdline。
         """
         import platform
         import psutil
@@ -2542,15 +2547,17 @@ class BaseBrowserAgent:
         if cleaned_count > 0:
             logger.info(f"✅ Cleaned up {cleaned_count} orphaned Chrome processes")
 
-    def _create_browser_profile(self, storage_state=None):
+    def _create_browser_profile(self, storage_state=None, session_alias=None):
         """构造 BrowserProfile。
 
-        #180：默认每任务独立临时 user_data_dir + 动态调试端口（storage_state=None，
-        行为零变化）。PW-3a：仅当命名会话显式生效时注入登录态，仍保留独立
-        user_data_dir —— 两个 alias 互不串味。
-        3b-0：传入的 storage_state 是"本次执行专用 state 文件路径"（str）而非 dict。
-        browser-use 的 StorageStateWatchdog 仅对路径加载/写回；传 dict 两端都会被
-        静默跳过（0.10.1 源码实测），曾导致 PW-3a 登录态复用/回写全部失效。
+        #180：默认每任务独立临时 user_data_dir + 动态调试端口（两个参数缺省，
+        行为零变化）。PW-3a：命名会话显式生效时注入 runtime state 路径。
+        3b-0：storage_state 必须是"本次执行专用 state 文件路径"（str）而非 dict；
+        browser-use 的 StorageStateWatchdog 仅对路径加载/写回，传 dict 两端都会
+        被静默跳过（0.10.1 源码实测）。
+        3b-2：命名会话显式生效时，user_data_dir 改为 alias 专属固定目录，避免
+        长流程反复登录；目录名保留 browser-use-user-data-dir- 前缀以跳过
+        _copy_profile，并插入 -persistent- 标记以排除僵尸目录判定。
         """
         # Default implementation, can be overridden
         chrome_path = None
@@ -2665,6 +2672,16 @@ class BaseBrowserAgent:
         # 以该子串识别"已是临时目录"，避免它再做一次 profile 拷贝），
         # 同时满足 browser-use get_args() 对 user_data_dir 非 None 的断言。
         user_data_dir = tempfile.mkdtemp(prefix='browser-use-user-data-dir-ui-')
+        # 3b-2：仅命名会话显式生效时改为 alias 固定目录；任何准备失败都降级回
+        # #180 临时目录，不能阻断执行，也不能绕过默认隔离。
+        if session_alias and session_registry.is_named_session_active(session_alias):
+            try:
+                _profile_registry = session_registry.SessionRegistry(
+                    session_registry.configured_state_dir()
+                )
+                user_data_dir = str(_profile_registry.profile_dir(session_alias))
+            except Exception as e:  # noqa: BLE001 - 固定目录准备失败必须降级，不阻断执行
+                logger.warning("命名会话 profile 目录准备失败，降级为临时目录: %s", type(e).__name__)
 
         profile_kwargs = dict(
             user_data_dir=user_data_dir,
@@ -3020,7 +3037,8 @@ class BaseBrowserAgent:
                 _runtime_state_path = None
 
         browser_profile = self._create_browser_profile(
-            str(_runtime_state_path) if _runtime_state_path else None
+            str(_runtime_state_path) if _runtime_state_path else None,
+            session_alias=session_alias,
         )
 
         agent = Agent(

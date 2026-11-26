@@ -71,12 +71,14 @@ def run_task_env(monkeypatch):
     monkeypatch.setattr(ai_base.BaseBrowserAgent, "_verify_execution_llm", _no_await)
     monkeypatch.setattr(ai_base.BaseBrowserAgent, "_cleanup_zombie_chrome", lambda self: None)
     profile_states: list[object] = []
+    profile_aliases: list[object] = []
     # 3b-0：profile 收到的是 runtime state 路径（str）。在注入时快照其内容，
     # 因为 run_task 末尾会清理该文件，事后无法再从路径读回。
     profile_state_contents: list[object] = []
 
-    def _fake_profile(self, storage_state=None):
+    def _fake_profile(self, storage_state=None, session_alias=None):
         profile_states.append(storage_state)
+        profile_aliases.append(session_alias)
         if isinstance(storage_state, str) and Path(storage_state).is_file():
             profile_state_contents.append(json.loads(Path(storage_state).read_text(encoding="utf-8")))
         else:
@@ -107,6 +109,7 @@ def run_task_env(monkeypatch):
         )
         assert _FakeAgent.captured, "run_task 没有构造 Agent，说明链路被打断"
         run.last_profile_state = profile_states[-1] if profile_states else None
+        run.last_profile_alias = profile_aliases[-1] if profile_aliases else None
         run.last_profile_state_content = (
             profile_state_contents[-1] if profile_state_contents else None
         )
@@ -258,3 +261,20 @@ def test_corrupted_state_degrades_to_fresh_session(run_task_env, monkeypatch, tm
     injected = run_task_env.last_profile_state
     assert isinstance(injected, str) and not Path(injected).exists()  # 已清理
     assert run_task_env.last_profile_state_content == {"cookies": [], "origins": []}
+
+
+def test_run_task_passes_alias_to_profile(run_task_env, monkeypatch, tmp_path):
+    """3b-2：alias 必须真正传到 profile 构造层，固定目录才有机会生效。"""
+    monkeypatch.setenv("UI_SESSION_ALIAS_ENABLED", "true")
+    monkeypatch.setenv("UI_SESSION_STATE_DIR", str(tmp_path))
+    run_task_env(session_alias="admin")
+    assert run_task_env.last_profile_alias == "admin"
+
+
+def test_run_task_passes_alias_even_when_switch_off(run_task_env, monkeypatch, tmp_path):
+    """开关关闭时 alias 仍透传，由 profile 层负责降级回临时目录。"""
+    monkeypatch.setenv("UI_SESSION_ALIAS_ENABLED", "0")
+    monkeypatch.setenv("UI_SESSION_STATE_DIR", str(tmp_path))
+    run_task_env(session_alias="admin")
+    assert run_task_env.last_profile_alias == "admin"
+    assert run_task_env.last_profile_state is None
