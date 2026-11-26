@@ -134,6 +134,12 @@ ui_verify/*.log
 *.db-wal
 # 本机调试登录态快照（含真实 JWT/token，禁止入库）
 ul3000.json
+# PW-3a 命名会话登录态（storage_state 含真实 Cookie，等同凭据，禁止入库）
+*.storage_state.json
+storage_state*.json
+*session-state*.json
+# 命名会话状态目录的常用默认名（若配置到别处，仍受上面的文件后缀规则覆盖）
+ui-session-state/
 # UI 验证运行时数据快照/报告（体积大、可重跑生成；验证脚本 .py/.md 仍入库）
 ui_verify/*.json
 ui_verify/*.html
