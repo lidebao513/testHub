@@ -302,8 +302,21 @@
 
     <div class="card">
       <h2>⏳ 任务列表 <span id="tasks_running_badge" class="badge b-running" style="display:none">有运行中任务</span></h2>
-      <div class="actions" style="margin:0 0 10px">
+      <div class="actions" style="margin:0 0 10px;flex-wrap:wrap;align-items:center">
         <button class="btn-ghost" onclick="loadTasks()">刷新任务</button>
+        <label class="hint" style="margin:0">状态筛选
+          <select id="tasks_state_filter" onchange="onTaskFilterChange()">
+            <option value="">全部</option>
+            <option value="pending">排队中</option>
+            <option value="running">运行中</option>
+            <option value="success">成功</option>
+            <option value="failed">失败</option>
+            <option value="cancelled">已取消</option>
+          </select>
+        </label>
+        <button class="btn-ghost btn-sm" id="tasks_prev" onclick="taskPage(-1)">← 上一页</button>
+        <button class="btn-ghost btn-sm" id="tasks_next" onclick="taskPage(1)">下一页 →</button>
+        <span class="hint" id="tasks_page_info" style="margin:0"></span>
         <span class="hint">运行中每 3 秒自动刷新；任务持久化在服务端，刷新页面/重启服务不丢失</span>
       </div>
       <div id="tasks_list"><span class="hint">加载中…</span></div>
@@ -467,8 +480,28 @@ function apiUrl(path){
   return path.startsWith(BASE) ? API_PREFIX + path.slice(BASE.length) : path;
 }
 
-async function api(path, opts){
-  const r = await fetch(apiUrl(path), Object.assign({headers:{"Content-Type":"application/json"}}, opts));
+/* E-5：大仓库/专家审阅可能跑数分钟，提交请求不能无限挂起。
+   `timeoutMs` 可选（默认不超时，兼容既有调用），慢请求调用方显式传 REQUEST_TIMEOUT_MS。 */
+const REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+
+async function api(path, opts, timeoutMs){
+  const init = Object.assign({headers:{"Content-Type":"application/json"}}, opts);
+  let ac = null, timer = null;
+  if(timeoutMs && typeof AbortController !== "undefined"){
+    ac = new AbortController();
+    init.signal = ac.signal;
+    timer = setTimeout(()=>ac.abort(), timeoutMs);
+  }
+  let r;
+  try{
+    r = await fetch(apiUrl(path), init);
+  }catch(e){
+    if(e && e.name === "AbortError")
+      throw new Error(`请求超时（超过 ${Math.round(timeoutMs/1000)} 秒）：服务端可能仍在处理，请到「任务列表」看是否已生成任务，不要重复提交`);
+    throw e;
+  }finally{
+    if(timer) clearTimeout(timer);
+  }
   if(!r.ok){
     // 后端错误体字段不统一：AppError 用 detail，CodeupError/UnauthorizedError 用 message。
     // 全都读一遍，避免像「Codeup API [401] Expired token」这样的真实原因被吞成裸 HTTP 401。
@@ -882,6 +915,17 @@ let activeTaskId = null;
 // 否则会弹出与本次操作无关的生成类提示（历史现场：点执行验证弹「生成 0 条」）。
 let pollKind = "generate";
 
+/* E-5：轮询超过 5 分钟仍未终态只提示一次（大仓/专家审阅慢是正常的），
+   不自动取消、不打断任务——长任务由用户自己决定继续还是点「取消任务」。 */
+let pollSlowNotified = false;
+function resetSlowNotice(){ pollSlowNotified = false; }
+function notifyIfSlow(){
+  if(pollSlowNotified || !pollStartAt) return;
+  if(Date.now() - pollStartAt <= REQUEST_TIMEOUT_MS) return;
+  pollSlowNotified = true;
+  log("⏳ 任务已运行超过 5 分钟（大仓库/专家审阅属正常），可继续等待；若长时间无进展可点「取消任务」");
+}
+
 function saveLastTask(id, kind){
   activeTaskId = id;
   try{ localStorage.setItem(LS_LAST_TASK, JSON.stringify({id, kind})); }catch(e){}
@@ -896,6 +940,7 @@ function setBusy(busy, kind){
   $("btn_cancel_task").style.display = busy ? "inline-block" : "none";
   $("gen_progress").style.display = busy ? "block" : "none";
   pollStartAt = busy ? Date.now() : 0;
+  if(busy) resetSlowNotice();
   if(!busy){ $("gen_stage").textContent="—"; $("gen_frac").textContent=""; $("gen_bar").style.width="0"; }
 }
 /* 命中幂等键时后端会 reused=true：直接复用历史任务，不会重跑管道。
@@ -936,9 +981,11 @@ async function submitGeneration(body){
   $("btn_gen").disabled = true;
   setBusy(true);
   try{
-    log("提交生成任务…");
+    // E-5：提交阶段给明确 loading（大仓首次取码/分析可能 1~2 分钟），并设 5 分钟硬上限，
+    // 避免服务端卡住时页面永久停在「提交中」、用户重复点生成。
+    log("⏳ 正在提交生成任务（大仓库首次取码/分析可能要 1~2 分钟，请勿重复点击）…");
     pollKind = "generate";
-    const r = await api("/api/v1/generate", {method:"POST", body:JSON.stringify(body)});
+    const r = await api("/api/v1/generate", {method:"POST", body:JSON.stringify(body)}, REQUEST_TIMEOUT_MS);
     $("task_id").textContent = r.task_id;
     setBadge("task_state","running");
     log("已接受，任务 "+r.task_id);
@@ -986,13 +1033,19 @@ function preflightGenerate(body){
     risks.push("已勾「专家逐页审阅」：逐页调大模型，实测 50~170 秒/页，整体 3~5 分钟并消耗 LLM 额度"
       + "（默认最多 3 页 / 90 秒收尾）。");
   }
+  // E-4：空选语义仍是「全量」（不改旧行为），但必须让用户显式确认——
+  // 之前点了生成才发现是大仓全量、烧LLM且慢，却没有任何提示说「你其实一个文件都没勾」。
+  if(selCount === 0){
+    risks.push("未勾选任何代码文件：按既有语义本次会「全量」生成（所有扫描到的文件），大仓耗时更久、消耗更多 LLM 额度。"
+      + "若只想生成部分文件，请点「取消」后到 B 区勾选，再重新生成。");
+  }
   const lines = [
     "即将开始生成测试用例（会真实扫描代码" + (body.test_url ? "，并访问被测系统" : "") + "）。",
     "",
     "模式：" + (inc ? "增量（只对基线与目标的 diff 生成）" : "全量（整仓功能点都出用例）"),
     "目标：" + tgtText,
     "基线：" + baseText + (inc && samePoint ? "   ← 与目标同一个点" : ""),
-    "范围：" + (selCount ? "勾选的 " + selCount + " 个文件" : "未限定（按扫描结果全量分析）"),
+    "范围：" + (selCount ? "勾选的 " + selCount + " 个文件" : "未勾选=全量（扫描结果里的所有文件）"),
     "被测地址：" + (body.test_url || "未填（不做运行时元素级发现）"),
     "登录账号：" + (body.login_user || "未填") + (body.login_otp ? "（含动态码）" : ""),
     "预计耗时：约 1~2 分钟" + (body.expert_ui ? "；开专家审阅 3~5 分钟" : "")
@@ -1112,9 +1165,9 @@ async function doExecute(){
       allow_write: allowWrite,
       ui_click: uiClick
     };
-    log("提交执行任务（项目 "+pid+"）…");
+    log("⏳ 正在提交执行验证（大仓可能要几分钟，请勿重复点击）…");
     pollKind = "execute";
-    const r = await api("/api/v1/execute", {method:"POST", body:JSON.stringify(body)});
+    const r = await api("/api/v1/execute", {method:"POST", body:JSON.stringify(body)}, REQUEST_TIMEOUT_MS);
     $("task_id").textContent = r.task_id;
     setBadge("task_state","running");
     log("已接受，任务 "+r.task_id);
@@ -1218,6 +1271,7 @@ function poll(taskId, onUpdate){
   if(pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(async ()=>{
     try{
+      notifyIfSlow();
       const r = await api("/api/v1/tasks/"+taskId);
       setBadge("task_state", r.state);
       $("stage").textContent = stageLabel(r.stage);
@@ -1347,25 +1401,66 @@ async function restoreLastTask(){
 }
 
 let tasksTimer = null;
+let taskOffset = 0;
+const TASK_PAGE_SIZE = 20;
+function onTaskFilterChange(){ taskOffset = 0; loadTasks(); }
+function taskPage(delta){ taskOffset = Math.max(0, taskOffset + delta*TASK_PAGE_SIZE); loadTasks(); }
 async function loadTasks(){
   try{
-    const r = await api("/api/v1/tasks?limit=20");
+    // E-6：筛选/分页下沉到后端（SQL WHERE + LIMIT/OFFSET），前端只留游标和总数。
+    const filter = $("tasks_state_filter");
+    const state = filter ? filter.value : "";
+    const q = `/api/v1/tasks?limit=${TASK_PAGE_SIZE}&offset=${taskOffset}&state=${encodeURIComponent(state)}`;
+    const r = await api(q);
     const ts = r.tasks || [];
+    const total = Number(r.total != null ? r.total : ts.length);
     const running = ts.some(t=>t.state==="pending"||t.state==="running");
     $("tasks_running_badge").style.display = running ? "inline-block" : "none";
     $("tasks_list").innerHTML = renderTasks(ts);
+    const info = $("tasks_page_info");
+    if(info) info.textContent = total
+      ? `第 ${taskOffset+1}–${Math.min(taskOffset+ts.length, total)} 条 / 共 ${total} 条`
+      : "共 0 条";
+    const prev = $("tasks_prev"), next = $("tasks_next");
+    if(prev) prev.disabled = taskOffset <= 0;
+    if(next) next.disabled = taskOffset + ts.length >= total;
     if(running && !tasksTimer) tasksTimer = setInterval(loadTasks, 3000);
     if(!running && tasksTimer){ clearInterval(tasksTimer); tasksTimer=null; }
   }catch(e){ $("tasks_list").innerHTML = '<span class="hint">加载失败: '+e.message+'</span>'; }
 }
+/* E-3：失败原因默认仍只显示 40 字（表格紧凑），点「展开」看完整错误；
+   title 同时挂全文，悬停也能看。错误文本一律 escapeHtml，防注入。 */
+const _expandedTaskErrors = new Set();
+let _lastRenderedTasks = [];
+function taskErrorHtml(t){
+  const raw = String(t.error || "失败");
+  const full = escapeHtml(raw);
+  if(raw.length <= 40) return `<span title="${full}">${full}</span>`;
+  const expanded = _expandedTaskErrors.has(t.task_id);
+  const head = escapeHtml(raw.slice(0, 40));
+  const toggle = `<a class="link" onclick="toggleTaskError('${t.task_id}')">${expanded?"收起":"展开"}</a>`;
+  const detail = expanded
+    ? `<div class="task-error-detail" style="margin-top:4px;max-width:560px;white-space:pre-wrap;word-break:break-all;color:#991b1b">${full}</div>`
+    : "";
+  return `<span title="${full}">${head}…</span> ${toggle}${detail}`;
+}
+function toggleTaskError(id){
+  if(_expandedTaskErrors.has(id)) _expandedTaskErrors.delete(id);
+  else _expandedTaskErrors.add(id);
+  $("tasks_list").innerHTML = renderTasks(_lastRenderedTasks);
+}
 function renderTasks(ts){
-  if(!ts.length) return '<span class="hint">还没有任务记录</span>';
+  _lastRenderedTasks = ts;
+  if(!ts.length){
+    const f = $("tasks_state_filter");
+    return `<span class="hint">${f && f.value ? "当前筛选下没有任务记录" : "还没有任务记录"}</span>`;
+  }
   let html = '<table><tr><th>创建时间</th><th>任务ID</th><th>类型</th><th>状态</th><th>阶段 / 进度</th><th>项目</th><th>操作</th></tr>';
   for(const t of ts){
     const isRun = t.state==="pending"||t.state==="running";
     let prog;
     if(isRun) prog = `${t.stage||"—"} · ${t.progress!=null?Math.round(t.progress*100)+"%":"—"}`;
-    else if(t.state==="failed") prog = String(t.error||"失败").slice(0,40);
+    else if(t.state==="failed") prog = taskErrorHtml(t);
     else if(t.state==="success") prog = "done · 100%";
     else prog = "—";
     const pid = (t.project_id!=null && t.project_id!=="") ? "#"+t.project_id : "—";

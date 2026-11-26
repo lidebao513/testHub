@@ -321,15 +321,44 @@ class TaskStore:
                 ]:
                     self._cancelled.pop(stale, None)
 
-    def list_recent(self, limit: int = 10) -> list[GenerationTask]:
+    def list_recent(
+        self, limit: int = 10, offset: int = 0, state: str = ""
+    ) -> list[GenerationTask]:
+        """最近任务（可选按 state 筛选 + offset 分页）；默认值兼容既有调用方。
+
+        Batch 5 E-6：任务列表加筛选/分页，SQL 层做 WHERE + LIMIT/OFFSET，
+        不把全量任务读进内存再切片。
+        """
         conn = connect()
         try:
-            rows = conn.execute(
-                "SELECT * FROM gen_tasks ORDER BY created_at DESC LIMIT ?", (limit,)
-            ).fetchall()
+            if state:
+                rows = conn.execute(
+                    "SELECT * FROM gen_tasks WHERE state = ? "
+                    "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    (state, limit, offset),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM gen_tasks ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ).fetchall()
         finally:
             conn.close()
         return [self._row_to_task(r) for r in rows]
+
+    def count_tasks(self, state: str = "") -> int:
+        """符合筛选条件的任务总数（E-6 分页用；state 空=全部）。"""
+        conn = connect()
+        try:
+            if state:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM gen_tasks WHERE state = ?", (state,)
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT COUNT(*) AS n FROM gen_tasks").fetchone()
+        finally:
+            conn.close()
+        return int(row["n"]) if row else 0
 
     def counts_by_state(self) -> dict[str, int]:
         conn = connect()
