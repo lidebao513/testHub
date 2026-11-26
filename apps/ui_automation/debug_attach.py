@@ -21,6 +21,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -119,18 +120,28 @@ async def probe_attached_page(
     try:
         session = session_factory(browser_profile=profile)
         await session.connect(cdp_url=url)
+        # 只读探测核心是 title/URL：证明 attach 通路成立。元素数只是附加信息，
+        # browser-use 0.10.1 的 get_browser_state_summary 依赖 Agent 注册的事件
+        # handler，裸 BrowserSession.connect() 下会抛 ValueError，不能让它阻断探测。
         title = await session.get_current_page_title()
         page_url = await session.get_current_page_url()
-        summary = await session.get_browser_state_summary(
-            include_screenshot=False,
-            cached=False,
-        )
-        dom_state = getattr(summary, "dom_state", None)
-        selector_map = getattr(dom_state, "selector_map", None) or {}
+        element_count = 0
         try:
+            summary = await session.get_browser_state_summary(
+                include_screenshot=False,
+                cached=False,
+            )
+            dom_state = getattr(summary, "dom_state", None)
+            selector_map = getattr(dom_state, "selector_map", None) or {}
             element_count = len(selector_map)
         except TypeError:
-            element_count = 0
+            pass
+        except Exception as exc:  # noqa: BLE001 - 元素数降级，不掩盖title/URL结果
+            logger.warning(
+                "只读 attach DOM 摘要不可用，元素数降级为 0 target=%s error=%s",
+                safe_cdp_label(url),
+                type(exc).__name__,
+            )
         result = AttachProbeResult(
             title=str(title),
             url=str(page_url),
@@ -161,6 +172,27 @@ async def probe_attached_page(
                 )
 
 
+@contextmanager
+def _logs_to_stderr():
+    """--json 模式把 root logger 的 stdout handler 临时改道 stderr。
+
+    browser-use import 时会给 root logger 挂一个指向 stdout 的 StreamHandler，
+    django logger 的探测日志 propagate 上去会污染 --json 输出。这里只在本模块
+    调用期间改道并恢复，不改变全局日志配置，也不影响非 --json 模式。
+    """
+    switched: list[tuple[logging.Handler, Any]] = []
+    for handler in logging.getLogger().handlers:
+        stream = getattr(handler, "stream", None)
+        if isinstance(handler, logging.StreamHandler) and stream is sys.stdout:
+            handler.setStream(sys.stderr)
+            switched.append((handler, stream))
+    try:
+        yield
+    finally:
+        for handler, original in switched:
+            handler.setStream(original)
+
+
 def main(argv: list[str] | None = None) -> int:
     """命令行入口：只读打印当前页标题/URL/元素数。"""
     parser = argparse.ArgumentParser(description="只读 attach 探测当前浏览器页面")
@@ -168,7 +200,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        result = asyncio.run(probe_attached_page())
+        if args.json:
+            # browser-use 在 import 时才把 StreamHandler 挂到 root/stdout，
+            # 必须先 import 触发挂载，_logs_to_stderr 才能捕获到它并改道。
+            from browser_use.browser.session import BrowserSession  # noqa: F401
+
+            with _logs_to_stderr():
+                result = asyncio.run(probe_attached_page())
+        else:
+            result = asyncio.run(probe_attached_page())
     except (DebugAttachDisabled, DebugAttachConfigError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

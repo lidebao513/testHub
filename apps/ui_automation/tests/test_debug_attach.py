@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
+import sys
 import types
 
 import pytest
@@ -17,9 +19,15 @@ from apps.ui_automation import debug_attach
 
 
 class _FakeSession:
-    def __init__(self, calls: list[tuple[str, object]], fail_connect: bool = False):
+    def __init__(
+        self,
+        calls: list[tuple[str, object]],
+        fail_connect: bool = False,
+        fail_summary: bool = False,
+    ):
         self.calls = calls
         self.fail_connect = fail_connect
+        self.fail_summary = fail_summary
 
     async def connect(self, cdp_url=None):
         self.calls.append(("connect", cdp_url))
@@ -36,6 +44,10 @@ class _FakeSession:
 
     async def get_browser_state_summary(self, **kwargs):
         self.calls.append(("summary", tuple(sorted(kwargs.items()))))
+        if self.fail_summary:
+            # 复刻 browser-use 0.10.1 裸 BrowserSession.connect() 下的真实异常：
+            # DOM 摘要事件无 Agent 注册 handler → event_result(raise_if_none=True) 抛 ValueError。
+            raise ValueError("Expected at least one handler to return a non-None result")
         dom_state = types.SimpleNamespace(selector_map={1: object(), 2: object()})
         return types.SimpleNamespace(dom_state=dom_state)
 
@@ -147,6 +159,35 @@ class TestReadOnlyProbe:
         assert "SECRET_TOKEN" not in caplog.text
         assert "127.0.0.1:9222" in caplog.text
 
+    def test_dom_summary_failure_degrades_element_count_without_blocking(
+        self, caplog
+    ):
+        """真机复刻：裸 BrowserSession 下 DOM 摘要抛 ValueError，title/URL 仍应返回。"""
+        calls: list[tuple[str, object]] = []
+
+        def fake_session(browser_profile):
+            return _FakeSession(calls, fail_summary=True)
+
+        raw = "http://127.0.0.1:9222?token=SECRET_TOKEN"
+        with caplog.at_level(logging.WARNING, logger="django"):
+            result = asyncio.run(
+                debug_attach.probe_attached_page(
+                    raw,
+                    session_factory=fake_session,
+                    profile_factory=lambda **_: object(),
+                )
+            )
+
+        assert result == debug_attach.AttachProbeResult(
+            title="demo-page",
+            url="http://demo.example/path?x=1",
+            element_count=0,
+        )
+        assert calls[-1] == ("stop", None)
+        assert "ValueError" in caplog.text
+        assert "SECRET_TOKEN" not in caplog.text
+        assert "127.0.0.1:9222" in caplog.text
+
     def test_connect_failure_still_detaches_and_redacts_log(self, caplog):
         calls: list[tuple[str, object]] = []
 
@@ -199,3 +240,31 @@ class TestExecutionBoundary:
         out = capsys.readouterr().out.strip()
         assert '"title": "demo-page"' in out
         assert '"element_count": 3' in out
+
+    def test_main_json_redirects_root_stdout_handler(self, monkeypatch, capsys):
+        """真机复刻：browser-use 给 root 挂 stdout handler，JSON 必须纯净且事后恢复。"""
+        root = logging.getLogger()
+        stdout_handler = logging.StreamHandler(sys.stdout)
+        root.addHandler(stdout_handler)
+
+        async def fake_probe():
+            logger = logging.getLogger("django")
+            logger.setLevel(logging.INFO)
+            logger.info("noisy-probe-log-should-not-pollute-json")
+            return debug_attach.AttachProbeResult(
+                title="demo-page",
+                url="http://demo.example/path",
+                element_count=3,
+            )
+
+        monkeypatch.setattr(debug_attach, "probe_attached_page", fake_probe)
+        try:
+            assert debug_attach.main(["--json"]) == 0
+            captured = capsys.readouterr()
+            assert "noisy-probe-log-should-not-pollute-json" not in captured.out
+            assert stdout_handler.stream is sys.stdout  # handler 事后已恢复
+            parsed = json.loads(captured.out.strip())
+            assert parsed["title"] == "demo-page"
+            assert parsed["element_count"] == 3
+        finally:
+            root.removeHandler(stdout_handler)
