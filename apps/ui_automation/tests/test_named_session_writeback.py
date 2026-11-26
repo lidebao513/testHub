@@ -93,8 +93,9 @@ def writeback_env(monkeypatch, tmp_path):
 
     captured: dict[str, object] = {"state_dir": str(tmp_path)}
 
-    def _fake_profile(self, storage_state=None):
+    def _fake_profile(self, storage_state=None, session_alias=None):
         captured["storage_state"] = storage_state
+        captured["session_alias"] = session_alias
         # 写回目标 = profile 实际收到的路径（run_task 内部物化的 runtime 文件），
         # 这样模拟的 watchdog 写回与 run_task 的读回/清理指向同一文件。
         _WritebackAgent.writeback_path = storage_state

@@ -231,3 +231,42 @@ class TestRuntimeState:
         with caplog.at_level(logging.INFO):
             registry.prepare_runtime_state("admin", fake_state)
         assert fake_state["cookies"][0]["value"] not in caplog.text
+
+
+class TestProfileDir:
+    """3b-2：alias 专属持久 profile 目录映射。"""
+
+    def test_profile_dir_is_stable_and_alias_scoped(self, registry):
+        admin = registry.profile_dir("admin")
+        admin_again = registry.profile_dir("admin")
+        user = registry.profile_dir("user")
+
+        assert admin == admin_again
+        assert admin != user
+        assert admin.is_dir() and user.is_dir()
+        assert admin.parent == user.parent == registry.state_dir / "profiles"
+
+    def test_profile_dir_keeps_browser_use_temp_prefix(self, registry):
+        """前缀必须保留，否则 browser-use 每次都会拷贝 profile。"""
+        path = registry.profile_dir("admin")
+        assert "browser-use-user-data-dir-" in path.name.lower()
+        assert "-persistent-" in path.name.lower()
+        assert path.name.endswith("admin")
+
+    def test_profile_dir_rejects_bad_alias(self, registry):
+        for bad in ("../etc", "a/b", "bad alias", None):
+            with pytest.raises(SR.SessionRegistryError):
+                registry.profile_dir(bad)
+
+    def test_persistent_profile_path_marker(self, registry):
+        path = registry.profile_dir("admin")
+        assert SR.SessionRegistry.is_persistent_profile_path(path) is True
+        assert SR.SessionRegistry.is_persistent_profile_path(
+            registry.state_dir / "browser-use-user-data-dir-ui-temp"
+        ) is False
+
+    def test_profile_dir_logs_no_cookie(self, registry, fake_state, caplog):
+        registry.save("admin", fake_state)
+        with caplog.at_level(logging.INFO):
+            registry.profile_dir("admin")
+        assert fake_state["cookies"][0]["value"] not in caplog.text

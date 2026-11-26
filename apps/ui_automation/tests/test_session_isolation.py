@@ -132,6 +132,17 @@ class TestOrphanChromeDetection:
         assert ai_base.BaseBrowserAgent._is_orphaned_chrome_cmdline([]) is False
         assert ai_base.BaseBrowserAgent._is_orphaned_chrome_cmdline(None) is False
 
+    def test_persistent_profile_dir_is_not_orphan_even_if_missing(self, tmp_path):
+        """3b-2：alias 固定目录不参与孤儿判定，避免误杀长会话浏览器。"""
+        persistent_dir = tmp_path / "browser-use-user-data-dir-persistent-admin"
+        cmdline = [
+            "/usr/bin/chromium",
+            f"--user-data-dir={persistent_dir}",
+            "--remote-debugging-port=41236",
+        ]
+        assert not persistent_dir.exists()
+        assert ai_base.BaseBrowserAgent._is_orphaned_chrome_cmdline(cmdline) is False
+
     def test_cleanup_no_longer_matches_port_substring(self):
         src = inspect.getsource(ai_base.BaseBrowserAgent._cleanup_zombie_chrome)
         assert "9222" not in src, "清理逻辑不得再按 9222 端口匹配（会误杀并发会话）"
@@ -228,3 +239,64 @@ class TestNamedSessionProfile:
         sig = inspect.signature(ai_base.BaseBrowserAgent.run_full_process)
         assert sig.parameters["session_alias"].default is None
         assert sig.parameters["persist_session_state"].default is False
+
+
+class TestPersistentAliasProfile:
+    """3b-2：命名会话生效时 alias 固定 profile；默认仍走 #180 临时目录。"""
+
+    @pytest.fixture(autouse=True)
+    def _enable_named_session(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("UI_SESSION_ALIAS_ENABLED", "true")
+        monkeypatch.setenv("UI_SESSION_STATE_DIR", str(tmp_path))
+
+    def test_same_alias_reuses_same_dir(self):
+        agent = _make_agent()
+        p1 = agent._create_browser_profile(session_alias="admin")
+        p2 = agent._create_browser_profile(session_alias="admin")
+        assert str(p1.user_data_dir) == str(p2.user_data_dir)
+        assert "browser-use-user-data-dir-" in str(p1.user_data_dir).lower()
+        assert "-persistent-" in str(p1.user_data_dir).lower()
+
+    def test_different_aliases_are_isolated(self):
+        agent = _make_agent()
+        admin = agent._create_browser_profile(session_alias="admin")
+        user = agent._create_browser_profile(session_alias="user")
+        assert str(admin.user_data_dir) != str(user.user_data_dir)
+        assert str(admin.user_data_dir).endswith("admin")
+        assert str(user.user_data_dir).endswith("user")
+
+    def test_fixed_dir_coexists_with_runtime_state(self, tmp_path):
+        agent = _make_agent()
+        state_path = tmp_path / "admin.runtime.storage_state.json"
+        state_path.write_text('{"cookies": [], "origins": []}', encoding="utf-8")
+        profile = agent._create_browser_profile(str(state_path), session_alias="admin")
+        assert "-persistent-" in str(profile.user_data_dir)
+        assert str(profile.storage_state) == str(state_path)
+
+    def test_switch_off_falls_back_to_temp_dir(self, monkeypatch):
+        monkeypatch.setenv("UI_SESSION_ALIAS_ENABLED", "0")
+        agent = _make_agent()
+        p1 = agent._create_browser_profile(session_alias="admin")
+        p2 = agent._create_browser_profile(session_alias="admin")
+        assert "-persistent-" not in str(p1.user_data_dir)
+        assert str(p1.user_data_dir) != str(p2.user_data_dir)
+
+    def test_invalid_alias_falls_back_to_temp_dir(self):
+        agent = _make_agent()
+        profile = agent._create_browser_profile(session_alias="../etc")
+        assert "-persistent-" not in str(profile.user_data_dir)
+
+    def test_registry_failure_falls_back_to_temp_dir(self, monkeypatch):
+        def _boom(*_a, **_k):
+            raise RuntimeError("registry broken")
+
+        monkeypatch.setattr(ai_base.session_registry, "SessionRegistry", _boom)
+        agent = _make_agent()
+        profile = agent._create_browser_profile(session_alias="admin")
+        assert "-persistent-" not in str(profile.user_data_dir)
+
+    def test_create_profile_signature_has_optional_alias(self):
+        import inspect
+
+        sig = inspect.signature(ai_base.BaseBrowserAgent._create_browser_profile)
+        assert sig.parameters["session_alias"].default is None

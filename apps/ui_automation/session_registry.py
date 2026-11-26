@@ -29,6 +29,9 @@ logger = logging.getLogger("django")
 
 ALIAS_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 STATE_FILE_SUFFIX = ".storage_state.json"
+_PROFILE_DIR_ROOT = "profiles"
+_PROFILE_DIR_PREFIX = "browser-use-user-data-dir-"
+_PERSISTENT_PROFILE_MARKER = "-persistent-"
 _REQUIRED_KEYS = ("cookies", "origins")
 
 
@@ -81,6 +84,34 @@ class SessionRegistry:
         # 双层防护：即便将来放宽 alias 规则，也不允许越过 state_dir
         if path.parent != self.state_dir:
             raise SessionRegistryError("会话状态路径越界")
+        return path
+
+    # ---------------------------------------------------------------- 3b-2 --
+    # 目录名保留 browser-use-user-data-dir- 前缀：browser-use 的 _copy_profile
+    # 以该子串识别"已是临时目录"，从而跳过每次启动的 profile 拷贝。
+    # 额外插入 -persistent- 标记，供僵尸进程清理显式排除持久目录。
+    @staticmethod
+    def is_persistent_profile_path(path: object) -> bool:
+        """路径是否属于 3b-2 alias 固定 profile（不参与孤儿判定）。"""
+        return _PERSISTENT_PROFILE_MARKER in str(path).lower()
+
+    def profile_dir(self, alias: object) -> Path:
+        """返回 alias 专属、跨执行复用的 browser profile 目录。"""
+        safe = validate_alias(alias)
+        root = (self.state_dir / _PROFILE_DIR_ROOT).resolve()
+        path = (
+            root / f"{_PROFILE_DIR_PREFIX}persistent-{safe}"
+        ).resolve()
+        if path.parent != root:
+            raise SessionRegistryError("命名会话 profile 路径越界")
+        root.mkdir(parents=True, exist_ok=True)
+        path.mkdir(parents=True, exist_ok=True)
+        for candidate in (root, path):
+            try:
+                candidate.chmod(stat.S_IRWXU)  # 0700；Windows 尽力而为
+            except OSError:
+                pass
+        logger.info("命名会话 profile 目录已准备 alias=%s exists=True", alias)
         return path
 
     @staticmethod
