@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+import threading
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
@@ -24,6 +26,44 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+# ============================================================================
+# 项目级写锁（Batch 6 C-2）：并发重提同一 project 时串行化落库
+# ============================================================================
+# 背景：`stage_persist` 先在单连接里做 FP/TP 全量替换 + cases 对账，两个任务
+# 若同时跑到 persist，会出现「A 删 → B 删 → A 插 → B 插」交错，最终库里是
+# 两个产物的混合体（C-2 写覆盖）。幂等键只挡住「完全相同的请求」，不同参数
+# 的并发重提（如改了 selected_paths）无法靠幂等键去重。
+#
+# 为什么是进程内锁：sidecar 是单进程 ThreadPoolExecutor（见 service/tasks.py），
+# 线程间共享这片内存；SQLite 的 `BEGIN IMMEDIATE` 只能串行化「写事务开始之后」，
+# 挡不住「读到旧 existing → 对方先写 → 自己再按旧快照对账」的读改写竞态。
+# 因此锁必须覆盖整个 persist（读 existing 之前就持有）。多进程部署时需在
+# 外层换成 DB advisory lock（见 docs/optimization_batches_2026-10-20.md Batch 6），
+# 本实现不伪装成跨进程方案。
+_project_write_locks: dict[int, threading.RLock] = {}
+_project_write_locks_guard = threading.Lock()
+
+
+@contextmanager
+def project_write_lock(project_id: int) -> Iterator[None]:
+    """同一 project 的落库串行化；不同 project 并行不受影响。
+
+    用 `RLock` 允许同一线程内嵌套（如 stage_persist 内部再调带锁的辅助
+    writer），避免自锁死。锁的生命周期只到 context 退出，与 DB 事务解耦：
+    调用方应把锁包在 `with conn:` 事务**外层**，确保读-改-写全程互斥。
+    """
+    with _project_write_locks_guard:
+        lock = _project_write_locks.setdefault(project_id, threading.RLock())
+    with lock:
+        yield
+
+
+def clear_project_write_locks() -> None:
+    """仅供测试隔离：清空锁注册表（不释放调用方已持有的锁）。"""
+    with _project_write_locks_guard:
+        _project_write_locks.clear()
+
+
 def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -35,6 +75,11 @@ def _loads(raw: str | None, default: Any) -> Any:
         return json.loads(raw)
     except (TypeError, ValueError):
         return default
+
+
+def _text(value: Any) -> str:
+    """DB 里历史 NULL 与契约侧空串视为同一值（增量对账比较用）。"""
+    return "" if value is None else str(value)
 
 
 # ============================================================================
@@ -182,18 +227,24 @@ def repo_binding_map(project_id: int, conn: sqlite3.Connection | None = None) ->
 # ============================================================================
 # 功能点
 # ============================================================================
-def replace_functional_points(
+def replace_functional_points(  # noqa: C901, PLR0912 - 增量对账含新增/更新/复用/删除四分支
     pid: int,
     fps: list[FunctionalPoint],
     *,
     repo_binding_id: int | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, int]:
-    """整批替换功能点（先删后插，保证与分析结果一致）。
+    """按 contract_id 增量对账功能点（Batch 6 D-4：消除先删后插的写放大）。
 
-    多仓改造（v1.7）：`repo_binding_id` 为 None 时**完全走旧逻辑**（删整项目、
-    INSERT 不写归属列），旧单仓零回归；传入时删除/插入都以仓为界，绝不因
-    生成仓 B 而删掉仓 A 的功能点。
+    语义与旧的「整批替换」一致：本次集合之外的行删除；但相同 contract_id
+    且内容未变时**保留原行 id**——`cases.fp_id` 外键引用该 id，全量删插会让
+    每次生成都 churn 一遍所有用例的 fp_id（几千条 UPDATE + 追溯链抖动）。
+
+    返回统计：`functional_points` = 最终行数（兼容旧调用方），另有
+    created/updated/reused/removed 明细供诊断。
+
+    多仓改造（v1.7）：`repo_binding_id` 为 None 时以整项目为界（旧单仓零回归）；
+    传入时删除/查询/插入都以仓为界，生成仓 B 不动仓 A 的行。
     """
     own = conn is None
     conn = conn or connect()
@@ -208,47 +259,86 @@ def replace_functional_points(
                 continue
             seen.add(fp.fp_id)
             deduped.append(fp)
+
+        if repo_binding_id is None:
+            old_rows = conn.execute(
+                "SELECT * FROM functional_points WHERE project_id = ?", (pid,)
+            ).fetchall()
+        else:
+            old_rows = conn.execute(
+                "SELECT * FROM functional_points WHERE project_id = ? AND repo_binding_id = ?",
+                (pid, repo_binding_id),
+            ).fetchall()
+        existing = {str(r["contract_id"]): dict(r) for r in old_rows if r["contract_id"]}
+
+        stats = {"created": 0, "updated": 0, "reused": 0, "removed": 0}
         with conn:
-            if repo_binding_id is None:
-                conn.execute("DELETE FROM functional_points WHERE project_id = ?", (pid,))
-            else:
-                conn.execute(
-                    "DELETE FROM functional_points WHERE project_id = ? AND repo_binding_id = ?",
-                    (pid, repo_binding_id),
-                )
-            rows = [
-                (
-                    pid,
+            for fp in deduped:
+                payload = (
                     fp.commit_ref,
                     fp.file_path,
                     fp.name,
                     fp.description,
                     fp.ftype,
                     fp.review_status,
-                    _now(),
-                    fp.fp_id,
                     fp.title,
                     fp.module,
                     fp.semantic,
-                    repo_binding_id,
                 )
-                for fp in deduped
-            ]
-            if repo_binding_id is None:
-                conn.executemany(
-                    "INSERT INTO functional_points(project_id, commit_ref, file_path, name,"
-                    " description, ftype, review_status, created_at, contract_id, title, module,"
-                    " semantic) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                    [r[:-1] for r in rows],
+                old = existing.get(fp.fp_id)
+                if old is None:
+                    # payload 顺序：commit_ref, file_path, name, description, ftype,
+                    # review_status, title, module, semantic；created_at/contract_id 插中间。
+                    params: tuple[Any, ...] = (
+                        pid,
+                        *payload[:6],
+                        _now(),
+                        fp.fp_id,
+                        *payload[6:],
+                    )
+                    if repo_binding_id is not None:
+                        params = (*params, repo_binding_id)
+                    conn.execute(
+                        "INSERT INTO functional_points(project_id, commit_ref, file_path, name,"
+                        " description, ftype, review_status, created_at, contract_id, title,"
+                        " module, semantic"
+                        f"{', repo_binding_id' if repo_binding_id is not None else ''})"
+                        f" VALUES({','.join('?' for _ in params)})",
+                        params,
+                    )
+                    stats["created"] += 1
+                    continue
+                old_payload = tuple(
+                    _text(old.get(k))
+                    for k in (
+                        "commit_ref",
+                        "file_path",
+                        "name",
+                        "description",
+                        "ftype",
+                        "review_status",
+                        "title",
+                        "module",
+                        "semantic",
+                    )
                 )
-            else:
-                conn.executemany(
-                    "INSERT INTO functional_points(project_id, commit_ref, file_path, name,"
-                    " description, ftype, review_status, created_at, contract_id, title, module,"
-                    " semantic, repo_binding_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    rows,
-                )
-        return {"functional_points": len(rows)}
+                if old_payload != tuple(_text(v) for v in payload):
+                    conn.execute(
+                        "UPDATE functional_points SET commit_ref=?, file_path=?, name=?,"
+                        " description=?, ftype=?, review_status=?, title=?, module=?, semantic=?"
+                        " WHERE id=?",
+                        (*payload, old["id"]),
+                    )
+                    stats["updated"] += 1
+                else:
+                    stats["reused"] += 1
+
+            incoming = {fp.fp_id for fp in deduped}
+            for cid, old in existing.items():
+                if cid not in incoming:
+                    conn.execute("DELETE FROM functional_points WHERE id=?", (old["id"],))
+                    stats["removed"] += 1
+        return {"functional_points": len(deduped), **stats}
     finally:
         if own:
             conn.close()
@@ -283,22 +373,27 @@ def fp_row_map(pid: int, conn: sqlite3.Connection | None = None) -> dict[str, in
 # ============================================================================
 # 测试点
 # ============================================================================
-def replace_test_points(
+def replace_test_points(  # noqa: C901, PLR0912 - 增量对账含新增/更新/复用/删除四分支
     pid: int,
     tps: list[TestPoint],
     *,
     repo_binding_id: int | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, int]:
-    """整批替换测试点。
+    """按 tp_id 增量对账测试点（Batch 6 D-4：消除先删后插的写放大）。
 
-    多仓改造（v1.7）：`repo_binding_id` 缺省 None 走旧逻辑（零回归）；传入时
-    删除/插入都以仓为界。
+    与 FP 同理：本次集合之外的行删除；相同 tp_id 且内容未变则保留原行 id，
+    避免每次生成把整张 test_points 删插一遍（写放大 + 自增 id churn）。
+
+    返回统计：`test_points` = 最终行数（兼容旧调用方），另有
+    created/updated/reused/removed 明细。
+
+    多仓改造（v1.7）：`repo_binding_id` 缺省 None 以整项目为界（零回归）；
+    传入时查询/删除/插入都以仓为界。
     """
     own = conn is None
     conn = conn or connect()
     try:
-        created = _now()
         # 按 tp_id 去重：相同 tp_id 即同一测试点（与 functional_points 同理）。
         # tp_id=md5(fp_id|category|area|method|dimension|ordinal)[:8] 在真实代码下存在生日碰撞，
         # 不去重会触发 test_points(project_id, tp_id) 唯一约束；1:1 用例生成（tc_no==tp_id）
@@ -310,59 +405,103 @@ def replace_test_points(
                 continue
             seen.add(tp.tp_id)
             deduped.append(tp)
-        rows = [
-            (
-                pid,
-                tp.tp_id,
-                tp.fp_contract_id,
-                tp.category,
-                tp.module,
-                tp.semantic,
-                tp.title,
-                tp.source,
-                tp.method,
-                tp.area,
-                tp.expect,
-                tp.dimension,
-                tp.tag,
-                tp.review_status,
-                created,
+
+        if repo_binding_id is None:
+            old_rows = conn.execute(
+                "SELECT * FROM test_points WHERE project_id = ?", (pid,)
+            ).fetchall()
+        else:
+            old_rows = conn.execute(
+                "SELECT * FROM test_points WHERE project_id = ? AND repo_binding_id = ?",
+                (pid, repo_binding_id),
+            ).fetchall()
+        existing = {str(r["tp_id"]): dict(r) for r in old_rows if r["tp_id"]}
+
+        # 参与「内容是否变化」的列（顺序即 SQL 参数顺序，created_at/id 不参与）。
+        fields = (
+            "fp_contract_id",
+            "category",
+            "module",
+            "semantic",
+            "title",
+            "source",
+            "method",
+            "area",
+            "expect",
+            "dimension",
+            "tag",
+            "review_status",
+        )
+        set_clause = ", ".join(f"{f}=?" for f in fields)
+
+        def _payload(tp: TestPoint) -> tuple[Any, ...]:
+            return (
+                *(_text(getattr(tp, f)) for f in fields),
                 _dumps(tp.evidence),
-                tp.confidence,
-                tp.origin,
+                float(tp.confidence),
+                _text(tp.origin),
                 1 if tp.unverified else 0,
-                tp.channel,
-                tp.unverified_reason,
-                tp.verify_layer,
-                repo_binding_id,
+                _text(tp.channel),
+                _text(tp.unverified_reason),
+                _text(tp.verify_layer),
             )
-            for tp in deduped
-        ]
+
+        def _old_payload(old: dict[str, Any]) -> tuple[Any, ...]:
+            return (
+                *(_text(old.get(f)) for f in fields),
+                _dumps(_loads(old.get("evidence"), [])),
+                float(old.get("confidence") or 0),
+                _text(old.get("origin")),
+                int(old.get("unverified") or 0),
+                _text(old.get("channel")),
+                _text(old.get("unverified_reason")),
+                _text(old.get("verify_layer")),
+            )
+
+        stats = {"created": 0, "updated": 0, "reused": 0, "removed": 0}
         with conn:
-            if repo_binding_id is None:
-                conn.execute("DELETE FROM test_points WHERE project_id = ?", (pid,))
-                conn.executemany(
-                    "INSERT INTO test_points(project_id, tp_id, fp_contract_id, category, module,"
-                    " semantic, title, source, method, area, expect, dimension, tag, review_status,"
-                    " created_at, evidence, confidence, origin, unverified, channel,"
-                    " unverified_reason, verify_layer)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    [r[:-1] for r in rows],
-                )
-            else:
-                conn.execute(
-                    "DELETE FROM test_points WHERE project_id = ? AND repo_binding_id = ?",
-                    (pid, repo_binding_id),
-                )
-                conn.executemany(
-                    "INSERT INTO test_points(project_id, tp_id, fp_contract_id, category, module,"
-                    " semantic, title, source, method, area, expect, dimension, tag, review_status,"
-                    " created_at, evidence, confidence, origin, unverified, channel,"
-                    " unverified_reason, verify_layer, repo_binding_id)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    rows,
-                )
-        return {"test_points": len(rows)}
+            for tp in deduped:
+                payload = _payload(tp)
+                old = existing.get(tp.tp_id)
+                if old is None:
+                    cols = (
+                        "project_id, tp_id, "
+                        + ", ".join(fields)
+                        + ", created_at, evidence, confidence, origin, unverified, channel,"
+                        " unverified_reason, verify_layer"
+                    )
+                    # 列顺序：project_id, tp_id, 12 个内容列, created_at, 6 个扩展列
+                    # payload = 12 内容列 + 6 扩展列；created_at 插在两组中间。
+                    head = (pid, tp.tp_id, *payload[: len(fields)])
+                    tail = payload[len(fields) :]
+                    params = (*head, _now(), *tail)
+                    if repo_binding_id is not None:
+                        params = (*params, repo_binding_id)
+                    conn.execute(
+                        f"INSERT INTO test_points({cols}"
+                        f"{', repo_binding_id' if repo_binding_id is not None else ''})"
+                        f" VALUES({','.join('?' for _ in params)})",
+                        params,
+                    )
+                    stats["created"] += 1
+                    continue
+                if _old_payload(old) != payload:
+                    conn.execute(
+                        f"UPDATE test_points SET {set_clause}, evidence=?, confidence=?,"
+                        " origin=?, unverified=?, channel=?, unverified_reason=?, verify_layer=?"
+                        " WHERE id=?",
+                        (*payload, old["id"]),
+                    )
+                    stats["updated"] += 1
+                else:
+                    stats["reused"] += 1
+
+            incoming = {tp.tp_id for tp in deduped}
+            for tid, old in existing.items():
+                if tid not in incoming:
+                    conn.execute("DELETE FROM test_points WHERE id=?", (old["id"],))
+                    stats["removed"] += 1
+        return {"test_points": len(deduped), **stats}
     finally:
         if own:
             conn.close()
