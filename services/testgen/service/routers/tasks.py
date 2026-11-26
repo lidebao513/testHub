@@ -50,14 +50,26 @@ class ParseInputRequest(BaseModel):
 
 
 @router.get("/api/v1/tasks")
-def list_tasks(limit: int = Query(20, ge=1, le=200)) -> dict[str, Any]:
+def list_tasks(
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    state: str = Query(
+        "", pattern="^(|pending|running|success|failed|cancelled)$", description="按状态筛选"
+    ),
+) -> dict[str, Any]:
     """任务清单（最近优先），便于运营后台 / 流水线巡检。
 
     Batch 4 D-1：只返轻量字段；`result` / `request` 仅详情端点 `GET /api/v1/tasks/{id}`
     返回，运营大列表轮询不再扛每个任务的全量产物。
+    Batch 5 E-6：加 offset/state 筛选 + total，供前端分页；旧调用（只传 limit）行为不变。
     """
-    tasks = A.task_store.list_recent(limit=limit)
-    return {"tasks": [t.to_summary_dict() for t in tasks]}
+    tasks = A.task_store.list_recent(limit=limit, offset=offset, state=state)
+    return {
+        "tasks": [t.to_summary_dict() for t in tasks],
+        "total": A.task_store.count_tasks(state=state),
+        "offset": offset,
+        "limit": limit,
+    }
 
 
 @router.get("/api/v1/tasks/{task_id}")
