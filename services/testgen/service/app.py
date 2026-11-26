@@ -19,7 +19,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from functools import lru_cache, partial
+from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -41,14 +41,20 @@ from core.errors import (
     ValidationError,
 )
 from core.log import get_logger, log_extra, set_request_id
-from engine import pipeline, url_code_bridge
+from engine import (
+    pipeline,
+    url_code_bridge,  # noqa: F401 - 门面符号：routers.generation 通过 A.url_code_bridge 引用
+)
 from engine.codeup_client import CodeupError, parse_repo_to_repo_id
 from engine.comparator import (  # noqa: F401 - 门面符号：测试 patch service.app.compare_* / ComparatorOptions
     ComparatorOptions,
     compare_batch,
     compare_one,
 )
-from engine.dialogue import DialogueAgent, default_dialogue_template
+from engine.dialogue import (  # noqa: F401 - 门面符号：routers.generation 通过 A.DialogueAgent 等引用
+    DialogueAgent,
+    default_dialogue_template,
+)
 from engine.llm_fallback import (
     chat_with_fallback,  # noqa: F401 - 门面符号：测试 patch service.app.chat_with_fallback
 )
@@ -62,6 +68,7 @@ from output.writer import OutputWriter
 from service import repos as service_repos
 from service.routers import analysis as _analysis_routes
 from service.routers import config as _config_routes
+from service.routers import generation as _generation_routes
 from service.routers import projects as _projects_routes
 from service.routers import scan as _scan_routes
 from service.routers import tasks as _tasks_routes
@@ -69,7 +76,7 @@ from service.tasks import (
     BackgroundExecutor,
     GenerationTask,
     TaskCancelledError,
-    TaskState,
+    TaskState,  # noqa: F401 - 门面符号：routers.generation 通过 A.TaskState 引用
     TaskStore,
     stage_fraction,
 )
@@ -234,173 +241,15 @@ def _is_managed(local_path: str) -> bool:
 # ============================================================================
 # 请求模型
 # ============================================================================
-class RepoSpecRequest(BaseModel):
-    """多仓改造（v1.7）：项目下单个仓库的取码/对比输入。"""
-
-    repo_key: str = Field(
-        "", description="项目内稳定短名（backend/frontend/shared）；必填且项目内唯一"
-    )
-    local_path: str = Field("", description="本仓代码目录")
-    repo_url: str = Field("", description="本仓仓库地址")
-    base: str | None = Field(None, description="本仓增量基线 ref")
-    target: str | None = Field(None, description="本仓增量目标 ref")
-    ref: str = Field("", description="本仓默认分支/提交")
-    changed_files: list[str] = Field(default_factory=list, description="本仓显式变更文件清单")
-    selected_paths: list[str] = Field(default_factory=list, description="本仓勾选范围")
-
-
-class PipelineRequest(BaseModel):
-    local_path: str = Field("", description="被测代码所在目录（可选；与 test_url 至少给一个）")
-    repos: list[RepoSpecRequest] = Field(
-        default_factory=list,
-        description=(
-            "多仓改造：一个项目下关联 N 个仓库。非空时优先（每仓各自取码/扫描/生成，"
-            "共享同一 project、按 repo_key 隔离产物）；空则回落旧单仓字段。"
-        ),
-    )
-    repo_url: str = Field(
-        "", description="仓库地址（F1）：先取码到 local_path（缺省落到工作区根/仓库名）"
-    )
-    code_source: dict[str, Any] = Field(
-        default_factory=dict, description="取码凭证（PAT）；空则由后端按 repo_url 从仓库配置带出"
-    )
-    pull_deepen: int = Field(0, ge=0, description="浅克隆加深的提交数（0=不加深）")
-    changed_files: list[str] = Field(
-        default_factory=list,
-        description="显式变更文件清单（F2，正斜杠相对路径）；优先于本地 git diff",
-    )
-    selected_paths: list[str] = Field(
-        default_factory=list,
-        description="按子集生成（控制台「扫描→勾选范围」）：仅对勾选的文件/目录产出测试点；空=全量",
-    )
-    project_name: str = Field("", description="项目名（缺省用目录名或被测主机名）")
-    mode: str = Field("", description="full=全量扫描 / incremental=增量扫描（留空=默认 full）")
-    base: str | None = Field(None, description="增量模式基线 ref")
-    target: str | None = Field(None, description="增量模式目标 ref")
-    scopes: list[str] = Field(
-        default_factory=list,
-        description="行为维度范围：正常/异常/安全/边界（留空=默认 正常+安全+边界）",
-    )
-    prd_source: str = Field("", description="PRD / OpenAPI 文件路径（启用 PRD 通道时使用）")
-    include_business: bool = Field(True, description="是否提取业务函数功能点")
-    extract_pages: bool = Field(True, description="是否提取前端路由")
-    persist: bool = Field(True, description="是否落库")
-    llm_enhance: bool = Field(False, description="是否启用 LLM 增强通道")
-    expert_ui: bool = Field(
-        False,
-        description=(
-            "是否启用「逐页大模型专家审阅」（PageExpert）。每页一次调用（30~60s），"
-            "默认关闭：不勾就不烧 token、也不会把任务拖成十分钟以上。"
-        ),
-    )
-    readonly_lock: bool = Field(False, description="分析完成后是否把目录置只读")
-    # —— 地址通道（A1）：凭证字段只用于本次运行，**绝不回显、不落库、不入产物** ——
-    test_url: str = Field("", description="被测环境地址（走运行时 UI 发现）")
-    login_url: str = Field("", description="登录页地址（缺省自动判定）")
-    login_user: str = Field("", description="登录账号（更推荐用环境变量注入）")
-    login_password: str = Field("", description="登录密码（更推荐用环境变量注入）")
-    login_otp: str = Field("", description="动态口令（更推荐用环境变量注入）")
-    runtime_routes: list[str] = Field(default_factory=list, description="显式路由（优先级最高）")
-    runtime_ui: bool = Field(False, description="启用运行时 UI 发现（等价 RUNTIME_UI_ENABLED=on）")
-    runtime_scope: str = Field(
-        "targeted",
-        description=(
-            "地址通道范围：targeted=只测与本次变更相关的页面/接口（默认，增量模式下生效）；"
-            "full=全站巡检（39 页/28 接口那种，产出与变更无关）"
-        ),
-    )
-    auto_input: str = Field("", description="统一智能输入框：一段混排文本（地址+账号+密码+口令）")
-    execute: bool = Field(False, description="执行生成的用例（接口层 + UI 层）")
-    allow_write: bool = Field(False, description="放行写操作；默认只跑只读请求")
-    ui_click: bool = Field(False, description="UI 层执行真实点击（F13）；默认只做只读断言")
-    exec_url: str = Field("", description="执行器被测服务地址（只跑接口层时可单独指定）")
-    async_mode: bool = Field(
-        False,
-        description=(
-            "M18：true 时本端点不再同步等待，立即返回 202 + task_id/poll_url"
-            "（任务模型与 /generate 一致）；默认 false 保持同步语义。"
-        ),
-    )
-
-
-class UrlGenerationRequest(BaseModel):
-    """地址优先入口的专用生成请求。
-
-    与 ``PipelineRequest`` 的区别：本模型**固定走地址通道 + 生成-only**，
-    强制 ``runtime_ui=True`` / ``execute=False`` / 默认 ``mode=incremental`` +
-    ``runtime_scope=targeted``；可选带变更文件与取码凭证，经轻量取码桥为靶向供文本。
-    """
-
-    test_url: str = Field("", description="被测环境地址（必填）")
-    login_url: str = Field("", description="登录页地址（缺省自动判定）")
-    login_user: str = Field("", description="登录账号")
-    login_password: str = Field("", description="登录密码")
-    login_otp: str = Field("", description="动态口令")
-    runtime_routes: list[str] = Field(default_factory=list, description="显式路由（优先级最高）")
-    changed_files: list[str] = Field(
-        default_factory=list, description="变更文件（正斜杠相对路径，靶向辅助证据）"
-    )
-    repo_url: str = Field("", description="代码仓库地址（轻量取码桥；空则靶向按文件名推断）")
-    code_source: dict[str, Any] = Field(default_factory=dict, description="取码凭证（PAT）")
-    base: str | None = Field(None, description="增量基线 ref（取 hunk 用）")
-    target: str | None = Field(None, description="增量目标 ref（取 hunk / blob 用）")
-    project_id: int | None = Field(
-        None, description="已识别的 testgen 项目 id（复用，避免重复建项）"
-    )
-    project_name: str = Field("", description="项目名（缺省用被测主机名）")
-    runtime_scope: str = Field("targeted", description="targeted=变更靶向（默认）/ full=全站巡检")
-    scopes: list[str] = Field(default_factory=list, description="行为维度范围")
-
-
-class DialogueSubmitRequest(BaseModel):
-    """对话提交请求（P1-2）：模板填写值 或 自由文本 二选一。
-
-    - ``filled``：模板渲染后用户填写的字典（字段名见 GET /api/v1/dialogue/template）；
-    - ``text``：统一智能输入框式的混排自由文本（兜底）；
-    - 两者都给时 ``filled`` 优先，``text`` 作为安全网原文回灌。
-    """
-
-    filled: dict[str, Any] = Field(default_factory=dict, description="模板填写值")
-    text: str = Field("", description="自由文本兜底（与 filled 二选一）")
-
-
-class ExecuteRequest(BaseModel):
-    """执行验证请求（G-2 服务化执行侧）。
-
-    两条路径（互斥，取其一）：
-    - 给 `project_id`：对**已有用例**执行验证（不重新生成，等价于 CLI `testgen execute`）；
-    - 给代码/地址来源：先生成用例再执行验证（等价于 CLI `pipeline --execute`）。
-    凭证字段只用于本次运行，**绝不回显、不落库、不入产物**。
-    """
-
-    project_id: int = Field(0, description="指定已有项目，仅执行其已生成用例（不重新生成）")
-    # —— 生成+执行路径（与 PipelineRequest 同义子集）——
-    local_path: str = Field("", description="被测代码目录（与 repo_url/test_url 至少给一个）")
-    repo_url: str = Field("", description="仓库地址（F1）：先取码再生成+执行")
-    project_name: str = Field("", description="项目名（缺省用目录名或被测主机名）")
-    mode: str = Field("", description="full=全量扫描 / incremental=增量扫描（留空=默认 full）")
-    scopes: list[str] = Field(
-        default_factory=list,
-        description="行为维度范围：正常/异常/安全/边界（留空=默认 正常+安全+边界）",
-    )
-    test_url: str = Field("", description="被测环境地址（运行时 UI 发现 + 接口执行 base_url）")
-    login_url: str = Field("", description="登录页地址（缺省自动判定）")
-    login_user: str = Field("", description="登录账号（更推荐用环境变量注入）")
-    login_password: str = Field("", description="登录密码（更推荐用环境变量注入）")
-    login_otp: str = Field("", description="动态口令（更推荐用环境变量注入）")
-    runtime_ui: bool = Field(False, description="启用运行时 UI 发现（生成阶段）")
-    runtime_routes: list[str] = Field(default_factory=list, description="显式路由（优先级最高）")
-    auto_input: str = Field("", description="统一智能输入框：一段混排文本（地址+账号+密码+口令）")
-    # —— 执行控制（两条路径共用）——
-    exec_url: str = Field("", description="执行器被测服务地址（只跑接口层时单独指定）")
-    allow_write: bool = Field(False, description="放行写操作；默认只跑只读请求")
-    ui_click: bool = Field(False, description="UI 层执行真实点击（F13）；默认只做只读断言")
-    # —— 生成+执行路径的子集/增量透传（与 PipelineRequest 同名字段贯通，一键闭环用）——
-    base: str = Field("", description="基线 ref（增量模式计算 diff）")
-    target: str = Field("", description="目标 ref（增量模式）")
-    selected_paths: list[str] = Field(
-        default_factory=list, description="子集生成：仅对勾选的文件/目录生成测试点（空=全量）"
-    )
+# 请求模型门面：Batch 7 / A-1 后单一真源在 routers/generation.py。
+# 此处 re-export 保持既有测试 from service.app import PipelineRequest 等可用。
+from service.routers.generation import (  # noqa: E402, F401 - 门面转发：供测试/外部 from service.app import
+    DialogueSubmitRequest,
+    ExecuteRequest,
+    PipelineRequest,
+    RepoSpecRequest,
+    UrlGenerationRequest,
+)
 
 
 def _run_execution_job(
@@ -584,56 +433,10 @@ def build_opts_from_request(req: PipelineRequest) -> pipeline.PipelineOptions:
     return opts
 
 
-@app.post("/api/v1/pipeline", dependencies=[Depends(require_auth)])
-def run_pipeline(req: PipelineRequest) -> Any:
-    """一站式生成：默认同步执行，`async_mode=true` 时转后台任务（M18）。
-
-    注：服务化主入口是 `POST /api/v1/generate`（异步、可轮询、可幂等）。
-    本端点保留同步语义供一次性脚本 / 本地调试使用；大仓同步跑会长时间挂住 HTTP
-    连接，调用方应改传 `async_mode=true` 拿 `task_id` 轮询。
-    """
-    opts = build_opts_from_request(req)
-    if req.async_mode:
-        # 复用 /generate 的任务模型（同一状态机、同一幂等键空间、同一 poll_url），不另起一套机制
-        idem = _idem_key_for_generate(req)
-        existing = task_store.find_by_idempotency(idem)
-        if existing and existing.state != TaskState.CANCELLED.value:
-            return _task_accepted(existing, status_code=202, reused=True)
-        task = task_store.create(
-            kind="pipeline",
-            idempotency_key=idem,
-            request=_redacted_request(req),
-        )
-        executor.submit(
-            task.task_id,
-            partial(
-                _run_generation_job,
-                task.task_id,
-                opts,
-                force_execute=bool(opts.target_req.execute),
-            ),
-        )
-        return _task_accepted(task, 202)
-
-    result = pipeline.run_pipeline_auto(opts)
-
-    payload: dict[str, Any] = {"result": result.to_dict()}
-    if result.project_id:
-        outputs = OutputWriter().write_all(
-            result.project_id, result.test_points, result.cases, result.to_dict()
-        )
-        payload["outputs"] = outputs
-        if req.readonly_lock:
-            payload["readonly"] = (
-                WorkspaceManager().lock(Path(req.local_path).name, verify=True)
-                if req.local_path and _is_managed(req.local_path)
-                else {"skipped": "外部目录未纳入工作区管理"}
-            )
-    return payload
-
-
 # ============================================================================
 # P5 服务化：异步生成任务（仅「生成测试用例」环节）
+# handler 已拆到 service/routers/generation.py（Batch 7 / A-1）；
+# 下方 helper / 模型 / 单例保留为门面，供 router 通过 A.xxx 引用与测试 patch。
 # ============================================================================
 def _task_accepted(
     task: GenerationTask, status_code: int = 202, reused: bool = False
@@ -821,205 +624,10 @@ def _run_generation_job(
     return payload
 
 
-@app.post("/api/v1/generate", dependencies=[Depends(require_auth)])
-def submit_generate(req: PipelineRequest) -> JSONResponse:
-    """异步提交「生成测试用例」任务（P5 服务化主入口）。
-
-    - 返回 **202** + `task_id` + `poll_url`；结果经 `GET /api/v1/tasks/{task_id}` 轮询；
-    - **生成-only 红线**：`execute` / `exec_url` 一律拒绝（422）——本服务当前只生成用例；
-    - 幂等：同一 `(路径/repo/模式/基线/目标/范围/变更集)` 的重复提交，若仍在 pending/running
-      则返回既有 `task_id`，不会重复跑。
-    """
-    return submit_generate_core(req)
-
-
-def submit_generate_core(req: PipelineRequest) -> JSONResponse:
-    """`/api/v1/generate` 与对话端点共用的异步提交核心（薄封装，无行为差异）。"""
-    if req.execute or req.exec_url:
-        raise ValidationError(
-            "本服务当前仅提供「生成测试用例」能力，不执行用例（execute/exec_url 不被接受）"
-        )
-    opts = build_opts_from_request(req)
-    opts.target_req.execute = False  # 双保险：强制生成-only，绝不落入 stage_execute
-    idem = _idem_key_for_generate(req)
-    existing = task_store.find_by_idempotency(idem)
-    if existing and existing.state != TaskState.CANCELLED.value:
-        return _task_accepted(existing, status_code=202, reused=True)
-    task = task_store.create(kind="generate", idempotency_key=idem, request=_redacted_request(req))
-    executor.submit(task.task_id, lambda: _run_generation_job(task.task_id, opts))
-    return _task_accepted(task, status_code=202)
-
-
-@app.post("/api/v1/url-generation/generate", dependencies=[Depends(require_auth)])
-def submit_url_generation(req: UrlGenerationRequest) -> JSONResponse:
-    """地址优先入口专用生成端点：地址+凭证为主，变更文件经轻量取码桥做靶向辅助。
-
-    与 `/api/v1/generate` 的差异（均为新增能力，不改旧端点）：
-    - 强制 ``runtime_ui=True``、``execute=False``（生成-only 红线）；
-    - 默认 ``mode=incremental`` + ``runtime_scope=targeted``（地址为主、变更辅助）；
-    - 有 ``repo_url`` + ``changed_files`` 时经 ``url_code_bridge`` 只取文件文本供靶向，
-      不 clone、不展开代码功能点；复用已识别的 ``project_id`` 避免重复建项。
-    异步语义、幂等键、轮询 URL 与 `/generate` 完全一致（同一任务状态机）。
-    """
-    if not req.test_url.strip():
-        raise ValidationError("地址通道生成必须提供被测地址（test_url）")
-
-    # 构造等价的 PipelineRequest，复用现有映射/幂等/掩码/任务机制（零逻辑分叉）。
-    # model_validate：与构造函数等价，但避免 mypy 对 Pydantic 默认字段的误报。
-    pr = PipelineRequest.model_validate(
-        {
-            "test_url": req.test_url.strip(),
-            "login_url": req.login_url,
-            "login_user": req.login_user,
-            "login_password": req.login_password,
-            "login_otp": req.login_otp,
-            "runtime_routes": req.runtime_routes,
-            "changed_files": req.changed_files,
-            "repo_url": req.repo_url,
-            "code_source": req.code_source,
-            "base": req.base,
-            "target": req.target,
-            "project_name": req.project_name,
-            "mode": "incremental" if req.changed_files else "full",
-            "runtime_ui": True,
-            "runtime_scope": req.runtime_scope,
-            "scopes": req.scopes,
-            "persist": True,
-            "execute": False,
-        }
-    )
-    opts = build_opts_from_request(pr)
-    opts.target_req.execute = False  # 双保险：生成-only，绝不落入 stage_execute
-    if req.project_id is not None and req.project_id > 0:
-        opts.project_id = req.project_id  # 复用已识别项目，避免每次生成都新建
-
-    # 轻量取码桥：只给靶向供文本，失败降级为空（内部吞异常、记 note）。
-    bridge = None
-    if req.repo_url.strip() and req.changed_files:
-        bridge = url_code_bridge.fetch_changed_sources(
-            req.repo_url.strip(),
-            req.changed_files,
-            code_source=req.code_source,
-            base=req.base or "",
-            target=req.target or "",
-        )
-        opts.target_sources = bridge.sources
-        opts.target_hunks = bridge.hunks
-
-    idem = (
-        _idem_key_for_generate(pr)
-        + "|urlgen:"
-        + hashlib.sha1(  # nosec B324 - 幂等键摘要，非安全用途
-            (
-                ",".join(sorted(req.changed_files))
-                + "|"
-                + req.repo_url
-                + "|"
-                + str(req.project_id or "")
-            ).encode("utf-8")
-        ).hexdigest()[:10]
-    )
-    existing = task_store.find_by_idempotency(idem)
-    if existing and existing.state != TaskState.CANCELLED.value:
-        return _task_accepted(existing, status_code=202, reused=True)
-    task = task_store.create(
-        kind="url-generation", idempotency_key=idem, request=_redacted_request(pr)
-    )
-
-    def _job() -> dict[str, Any]:
-        result = _run_generation_job(task.task_id, opts)
-        if bridge:
-            result.setdefault("url_code_bridge", bridge.as_dict())
-        return result
-
-    executor.submit(task.task_id, _job)
-    return _task_accepted(task, status_code=202)
-
-
 # ============================================================================
-# P1-2 对话代理：模板优先 + 自由文本兜底（只生成用例，不执行）
+# P1-2 对话代理 / 执行验证：handler 已拆到 service/routers/generation.py（A-1）。
+# DialogueAgent / default_dialogue_template 等门面符号保留在 import 区，供 router 引用。
 # ============================================================================
-@app.get("/api/v1/dialogue/template", dependencies=[Depends(require_auth)])
-def dialogue_template() -> dict[str, Any]:
-    """返回对话模板 schema（字段 / 选项 / 条件显隐规则 / 维度真值）。"""
-    return default_dialogue_template().render_template_json()
-
-
-@app.post("/api/v1/dialogue/submit", dependencies=[Depends(require_auth)])
-def dialogue_submit(body: DialogueSubmitRequest) -> JSONResponse:
-    """对话提交：模板填写值 或 自由文本 → 校验 → 复用异步生成提交。
-
-    与 `/api/v1/generate` 共用 `submit_generate_core`，因此同样满足
-    **生成-only 红线 + 幂等 + 可轮询**。凭证在 `redacted()` 视图中掩码，不回显。
-    """
-    agent = DialogueAgent()
-    if body.filled:
-        plan = agent.handle_template(body.filled)
-    elif body.text.strip():
-        plan = agent.handle_text(body.text)
-    else:
-        raise ValidationError("需提供 filled（模板填写值）或 text（自由文本）之一")
-
-    if not plan.ok:
-        raise ValidationError("；".join(plan.errors))
-
-    req = PipelineRequest(**plan.params)
-    return submit_generate_core(req)
-
-
-@app.post("/api/v1/execute", dependencies=[Depends(require_auth)])
-def submit_execute(req: ExecuteRequest) -> JSONResponse:
-    """异步提交「执行验证」任务（G-2 服务化执行侧）。
-
-    - 给了 `project_id`：对**已有用例**执行验证（不重新生成），等价于 CLI `testgen execute`；
-    - 给了代码/地址来源：先生成用例再执行验证（等价于 CLI `pipeline --execute`）。
-    结果经 `GET /api/v1/tasks/{task_id}` 轮询，复用同一张任务表（`kind=execute`）。
-
-    ⚠️ 诚实边界：本端点**只做只读验证**（默认不执行写操作、不真实点击 UI）。要主动污染被测环境，
-    调用方须显式传 `allow_write=true` / `ui_click=true` 并确认环境可写。写操作失败不会伪造通过。
-    """
-    if req.project_id:
-        opts = _build_exec_opts_from_request(req)
-        idem = _idem_key_for_execute(req)
-        existing = task_store.find_by_idempotency(idem)
-        if existing and existing.state != TaskState.CANCELLED.value:
-            return _task_accepted(existing, status_code=202, reused=True)
-        task = task_store.create(
-            kind="execute",
-            idempotency_key=idem,
-            request=json.dumps(req.model_dump(), ensure_ascii=False),
-        )
-        executor.submit(
-            task.task_id, lambda: _run_execution_job(task.task_id, req.project_id, opts)
-        )
-        return _task_accepted(task, status_code=202)
-
-    # 生成 + 执行：复用 PipelineRequest 同义字段，避免两套校验逻辑分叉
-    pr = PipelineRequest(**req.model_dump(exclude={"project_id"}))
-    if req.scopes:
-        invalid = set(req.scopes) - set(ALL_TP_TYPES)
-        if invalid:
-            raise ValidationError(f"非法行为维度：{sorted(invalid)}，允许 {ALL_TP_TYPES}")
-    opts = build_opts_from_request(pr)
-    idem = "genexec:" + "|".join(
-        [
-            req.local_path,
-            req.repo_url,
-            req.mode or "full",
-            ",".join(sorted(req.scopes)),
-            req.test_url,
-            req.exec_url,
-            ",".join(sorted(req.selected_paths)),
-        ]
-    )
-    existing = task_store.find_by_idempotency(idem)
-    if existing and existing.state != TaskState.CANCELLED.value:
-        return _task_accepted(existing, status_code=202, reused=True)
-    task = task_store.create(kind="execute", idempotency_key=idem, request=_redacted_request(pr))
-    executor.submit(
-        task.task_id, lambda: _run_generation_job(task.task_id, opts, force_execute=True)
-    )
-    return _task_accepted(task, status_code=202)
 
 
 def _stage_store(project_id: int | None = None, repo_key: str = ""):
@@ -1231,3 +839,4 @@ app.include_router(_projects_routes.router, dependencies=[Depends(require_auth)]
 app.include_router(_scan_routes.router, dependencies=[Depends(require_auth)])
 app.include_router(_tasks_routes.router, dependencies=[Depends(require_auth)])
 app.include_router(_analysis_routes.router, dependencies=[Depends(require_auth)])
+app.include_router(_generation_routes.router, dependencies=[Depends(require_auth)])
