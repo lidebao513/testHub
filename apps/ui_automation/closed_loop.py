@@ -239,6 +239,8 @@ class ClosedLoopOrchestrator:
         )
         item.set_state(LoopState.PENDING)
         item.set_state(LoopState.DISPATCHED)
+        # PW-2：首次执行的断言作为基准；重试写回前过来源纪律护栏。
+        baseline_report: dict | None = None
         while True:
             try:
                 result = self.execute_fn(job)
@@ -250,10 +252,26 @@ class ClosedLoopOrchestrator:
 
             item.set_state(LoopState.EXECUTED)
             item.exec_status = result.status or ""
-            item.assertion_report = result.assertion_report or {}
-            item.assertion_signal = (item.assertion_report or {}).get(
-                "quality_signal", "none"
-            ) or "none"
+            raw_report = result.assertion_report or {}
+            if baseline_report is None:
+                # 首轮：断言即基准，不比对（无前序可改）。
+                baseline_report = raw_report
+                item.assertion_report = raw_report
+            else:
+                from .assertion_guard import guard_assertion_change, is_critical_business
+
+                critical = is_critical_business(f"{item.name} {item.task_description}")
+                guarded = guard_assertion_change(
+                    baseline_report, raw_report, critical=critical
+                )
+                item.assertion_report = guarded.final_report
+                if guarded.blocked:
+                    logger.warning(
+                        "闭环重试断言变更被拦截（case_id=%s）: %s", item.case_id, guarded.reason
+                    )
+            # verdict 始终取本次真实执行信号的信号，护栏只改 items 与审计字段，
+            # 不把被拦截的用例伪装成通过。
+            item.assertion_signal = raw_report.get("quality_signal", "none") or "none"
 
             item.set_state(LoopState.ASSERTED)
             verdict = combine_verdict(item.exec_status, item.assertion_signal)

@@ -60,7 +60,11 @@ _URL_PATTERN = re.compile(r'https?://[^\s\uff0c\u3002\uff1b\u3001\uff09\u201d"\'
 
 @dataclass
 class AssertionItem:
-    """单条断言及其评估结果。"""
+    """单条断言及其评估结果。
+
+    PW-2：``source`` 是断言来源（ai/rule/session），缺省时由 ``level`` 派生，
+    保证旧调用方构造的条目仍带正确来源；``critical`` 标记关键业务断言。
+    """
 
     level: str  # 'ai' / 'rule' / 'session'
     type: str
@@ -68,6 +72,8 @@ class AssertionItem:
     status: str = UNKNOWN  # passed / failed / unknown / error
     detail: str = ""
     task_id: int | None = None  # L1 断言关联的子任务
+    source: str = ""  # PW-2：断言来源，空则按 level 派生
+    critical: bool = False  # PW-2：是否关键业务断言
 
     def to_dict(self) -> dict:
         return {
@@ -77,6 +83,8 @@ class AssertionItem:
             "status": self.status,
             "detail": self.detail,
             "task_id": self.task_id,
+            "source": self.source or self.level,
+            "critical": self.critical,
         }
 
 
@@ -85,6 +93,11 @@ class AssertionReport:
     """三层断言汇总。quality_signal 是给执行记录消费方看的一眼结论。"""
 
     items: list = field(default_factory=list)
+    # PW-2：断言来源纪律审计字段（只增不删，旧消费者忽略即可）。
+    # - assertion_changes: 非关键业务断言变更的 before/after/source diff
+    # - blocked_assertion_change: 关键业务被拦截的变更记录
+    assertion_changes: list = field(default_factory=list)
+    blocked_assertion_change: dict | None = None
 
     @property
     def quality_signal(self) -> str:
@@ -109,6 +122,8 @@ class AssertionReport:
             "quality_signal": self.quality_signal,
             "counts": self.counts,
             "items": [i.to_dict() for i in self.items],
+            "assertion_changes": list(self.assertion_changes),
+            "blocked_assertion_change": self.blocked_assertion_change,
         }
 
 
