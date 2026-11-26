@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import service.app as app_module
 from service.app import app
 
@@ -144,8 +146,80 @@ def test_facade_symbols_still_patchable() -> None:
 
 def test_router_modules_are_separate_from_app() -> None:
     """路由确实拆到了独立模块（防止有人把 handler 又粘回 app.py）。"""
-    from service.routers import analysis, config, projects, scan, tasks
+    from service.routers import analysis, config, generation, projects, scan, tasks
 
-    for mod in (analysis, config, projects, scan, tasks):
+    for mod in (analysis, config, generation, projects, scan, tasks):
         assert hasattr(mod, "router"), f"{mod.__name__} 未定义 router"
         assert mod is not app_module
+
+
+# Batch 7 A-1 收尾：从 app.py 拆到 generation router 的业务端点。
+# 这些端点的 handler 不再定义在 app.py，但路径/方法/请求体契约必须逐字不变。
+_A1_MOVED_ENDPOINTS = {
+    ("POST", "/api/v1/pipeline"),
+    ("POST", "/api/v1/generate"),
+    ("POST", "/api/v1/url-generation/generate"),
+    ("GET", "/api/v1/dialogue/template"),
+    ("POST", "/api/v1/dialogue/submit"),
+    ("POST", "/api/v1/execute"),
+}
+
+# 这些 handler 名字若仍出现在 app.py 源码，说明拆分没真正落地。
+_A1_HANDLER_NAMES = (
+    "run_pipeline",
+    "submit_generate",
+    "submit_url_generation",
+    "dialogue_template",
+    "dialogue_submit",
+    "submit_execute",
+)
+
+
+def test_a1_endpoints_still_registered() -> None:
+    """A-1 收尾后，6 个业务端点的 path+method 一个不少。"""
+    actual = _collect_api_routes()
+    missing = _A1_MOVED_ENDPOINTS - actual
+    assert not missing, f"A-1 拆分后端点缺失: {sorted(missing)}"
+
+
+def test_a1_handlers_moved_to_generation_router() -> None:
+    """handler 已从 app.py 源码移除，改由 generation router 提供。"""
+    from service.routers import generation
+
+    app_src = inspect.getsource(app_module)
+    leaked = [name for name in _A1_HANDLER_NAMES if f"def {name}(" in app_src]
+    assert not leaked, f"handler 仍粘在 app.py（A-1 未真正落地）: {leaked}"
+
+    for name in _A1_HANDLER_NAMES:
+        assert hasattr(generation, name), f"generation router 缺少 handler: {name}"
+
+
+def test_a1_request_models_still_facade() -> None:
+    """请求体模型单一真源在 generation router，app.py 门面转发为同一对象。"""
+    from service.routers import generation
+
+    pairs = (
+        ("PipelineRequest", "PipelineRequest"),
+        ("UrlGenerationRequest", "UrlGenerationRequest"),
+        ("DialogueSubmitRequest", "DialogueSubmitRequest"),
+        ("ExecuteRequest", "ExecuteRequest"),
+        ("RepoSpecRequest", "RepoSpecRequest"),
+    )
+    for name, _ in pairs:
+        app_model = getattr(app_module, name)
+        router_model = getattr(generation, name)
+        assert router_model is app_model, (
+            f"{name} 不是 app.py 门面模型的同一对象（会导致请求体契约漂移 / mypy 类型分叉）"
+        )
+
+
+def test_a1_facade_patchable_from_generation_router() -> None:
+    """generation router 内部通过 A.xxx 引用门面符号（patch service.app.X 仍生效）。"""
+    from service.routers import generation
+
+    router_src = inspect.getsource(generation)
+    assert "A.task_store" in router_src, "generation router 未通过门面引用 task_store"
+    assert "A.executor" in router_src, "generation router 未通过门面引用 executor"
+    assert "A.build_opts_from_request" in router_src, (
+        "generation router 未通过门面引用 build_opts_from_request"
+    )
