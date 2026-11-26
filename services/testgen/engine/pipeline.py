@@ -2165,7 +2165,12 @@ def stage_persist(
     pid = result.project_id
     bid = opts.repo_binding_id
     _emit(progress, "persist", project_id=pid, repo_binding_id=bid)
-    with store.connect() as conn:
+    # Batch 6 C-2：写锁必须包在事务**外层**，覆盖「读 existing → 删/插 FP/TP →
+    # cases 对账 → 执行留痕」全程。仅靠 SQLite 写事务锁不住读改写竞态：
+    # 两个并发任务都按同一份旧 existing 对账，后提交者会把先提交者的产物覆盖/作废。
+    # 注意 `with A, B` 的进入顺序是 A→B、退出是 B→A：锁先于事务进入、
+    # 事务先于锁释放，保证「锁包事务」而非相反。
+    with store.project_write_lock(pid), store.connect() as conn:
         init_db(conn)
         store.replace_functional_points(pid, fps, repo_binding_id=bid, conn=conn)
         store.replace_test_points(pid, tps, repo_binding_id=bid, conn=conn)

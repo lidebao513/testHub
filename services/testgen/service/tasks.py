@@ -3,8 +3,8 @@
 设计取舍（骨架级，可独立运行、无需外部依赖）：
 - **进程内 `ThreadPoolExecutor`** 作为后台 worker：不引入 Redis/ARQ 等 broker，保持单机可跑；
   生产升级路径为「broker + 多 consumer」（见 服务化改造分析.md §8）。
-- 任务状态落库（`gen_tasks` 表），**每个写操作独立连接**（`connect()`/`close()`），
-  避免跨线程共享 SQLite 连接（SQLite 连接默认绑定创建线程）。
+- 任务状态落库（`gen_tasks` 表），**每线程一条复用连接**（Batch 6 D-3：线程局部，
+  既不跨线程共享 SQLite 连接，又避免高频开闭 + 重复 PRAGMA）。
 - 状态机：`pending → running → success / failed / cancelled`；超时与重试留给生产队列。
 - **幂等**：同一 `idempotency_key` 重复提交，若既有任务仍 `pending/running` 则返回既有 `task_id`。
 - **范围红线**：本模块只服务于「生成用例」，绝不触发 `stage_execute`（执行环节）。
@@ -23,7 +23,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from core.db import connect, init_db
+from core.db import connect, db_path, init_db
 from core.log import get_logger, log_extra
 
 
@@ -164,7 +164,18 @@ class GenerationTask:
 
 
 class TaskStore:
-    """`gen_tasks` 表读写；每操作独立连接，线程安全。"""
+    """`gen_tasks` 表读写；线程局部连接复用，线程安全。
+
+    Batch 6 D-3：旧实现每操作 `connect()/close()`，而 `connect()` 每次都执行
+    两条 PRAGMA + 建目录检查；`is_cancelled()` 在阶段内取消探针里被高频调用
+    （长循环每 16 次一次），开闭开销在高并发任务下被放大。改为每线程持一条
+    复用连接（SQLite 连接默认绑定创建线程，线程局部正好匹配），省去重复开销。
+
+    安全边界：
+    - 连接不跨线程共享（threading.local）；
+    - DB 路径变化（测试 `reset_settings()` / 多实例隔离）时自动关闭旧连接重建；
+    - 每次写仍显式 `commit()`，事务语义与旧实现一致。
+    """
 
     #: 已取消任务的内存标志上限（超出按插入顺序淘汰最旧，防长期运行内存增长）
     _CANCEL_FLAG_LIMIT = 1000
@@ -174,6 +185,35 @@ class TaskStore:
         # 未取消的任务仍回查 DB，保证多进程 / 重启后取消语义依旧正确。
         self._cancelled: dict[str, bool] = {}
         self._cancel_lock = threading.Lock()
+        self._local = threading.local()
+
+    def _connect(self) -> Any:
+        """取当前线程的复用连接；DB 路径变化则重建（测试隔离/多实例）。"""
+        path = str(db_path())
+        cached_path = getattr(self._local, "db_path", None)
+        cached_conn = getattr(self._local, "conn", None)
+        if cached_conn is not None and cached_path == path:
+            return cached_conn
+        if cached_conn is not None:
+            try:
+                cached_conn.close()
+            except Exception:  # noqa: BLE001 - 旧连接可能已由外部关闭，重建即可
+                pass
+        conn = connect()
+        self._local.db_path = path
+        self._local.conn = conn
+        return conn
+
+    def close_all(self) -> None:
+        """关闭**当前线程**的复用连接（进程退出/测试收尾用；下个操作自动重建）。"""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001 - 幂等关闭
+                pass
+        self._local.conn = None
+        self._local.db_path = None
 
     def create(
         self,
@@ -185,28 +225,25 @@ class TaskStore:
     ) -> GenerationTask:
         task_id = f"gen-{uuid.uuid4().hex[:12]}"
         now = _now()
-        conn = connect()
-        try:
-            init_db(conn)
-            conn.execute(
-                "INSERT INTO gen_tasks("
-                "task_id, project_id, kind, idempotency_key, state, progress, stage,"
-                "request, created_at, updated_at) "
-                "VALUES(?,?,?,?,?,0,'',?,?,?)",
-                (
-                    task_id,
-                    project_id,
-                    kind,
-                    idempotency_key,
-                    TaskState.PENDING.value,
-                    request,
-                    now,
-                    now,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        conn = self._connect()
+        init_db(conn)
+        conn.execute(
+            "INSERT INTO gen_tasks("
+            "task_id, project_id, kind, idempotency_key, state, progress, stage,"
+            "request, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,0,'',?,?,?)",
+            (
+                task_id,
+                project_id,
+                kind,
+                idempotency_key,
+                TaskState.PENDING.value,
+                request,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
         return GenerationTask(
             task_id,
             project_id=project_id,
@@ -248,12 +285,9 @@ class TaskStore:
         sets["updated_at"] = _now()
         cols = ", ".join(f"{c} = ?" for c in sets)
         vals = [*list(sets.values()), task_id]
-        conn = connect()
-        try:
-            conn.execute(f"UPDATE gen_tasks SET {cols} WHERE task_id = ?", vals)
-            conn.commit()
-        finally:
-            conn.close()
+        conn = self._connect()
+        conn.execute(f"UPDATE gen_tasks SET {cols} WHERE task_id = ?", vals)
+        conn.commit()
 
     def cancel(self, task_id: str) -> bool:
         """仅 `pending/running` 可取消；已终态不可变。返回是否成功置为 cancelled。"""
@@ -277,23 +311,20 @@ class TaskStore:
         `cancel()` 置为 `cancelled` 的任务 rowcount 为 0，**绝不会被覆盖回 `running`**。
         两段式「先 is_cancelled() 再 update」仍留 TOCTOU 窗口，故不采用。
         """
-        conn = connect()
-        try:
-            cur = conn.execute(
-                "UPDATE gen_tasks SET state = ?, started_at = ?, updated_at = ? "
-                "WHERE task_id = ? AND state = ?",
-                (
-                    TaskState.RUNNING.value,
-                    _now(),
-                    _now(),
-                    task_id,
-                    TaskState.PENDING.value,
-                ),
-            )
-            conn.commit()
-            return cur.rowcount == 1
-        finally:
-            conn.close()
+        conn = self._connect()
+        cur = conn.execute(
+            "UPDATE gen_tasks SET state = ?, started_at = ?, updated_at = ? "
+            "WHERE task_id = ? AND state = ?",
+            (
+                TaskState.RUNNING.value,
+                _now(),
+                _now(),
+                task_id,
+                TaskState.PENDING.value,
+            ),
+        )
+        conn.commit()
+        return cur.rowcount == 1
 
     def is_cancelled(self, task_id: str) -> bool:
         """运行中作业通过此标志做协作式取消检查（cancel 已置 cancelled 即返回 True）。"""
@@ -329,56 +360,41 @@ class TaskStore:
         Batch 5 E-6：任务列表加筛选/分页，SQL 层做 WHERE + LIMIT/OFFSET，
         不把全量任务读进内存再切片。
         """
-        conn = connect()
-        try:
-            if state:
-                rows = conn.execute(
-                    "SELECT * FROM gen_tasks WHERE state = ? "
-                    "ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                    (state, limit, offset),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM gen_tasks ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                    (limit, offset),
-                ).fetchall()
-        finally:
-            conn.close()
+        conn = self._connect()
+        if state:
+            rows = conn.execute(
+                "SELECT * FROM gen_tasks WHERE state = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (state, limit, offset),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM gen_tasks ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
         return [self._row_to_task(r) for r in rows]
 
     def count_tasks(self, state: str = "") -> int:
         """符合筛选条件的任务总数（E-6 分页用；state 空=全部）。"""
-        conn = connect()
-        try:
-            if state:
-                row = conn.execute(
-                    "SELECT COUNT(*) AS n FROM gen_tasks WHERE state = ?", (state,)
-                ).fetchone()
-            else:
-                row = conn.execute("SELECT COUNT(*) AS n FROM gen_tasks").fetchone()
-        finally:
-            conn.close()
+        conn = self._connect()
+        if state:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM gen_tasks WHERE state = ?", (state,)
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) AS n FROM gen_tasks").fetchone()
         return int(row["n"]) if row else 0
 
     def counts_by_state(self) -> dict[str, int]:
-        conn = connect()
-        try:
-            rows = conn.execute(
-                "SELECT state, COUNT(*) AS n FROM gen_tasks GROUP BY state"
-            ).fetchall()
-        finally:
-            conn.close()
+        conn = self._connect()
+        rows = conn.execute("SELECT state, COUNT(*) AS n FROM gen_tasks GROUP BY state").fetchall()
         return {r["state"]: int(r["n"]) for r in rows}
 
     # ---- 内部 ----
     def _fetch_one(self, where: str, params: tuple) -> GenerationTask | None:
         # 读路径不写库：表结构由写路径（create/init_db）保证存在，避免读操作触发写
         # （在只读库场景下会抛 readonly，且读本就无需建表）。
-        conn = connect()
-        try:
-            row = conn.execute(f"SELECT * FROM gen_tasks WHERE {where}", params).fetchone()
-        finally:
-            conn.close()
+        conn = self._connect()
+        row = conn.execute(f"SELECT * FROM gen_tasks WHERE {where}", params).fetchone()
         return self._row_to_task(row) if row else None
 
     @staticmethod
