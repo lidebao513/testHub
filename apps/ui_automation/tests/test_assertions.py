@@ -10,9 +10,8 @@ import types
 
 import pytest
 
-from apps.ui_automation import assertions as A
 from apps.ui_automation import ai_base
-
+from apps.ui_automation import assertions as A
 
 # ---------------------------------------------------------------------------
 # L2 规则断言提取
@@ -40,9 +39,7 @@ class TestExtractRuleAssertions:
         assert A.extract_rule_assertions("随便看看这个网站") == []
 
     def test_duplicate_keywords_deduped(self):
-        items = A.extract_rule_assertions(
-            '应显示"保存成功"，然后确认出现"保存成功"提示'
-        )
+        items = A.extract_rule_assertions('应显示"保存成功"，然后确认出现"保存成功"提示')
         values = [i.value for i in items if i.type == A.PAGE_CONTAINS]
         assert values.count("保存成功") == 1
 
@@ -105,9 +102,7 @@ class TestGenerateAiAssertions:
                 )
 
         items = asyncio.run(
-            A.generate_ai_assertions(
-                FakeLLM(), "登录", [{"id": 1, "description": "输入密码"}]
-            )
+            A.generate_ai_assertions(FakeLLM(), "登录", [{"id": 1, "description": "输入密码"}])
         )
         assert len(items) == 1
 
@@ -133,22 +128,13 @@ class TestGenerateAiAssertions:
             async def ainvoke(self, prompt):
                 await asyncio.sleep(10)
 
-        assert (
-            asyncio.run(
-                A.generate_ai_assertions(FakeLLM(), "x", [{"id": 1}], timeout=0.1)
-            )
-            == []
-        )
+        assert asyncio.run(A.generate_ai_assertions(FakeLLM(), "x", [{"id": 1}], timeout=0.1)) == []
 
     def test_content_block_list_handled(self):
         class FakeLLM:
             async def ainvoke(self, prompt):
                 return types.SimpleNamespace(
-                    content=[
-                        {
-                            "text": '[{"task_id": 1, "type": "page_contains", "value": "OK"}]'
-                        }
-                    ]
+                    content=[{"text": '[{"task_id": 1, "type": "page_contains", "value": "OK"}]'}]
                 )
 
         items = asyncio.run(A.generate_ai_assertions(FakeLLM(), "x", [{"id": 1}]))
@@ -223,9 +209,7 @@ class TestEvaluateSessionAssertions:
             {"url": "https://x.com/list", "title": "列表"},
             had_actions=True,
         )
-        assert any(
-            i.type == A.SESSION_UNCHANGED and i.status == A.UNKNOWN for i in items
-        )
+        assert any(i.type == A.SESSION_UNCHANGED and i.status == A.UNKNOWN for i in items)
 
     def test_normal_navigation_passes(self):
         items = A.evaluate_session_assertions(
@@ -268,9 +252,7 @@ class TestReportAndSignal:
         report = A.AssertionReport(
             items=[
                 _rule(A.URL_HOST, "x.com"),
-                A.AssertionItem(
-                    level="session", type="session_alive", value="u", status=A.PASSED
-                ),
+                A.AssertionItem(level="session", type="session_alive", value="u", status=A.PASSED),
             ]
         )
         A.evaluate_url_assertions(report.items, "https://x.com/")
@@ -282,9 +264,7 @@ class TestReportAndSignal:
     def test_build_report_end_to_end(self):
         pre = {"url": "about:blank", "title": ""}
         final = {"url": "https://x.com/list", "title": "列表"}
-        ai = A.parse_ai_assertions(
-            '[{"task_id": 1, "type": "page_contains", "value": "登录成功"}]'
-        )
+        ai = A.parse_ai_assertions('[{"task_id": 1, "type": "page_contains", "value": "登录成功"}]')
         report = A.build_assertion_report(
             '打开 https://x.com 后应显示"登录成功"',
             [],
@@ -311,6 +291,40 @@ class TestReportAndSignal:
         assert block.startswith("[断言]")
         assert "规则" in block
         assert A.UNKNOWN in block
+
+    # PW-2：来源字段与审计字段（只增不改）
+    def test_item_source_defaults_to_level(self):
+        item = A.AssertionItem(level="ai", type=A.PAGE_CONTAINS, value="成功")
+        assert item.to_dict()["source"] == "ai"
+        assert item.to_dict()["critical"] is False
+
+    def test_item_explicit_source_and_critical(self):
+        item = A.AssertionItem(
+            level="rule",
+            type=A.URL_HOST,
+            value="example.com",
+            source="semantic",
+            critical=True,
+        )
+        d = item.to_dict()
+        assert d["source"] == "semantic"
+        assert d["critical"] is True
+
+    def test_report_to_dict_has_audit_fields(self):
+        report = A.AssertionReport(items=[])
+        d = report.to_dict()
+        assert d["assertion_changes"] == []
+        assert d["blocked_assertion_change"] is None
+
+    def test_report_audit_fields_serialize(self):
+        report = A.AssertionReport(
+            items=[],
+            assertion_changes=[{"field": "page_contains", "reason": "added"}],
+            blocked_assertion_change={"reason": "locked"},
+        )
+        d = report.to_dict()
+        assert d["assertion_changes"][0]["reason"] == "added"
+        assert d["blocked_assertion_change"]["reason"] == "locked"
 
 
 # ---------------------------------------------------------------------------

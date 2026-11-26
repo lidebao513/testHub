@@ -3420,15 +3420,32 @@ def apply_usage_snapshot(record, agent) -> None:
     )
 
 
-def apply_assertion_report(record, agent) -> None:
+def apply_assertion_report(record, agent, baseline_report=None) -> None:
     """把三层断言的质量信号写进执行记录（#181）。
 
     断言是"AI 自称完成"之外的独立证据，非阻断：只落库 + 日志已由 run_task
     通过 emit_callback 追加，不改变 passed/failed 判定。整体只读 + 兜底。
+
+    PW-2：可选 ``baseline_report`` 为基准断言报告。传入时先过来源纪律护栏——
+    关键业务禁止改断言（保留基准 items + 记 blocked_assertion_change），
+    非关键业务放行但记 assertion_changes diff。缺省 None 时**零行为变化**
+    （当前执行路径每次重新生成断言，不构成"修改"，故不误伤）。
+    verdict/signal 始终取本次真实报告，护栏只改落库的 items 与审计字段。
     """
     try:
         report = getattr(agent, '_assertion_report', None) if agent is not None else None
         if isinstance(report, dict) and report:
+            if baseline_report:
+                from .assertion_guard import guard_assertion_change, is_critical_business
+
+                desc = getattr(record, 'task_description', '') or ''
+                name = getattr(record, 'case_name', '') or ''
+                guarded = guard_assertion_change(
+                    baseline_report, report, critical=is_critical_business(f'{name} {desc}')
+                )
+                report = guarded.final_report
+                if guarded.blocked:
+                    logger.warning('关键业务断言变更被拦截，已保留基准断言: %s', guarded.reason)
             record.assertion_report = report
             signal = report.get('quality_signal', 'none')
             logger.info('📊 三层断言质量信号: %s counts=%s', signal, report.get('counts'))
