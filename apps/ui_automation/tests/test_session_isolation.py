@@ -183,3 +183,48 @@ class TestConnectPatch:
             asyncio.run(ai_base.BrowserSession.connect(fake_self, cdp_url=None))
         # 3 次尝试之间有 2 次重试等待
         assert sleeps == [1.0, 1.0]
+
+
+class TestNamedSessionProfile:
+    """PW-3a：命名会话注入 storage_state，默认 #180 行为零变化。"""
+
+    def test_default_profile_has_no_storage_state(self):
+        """未传 state 时 profile 不带 storage_state（#180 隔离零变化）。"""
+        agent = _make_agent()
+        profile = agent._create_browser_profile()
+        assert getattr(profile, "storage_state", None) is None
+        assert profile.user_data_dir
+
+    def test_injected_state_is_kept_with_isolated_dir(self):
+        """显式注入时保留独立 user_data_dir，同时携带登录态。"""
+        agent = _make_agent()
+        state = {"cookies": [], "origins": []}
+        p1 = agent._create_browser_profile(state)
+        p2 = agent._create_browser_profile(state)
+        assert p1.storage_state == state
+        assert str(p1.user_data_dir) != str(p2.user_data_dir)
+
+    def test_two_aliases_inject_different_states(self):
+        """两个 alias 分别注入不同 state，互不串味。"""
+        agent = _make_agent()
+        admin = {"cookies": [{"name": "sid", "value": "ADMIN_FAKE"}], "origins": []}
+        user = {"cookies": [{"name": "sid", "value": "USER_FAKE"}], "origins": []}
+        pa = agent._create_browser_profile(admin)
+        pu = agent._create_browser_profile(user)
+        assert pa.storage_state["cookies"][0]["value"] == "ADMIN_FAKE"
+        assert pu.storage_state["cookies"][0]["value"] == "USER_FAKE"
+
+    def test_run_task_signature_has_optional_session_params(self):
+        """参数向后兼容：均带默认值，老调用方无需改动。"""
+        import inspect
+
+        sig = inspect.signature(ai_base.BaseBrowserAgent.run_task)
+        assert sig.parameters["session_alias"].default is None
+        assert sig.parameters["persist_session_state"].default is False
+
+    def test_run_full_process_signature_has_optional_session_params(self):
+        import inspect
+
+        sig = inspect.signature(ai_base.BaseBrowserAgent.run_full_process)
+        assert sig.parameters["session_alias"].default is None
+        assert sig.parameters["persist_session_state"].default is False

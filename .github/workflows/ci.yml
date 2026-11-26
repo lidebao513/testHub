@@ -123,4 +123,11 @@ jobs:
             printf '%s\n' "$keyleaks"
             exit 1
           fi
-          echo "secret-scan OK：未发现被跟踪的密钥/备份文件或私钥块"
+          echo "== PW-3a：检查被跟踪的会话状态文件（含 Cookie，等同凭据）=="
+          state_leaks=$(git ls-files | grep -Ei '(storage_state[^/]*\.json|[a-z0-9_-]+\.storage_state\.json|session-state[^/]*\.json)' || true)
+          if [ -n "$state_leaks" ]; then
+            echo "::error::发现被跟踪的 storage_state / session-state 文件，禁止入库："
+            echo "$state_leaks"
+            exit 1
+          fi
+          echo "secret-scan OK：未发现被跟踪的密钥/备份文件/私钥块/会话状态文件"

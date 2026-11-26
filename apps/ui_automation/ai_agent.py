@@ -64,7 +64,7 @@ def analyze_task_sync(task_description: str, execution_mode='text'):
     agent = BrowserAgent(execution_mode='text')
     return _run_sync(agent.analyze_task(task_description))
 
-def run_full_process_sync(task_description: str, analysis_callback=None, step_callback=None, should_stop=None, execution_mode='text', enable_gif=True, case_name=None, agent_holder=None):
+def run_full_process_sync(task_description: str, analysis_callback=None, step_callback=None, should_stop=None, execution_mode='text', enable_gif=True, case_name=None, agent_holder=None, session_alias=None, persist_session_state=False):
     logger.info(f"DEBUG: Entering run_full_process_sync with execution_mode=text, enable_gif={enable_gif}")
 
     agent = BrowserAgent(execution_mode='text', enable_gif=enable_gif, case_name=case_name)
@@ -74,4 +74,4 @@ def run_full_process_sync(task_description: str, analysis_callback=None, step_ca
         agent_holder['agent'] = agent
 
     logger.info(f"DEBUG: Agent created successfully ({type(agent).__name__}), starting event loop")
-    return _run_sync(agent.run_full_process(task_description, analysis_callback, step_callback, should_stop))
+    return _run_sync(agent.run_full_process(task_description, analysis_callback, step_callback, should_stop, session_alias=session_alias, persist_session_state=persist_session_state))

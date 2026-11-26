@@ -68,20 +68,36 @@ def run_task_env(monkeypatch):
 
     monkeypatch.setattr(ai_base.BaseBrowserAgent, "_verify_execution_llm", _no_await)
     monkeypatch.setattr(ai_base.BaseBrowserAgent, "_cleanup_zombie_chrome", lambda self: None)
-    monkeypatch.setattr(ai_base.BaseBrowserAgent, "_create_browser_profile", lambda self: object())
+    profile_states: list[object] = []
+
+    def _fake_profile(self, storage_state=None):
+        profile_states.append(storage_state)
+        return object()
+
+    monkeypatch.setattr(ai_base.BaseBrowserAgent, "_create_browser_profile", _fake_profile)
     monkeypatch.setattr(ai_base.BaseBrowserAgent, "_capture_usage", lambda self, agent: None)
 
     _FakeAgent.captured = []
 
-    def run(description="打开首页并登录", planned=None):
+    def run(
+        description="打开首页并登录", planned=None, session_alias=None, persist_session_state=False
+    ):
         # object.__new__ 绕开 __init__ 的 API Key / ChatOpenAI 依赖；
         # run_task 实际读到的 self 属性只补这几个。
         agent = object.__new__(ai_base.BaseBrowserAgent)
         agent.llm = SimpleNamespace()
         agent.enable_gif = False
         agent.model_name = "gpt-4o"  # run_task 里按模型名决定是否追加省 token 指令
-        asyncio.run(agent.run_task(description, planned))
+        asyncio.run(
+            agent.run_task(
+                description,
+                planned,
+                session_alias=session_alias,
+                persist_session_state=persist_session_state,
+            )
+        )
         assert _FakeAgent.captured, "run_task 没有构造 Agent，说明链路被打断"
+        run.last_profile_state = profile_states[-1] if profile_states else None
         return _FakeAgent.captured[-1]
 
     return run
@@ -171,3 +187,52 @@ def test_skill_block_omitted_when_load_fails(run_task_env, monkeypatch):
     task = run_task_env()
     assert BLOCK_START_PREFIX not in task
     assert "CRITICAL PERFORMANCE & SYNC RULES" in task
+
+
+# ============================================================================
+# PW-3a：run_task 真实链路里命名会话是否按开关载入
+# ============================================================================
+
+
+def test_named_session_default_passes_no_state(run_task_env, monkeypatch):
+    """未传 alias / 开关默认关闭 → 注入 profile 的 state 为 None（#180 零变化）。"""
+    monkeypatch.delenv("UI_SESSION_ALIAS_ENABLED", raising=False)
+    monkeypatch.delenv("UI_SESSION_STATE_DIR", raising=False)
+    run_task_env()
+    assert run_task_env.last_profile_state is None
+
+
+def test_named_session_loads_state_when_active(run_task_env, monkeypatch, tmp_path):
+    """开关+目录+合法 alias 齐备 → 载入对应 state 注入 profile。"""
+    from apps.ui_automation import session_registry as SR
+
+    monkeypatch.setenv("UI_SESSION_ALIAS_ENABLED", "true")
+    monkeypatch.setenv("UI_SESSION_STATE_DIR", str(tmp_path))
+    fake = {"cookies": [{"name": "sid", "value": "FAKE_ADMIN"}], "origins": []}
+    SR.SessionRegistry(tmp_path).save("admin", fake)
+
+    run_task_env(session_alias="admin")
+    assert run_task_env.last_profile_state == fake
+
+
+def test_named_session_ignored_when_switch_off(run_task_env, monkeypatch, tmp_path):
+    """即便传了 alias，开关关闭仍不载入（防止绕过默认隔离）。"""
+    from apps.ui_automation import session_registry as SR
+
+    monkeypatch.setenv("UI_SESSION_ALIAS_ENABLED", "0")
+    monkeypatch.setenv("UI_SESSION_STATE_DIR", str(tmp_path))
+    SR.SessionRegistry(tmp_path).save(
+        "admin", {"cookies": [{"name": "sid", "value": "FAKE"}], "origins": []}
+    )
+    run_task_env(session_alias="admin")
+    assert run_task_env.last_profile_state is None
+
+
+def test_corrupted_state_degrades_to_fresh_session(run_task_env, monkeypatch, tmp_path):
+    """损坏 state 不阻断执行，profile 收到 None（起全新会话）。"""
+    monkeypatch.setenv("UI_SESSION_ALIAS_ENABLED", "true")
+    monkeypatch.setenv("UI_SESSION_STATE_DIR", str(tmp_path))
+    (tmp_path / "admin.storage_state.json").write_text("corrupted", encoding="utf-8")
+    task = run_task_env(session_alias="admin")
+    assert task  # 执行链路跑通
+    assert run_task_env.last_profile_state is None

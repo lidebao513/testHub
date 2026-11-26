@@ -2956,6 +2956,9 @@ class AICaseViewSet(viewsets.ModelViewSet):
     def run(self, request, pk=None):
         """执行 AI 用例"""
         ai_case = self.get_object()
+        # PW-3a：命名会话可选参数，缺省 → 默认 #180 隔离行为零变化
+        session_alias = request.data.get('session_alias') or None
+        persist_session_state = bool(request.data.get('persist_session_state', False))
 
         # 创建执行记录
         execution_record = AIExecutionRecord.objects.create(
@@ -3071,7 +3074,9 @@ class AICaseViewSet(viewsets.ModelViewSet):
                     analysis_callback=on_analysis_complete,
                     step_callback=on_step_update,
                     should_stop=should_stop,
-                    agent_holder=agent_holder
+                    agent_holder=agent_holder,
+                    session_alias=session_alias,
+                    persist_session_state=persist_session_state,
                 )
 
                 # 检查是否是手动停止
@@ -3533,6 +3538,9 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
         task_description = request.data.get('task_description')
         execution_mode = request.data.get('execution_mode', 'text')  # 默认文本模式
         enable_gif = request.data.get('enable_gif', True)  # GIF录制开关，默认开启
+        # PW-3a：命名会话可选参数，缺省 None/False → 默认 #180 隔离行为零变化
+        session_alias = request.data.get('session_alias') or None
+        persist_session_state = bool(request.data.get('persist_session_state', False))
 
         # #184 统一智能输入框：parsed（前端修正后的结构化结果）优先，
         # smart_input 为原始混合文本（服务端补解析缺失字段）。
@@ -3724,7 +3732,9 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                     execution_mode=execution_mode,
                     enable_gif=enable_gif,  # 传递GIF录制开关
                     case_name=task_description[:50] if task_description else "Adhoc Task",  # 传递用例名称用于GIF文件命名
-                    agent_holder=agent_holder
+                    agent_holder=agent_holder,
+                    session_alias=session_alias,
+                    persist_session_state=persist_session_state,
                 )
 
                 # 检查是否是手动停止 (使用同步版本)

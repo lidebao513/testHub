@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from urllib.parse import urlparse
 
+from . import session_registry
 from .history_utils import history_steps
 from .skill_loader import BLOCK_START_PREFIX, load_skill, render_skill_block
 
@@ -2541,7 +2542,14 @@ class BaseBrowserAgent:
         if cleaned_count > 0:
             logger.info(f"✅ Cleaned up {cleaned_count} orphaned Chrome processes")
 
-    def _create_browser_profile(self):
+    def _create_browser_profile(self, storage_state=None):
+        """构造 BrowserProfile。
+
+        #180：默认每任务独立临时 user_data_dir + 动态调试端口（storage_state=None，
+        行为零变化）。PW-3a：仅当命名会话显式生效时注入已保存的 storage_state，
+        仍保留独立 user_data_dir —— browser-use 会以 state 覆盖该临时 profile 的
+        cookie/storage，实现"隔离目录 + 复用登录态"，两个 alias 互不串味。
+        """
         # Default implementation, can be overridden
         chrome_path = None
         import platform
@@ -2656,7 +2664,7 @@ class BaseBrowserAgent:
         # 同时满足 browser-use get_args() 对 user_data_dir 非 None 的断言。
         user_data_dir = tempfile.mkdtemp(prefix='browser-use-user-data-dir-ui-')
 
-        return BrowserProfile(
+        profile_kwargs = dict(
             user_data_dir=user_data_dir,
             headless=(system == 'Linux'),  # Linux 使用无头模式，其他系统使用显示模式
             disable_security=True,
@@ -2665,8 +2673,12 @@ class BaseBrowserAgent:
             wait_for_network_idle_page_load_time=0.2,
             minimum_wait_page_load_time=0.05,
             wait_between_actions=0.1,
-            enable_default_extensions=False
+            enable_default_extensions=False,
         )
+        # PW-3a：仅命名会话显式生效时注入登录态，默认分支不带该键（#180 零变化）。
+        if storage_state:
+            profile_kwargs['storage_state'] = storage_state
+        return BrowserProfile(**profile_kwargs)
 
     async def _run_pre_explore(self, agent_instance, emit_callback=None):
         """抓一次当前页面的可交互元素清单（#177）。
@@ -2730,7 +2742,12 @@ class BaseBrowserAgent:
             logger.warning(f'终态快照采集失败（断言降级为 unknown）: {e}')
             return None
 
-    async def run_task(self, task_description: str, planned_tasks=None, callback=None, should_stop=None):
+    async def run_task(self, task_description: str, planned_tasks=None, callback=None, should_stop=None,
+                       session_alias=None, persist_session_state=False):
+        """PW-3a：session_alias / persist_session_state 仅在开关+目录齐备时生效。
+
+        默认 None/False → 完全走 #180 每任务临时 profile，行为零变化。
+        """
         # #178 模型分级：先定用哪个模型，再做连通性校验——校验必须打在真正会用的模型上
         routing_info = self._apply_model_routing(task_description, planned_tasks)
         await self._verify_execution_llm()
@@ -2981,7 +2998,22 @@ class BaseBrowserAgent:
         except:
             pass
 
-        browser_profile = self._create_browser_profile()
+        # PW-3a：命名会话默认关闭；仅开关+目录+合法 alias 三者齐备时载入登录态。
+        # 任何异常都降级为全新会话（不阻断执行），fail-open 与 #180 隔离语义一致。
+        _session_registry = None
+        _session_state = None
+        if session_registry.is_named_session_active(session_alias):
+            try:
+                _session_registry = session_registry.SessionRegistry(
+                    session_registry.configured_state_dir()
+                )
+                _session_state = _session_registry.load(session_alias)
+            except Exception as e:
+                logger.warning("命名会话载入失败，降级为独立会话: %s", type(e).__name__)
+                _session_registry = None
+                _session_state = None
+
+        browser_profile = self._create_browser_profile(_session_state)
 
         agent = Agent(
             task=final_task,
@@ -3314,6 +3346,24 @@ class BaseBrowserAgent:
             except Exception as e:
                 logger.warning(f'断言评估跳过（不影响执行结果）: {e}')
 
+        # PW-3a：登录态回写。仅在显式 persist + 命名会话生效 + 未被用户停止时执行。
+        # 非阻断：导出/落盘异常一律降级为日志（只记异常类型，Cookie 永不进日志/库）。
+        if _session_registry is not None and persist_session_state:
+            _stopped = False
+            try:
+                _stopped = bool(should_stop()) if should_stop else False
+            except Exception:
+                _stopped = False
+            if not _stopped:
+                try:
+                    _bs = getattr(agent, 'browser_session', None)
+                    if _bs is not None and hasattr(_bs, 'export_storage_state'):
+                        _state = await _bs.export_storage_state()
+                        if isinstance(_state, dict):
+                            _session_registry.save(session_alias, _state)
+                except Exception as e:
+                    logger.warning("命名会话登录态回写跳过（不影响执行结果）: %s", type(e).__name__)
+
         return history
 
     def _find_executed_tasks(self, history):
@@ -3375,7 +3425,7 @@ class BaseBrowserAgent:
         }
 
     async def run_full_process(self, task_description: str, analysis_callback=None, step_callback=None,
-                               should_stop=None):
+                               should_stop=None, session_alias=None, persist_session_state=False):
         planned_tasks = await self.analyze_task(task_description)
         if analysis_callback:
             if asyncio.iscoroutinefunction(analysis_callback):
@@ -3383,4 +3433,7 @@ class BaseBrowserAgent:
             else:
                 analysis_callback(planned_tasks)
 
-        return await self.run_task(task_description, planned_tasks, step_callback, should_stop)
+        return await self.run_task(
+            task_description, planned_tasks, step_callback, should_stop,
+            session_alias=session_alias, persist_session_state=persist_session_state,
+        )
